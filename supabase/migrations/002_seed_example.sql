@@ -1,0 +1,12 @@
+-- Optional seed data for local/dev testing (remove or edit for production)
+
+-- INSERT INTO cases (case_name, case_number, client_name, cause_number, dropbox_root_path, slack_channel_id, status)
+-- VALUES (
+--   'Lopez v. State Farm',
+--   '2024-001',
+--   'Maria Lopez',
+--   '2024-CV-12345',
+--   '/RJL Cases/Maria Lopez',
+--   'C0000000000',
+--   'active'
+-- );
