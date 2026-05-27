@@ -2,26 +2,39 @@ import { Dropbox } from 'dropbox';
 import { getEnv } from '../config/env.js';
 import { logger } from '../utils/logger.js';
 
-let dbx: Dropbox | null = null;
-
 /** Resolved after first successful discovery (may differ from env). */
 let resolvedCasesRoot: string | null = null;
+/** Dropbox Business namespace for API path root (team vs home). */
+let resolvedNamespaceId: string | null = null;
 
-function getDropbox(): Dropbox {
-  if (!dbx) {
-    dbx = new Dropbox({ accessToken: getEnv().DROPBOX_ACCESS_TOKEN });
+function getDropboxClient(namespaceId?: string | null): Dropbox {
+  const token = getEnv().DROPBOX_ACCESS_TOKEN;
+  const ns = namespaceId ?? resolvedNamespaceId;
+  if (ns) {
+    return new Dropbox({
+      accessToken: token,
+      pathRoot: JSON.stringify({ '.tag': 'namespace_id', namespace_id: ns }),
+    });
   }
-  return dbx;
+  return new Dropbox({ accessToken: token });
 }
 
 export function getCasesRootPath(): string {
   return resolvedCasesRoot ?? getEnv().DROPBOX_CASES_ROOT;
 }
 
+export function getResolvedNamespaceId(): string | null {
+  return resolvedNamespaceId;
+}
+
 function normalizePath(path: string): string {
   const p = path.startsWith('/') ? path : `/${path}`;
   return p.replace(/\/+/g, '/');
 }
+
+import {
+  parseCaseNumberFromDropboxFolder,
+} from '../constants/rjlFolders.js';
 
 function matchesCasesRootHint(name: string): boolean {
   const lower = name.toLowerCase();
@@ -38,14 +51,15 @@ export interface DropboxFolderEntry {
 }
 
 async function listFolderEntriesInternal(
-  path: string
+  path: string,
+  namespaceId?: string | null
 ): Promise<{ entries: DropboxFolderEntry[]; error?: string }> {
   const normalized = path === '' ? '' : normalizePath(path);
   const entries: DropboxFolderEntry[] = [];
-  let cursor: string | undefined;
+  const client = getDropboxClient(namespaceId);
 
   try {
-    let result = await getDropbox().filesListFolder({ path: normalized });
+    let result = await client.filesListFolder({ path: normalized });
     for (;;) {
       for (const e of result.result.entries) {
         if (e['.tag'] === 'folder') {
@@ -56,13 +70,12 @@ async function listFolderEntriesInternal(
         }
       }
       if (!result.result.has_more) break;
-      cursor = result.result.cursor;
-      result = await getDropbox().filesListFolderContinue({ cursor });
+      result = await client.filesListFolderContinue({ cursor: result.result.cursor });
     }
     return { entries };
   } catch (err) {
     const message = extractDropboxError(err);
-    logger.debug('listFolderEntries failed', { path: normalized, error: message });
+    logger.debug('listFolderEntries failed', { path: normalized, namespaceId, error: message });
     return { entries: [], error: message };
   }
 }
@@ -83,18 +96,29 @@ export interface DropboxConnectionStatus {
   ok: boolean;
   accountEmail?: string;
   accountName?: string;
+  homePath?: string;
+  rootNamespaceId?: string;
+  homeNamespaceId?: string;
   error?: string;
 }
 
 /** Verifies DROPBOX_ACCESS_TOKEN works before folder discovery. */
 export async function verifyDropboxConnection(): Promise<DropboxConnectionStatus> {
   try {
-    const account = await getDropbox().usersGetCurrentAccount();
-    return {
+    const account = await getDropboxClient().usersGetCurrentAccount();
+    const root = account.result.root_info;
+    const status: DropboxConnectionStatus = {
       ok: true,
       accountEmail: account.result.email,
       accountName: account.result.name.display_name,
     };
+    if (root['.tag'] === 'user') {
+      const userRoot = root as { home_path?: string; root_namespace_id?: string; home_namespace_id?: string };
+      status.homePath = userRoot.home_path;
+      status.rootNamespaceId = userRoot.root_namespace_id;
+      status.homeNamespaceId = userRoot.home_namespace_id;
+    }
+    return status;
   } catch (err) {
     return { ok: false, error: extractDropboxError(err) };
   }
@@ -127,26 +151,90 @@ export async function discoverCasesRoot(): Promise<DiscoverCasesRootResult> {
 
   const envRoot = normalizePath(getEnv().DROPBOX_CASES_ROOT);
 
+  const tryPath = async (
+    path: string,
+    source: string,
+    namespaceId?: string | null
+  ): Promise<string | null> => {
+    const { entries, error } = await listFolderEntriesInternal(path, namespaceId);
+    const label = namespaceId ? `${source} (ns:${namespaceId.slice(0, 8)}…)` : source;
+    tried.push({ path, source: label, folderCount: entries.length, error });
+
+    const caseFolders = entries.filter((e) => parseCaseNumberFromDropboxFolder(e.name));
+
+    if (caseFolders.length > 0) {
+      resolvedCasesRoot = normalizePath(path === '' && entries.length === 1 && matchesCasesRootHint(entries[0].name)
+        ? `/${entries[0].name}`
+        : path);
+      if (namespaceId) resolvedNamespaceId = namespaceId;
+      logger.info('Discovered Dropbox cases root', {
+        path: resolvedCasesRoot,
+        source: label,
+        caseFolderCount: caseFolders.length,
+        namespaceId,
+      });
+      return resolvedCasesRoot;
+    }
+
+    // Direct hit: listing the cases root itself (subfolders are case folders)
+    if (entries.length > 0 && (path.includes('RAMOS') || matchesCasesRootHint(path))) {
+      resolvedCasesRoot = normalizePath(path);
+      if (namespaceId) resolvedNamespaceId = namespaceId;
+      return resolvedCasesRoot;
+    }
+
+    return null;
+  };
+
+  // Dropbox Business: try team root namespace first (shared "RAMOS JAMES LAW CASES" lives here)
+  if (dropboxConnection.rootNamespaceId) {
+    const ns = dropboxConnection.rootNamespaceId;
+    const teamCandidates = [
+      { path: '/RAMOS JAMES LAW CASES', source: 'team_root_namespace' },
+      { path: envRoot, source: 'team_root_env' },
+      { path: '', source: 'team_root_list' },
+    ];
+    for (const c of teamCandidates) {
+      const found = await tryPath(c.path, c.source, ns);
+      if (found) {
+        return {
+          path: found,
+          source: c.source,
+          caseFolderCount: tried[tried.length - 1].folderCount,
+          tried,
+          dropboxConnection,
+        };
+      }
+    }
+  }
+
+  // User home namespace (/David Eagan/...)
+  if (dropboxConnection.homeNamespaceId) {
+    const ns = dropboxConnection.homeNamespaceId;
+    const homeCandidates = [
+      { path: '/RAMOS JAMES LAW CASES', source: 'home_namespace' },
+      { path: envRoot, source: 'home_namespace_env' },
+      { path: '', source: 'home_namespace_list' },
+    ];
+    for (const c of homeCandidates) {
+      const found = await tryPath(c.path, c.source, ns);
+      if (found) {
+        return {
+          path: found,
+          source: c.source,
+          caseFolderCount: tried[tried.length - 1].folderCount,
+          tried,
+          dropboxConnection,
+        };
+      }
+    }
+  }
+
   const candidates: Array<{ path: string; source: string }> = [
     { path: envRoot, source: 'env_DROPBOX_CASES_ROOT' },
     { path: '/RAMOS JAMES LAW CASES', source: 'shared_name_default' },
     { path: '/David Eagan/RAMOS JAMES LAW CASES', source: 'nested_default' },
   ];
-
-  const tryPath = async (path: string, source: string): Promise<string | null> => {
-    const { entries, error } = await listFolderEntriesInternal(path);
-    tried.push({ path, source, folderCount: entries.length, error });
-    if (entries.length > 0) {
-      resolvedCasesRoot = normalizePath(path);
-      logger.info('Discovered Dropbox cases root', {
-        path: resolvedCasesRoot,
-        source,
-        caseFolderCount: entries.length,
-      });
-      return resolvedCasesRoot;
-    }
-    return null;
-  };
 
   for (const c of candidates) {
     const found = await tryPath(c.path, c.source);
@@ -161,7 +249,7 @@ export async function discoverCasesRoot(): Promise<DiscoverCasesRootResult> {
     }
   }
 
-  // Scan account home root for a matching folder name
+  // Scan default namespace home
   const homeResult = await listFolderEntriesInternal('');
   tried.push({
     path: '(account root)',
@@ -187,7 +275,7 @@ export async function discoverCasesRoot(): Promise<DiscoverCasesRootResult> {
 
   // Shared folders available to mount (and often already visible in /)
   try {
-    const mountable = await getDropbox().sharingListMountableFolders({});
+    const mountable = await getDropboxClient().sharingListMountableFolders({});
     for (const folder of mountable.result.entries) {
       if (!matchesCasesRootHint(folder.name)) continue;
       const folderPath = folder.path_lower
@@ -210,7 +298,7 @@ export async function discoverCasesRoot(): Promise<DiscoverCasesRootResult> {
 
   // Team / shared folders the user is a member of
   try {
-    const shared = await getDropbox().sharingListFolders({});
+    const shared = await getDropboxClient().sharingListFolders({});
     for (const folder of shared.result.entries) {
       if (!matchesCasesRootHint(folder.name)) continue;
       const folderPath = folder.path_lower
@@ -242,7 +330,7 @@ export async function listCaseFolders(rootPath: string): Promise<DropboxFolderEn
 export async function ensureFolderExists(folderPath: string): Promise<boolean> {
   const normalized = folderPath.startsWith('/') ? folderPath : `/${folderPath}`;
   try {
-    await getDropbox().filesCreateFolderV2({ path: normalized, autorename: false });
+    await getDropboxClient().filesCreateFolderV2({ path: normalized, autorename: false });
     return true;
   } catch (err: unknown) {
     const e = err as { error?: { error_summary?: string } };
@@ -259,7 +347,7 @@ export async function fileExistsInDropbox(
   const normalized = folderPath.startsWith('/') ? folderPath : `/${folderPath}`;
   const fullPath = `${normalized}/${filename}`.replace(/\/+/g, '/');
   try {
-    await getDropbox().filesGetMetadata({ path: fullPath });
+    await getDropboxClient().filesGetMetadata({ path: fullPath });
     return true;
   } catch {
     return false;
@@ -275,7 +363,7 @@ export async function uploadFileToDropbox(
   const folderCreated = await ensureFolderExists(normalized);
   const fullPath = `${normalized}/${filename}`.replace(/\/+/g, '/');
 
-  const response = await getDropbox().filesUpload({
+  const response = await getDropboxClient().filesUpload({
     path: fullPath,
     contents,
     mode: { '.tag': 'add' },
@@ -292,7 +380,7 @@ export async function uploadFileToDropbox(
 
 export async function generateDropboxPermalink(filePath: string): Promise<string> {
   const normalized = filePath.startsWith('/') ? filePath : `/${filePath}`;
-  const shared = await getDropbox().sharingCreateSharedLinkWithSettings({
+  const shared = await getDropboxClient().sharingCreateSharedLinkWithSettings({
     path: normalized,
     settings: { requested_visibility: { '.tag': 'team_only' } },
   });
