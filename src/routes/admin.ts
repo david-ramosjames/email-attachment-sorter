@@ -6,7 +6,7 @@ import {
   getLastDropboxSyncAt,
   syncDropboxStructure,
 } from '../services/dropboxSyncService.js';
-import { discoverCasesRoot, getCasesRootPath } from '../services/dropboxService.js';
+import { discoverCasesRoot, getCasesRootPath, verifyDropboxConnection } from '../services/dropboxService.js';
 import { logger } from '../utils/logger.js';
 
 export const adminRouter = Router();
@@ -80,5 +80,15 @@ adminRouter.post('/admin/discover-dropbox-root', async (_req, res) => {
     res.status(500).json({
       error: err instanceof Error ? err.message : 'Discovery failed',
     });
+  }
+});
+
+/** Check whether DROPBOX_ACCESS_TOKEN is valid. */
+adminRouter.get('/admin/dropbox-connection', async (_req, res) => {
+  try {
+    const status = await verifyDropboxConnection();
+    res.json(status);
+  } catch (err) {
+    res.status(500).json({ ok: false, error: String(err) });
   }
 });

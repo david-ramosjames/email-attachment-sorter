@@ -37,7 +37,9 @@ export interface DropboxFolderEntry {
   path: string;
 }
 
-async function listFolderEntriesInternal(path: string): Promise<DropboxFolderEntry[]> {
+async function listFolderEntriesInternal(
+  path: string
+): Promise<{ entries: DropboxFolderEntry[]; error?: string }> {
   const normalized = path === '' ? '' : normalizePath(path);
   const entries: DropboxFolderEntry[] = [];
   let cursor: string | undefined;
@@ -57,18 +59,53 @@ async function listFolderEntriesInternal(path: string): Promise<DropboxFolderEnt
       cursor = result.result.cursor;
       result = await getDropbox().filesListFolderContinue({ cursor });
     }
+    return { entries };
   } catch (err) {
-    logger.debug('listFolderEntries failed', { path: normalized, err: String(err) });
-    return [];
+    const message = extractDropboxError(err);
+    logger.debug('listFolderEntries failed', { path: normalized, error: message });
+    return { entries: [], error: message };
   }
-  return entries;
+}
+
+function extractDropboxError(err: unknown): string {
+  if (err && typeof err === 'object') {
+    const e = err as {
+      error?: { error_summary?: string; error?: { '.tag'?: string } };
+      message?: string;
+    };
+    if (e.error?.error_summary) return e.error.error_summary;
+    if (e.message) return e.message;
+  }
+  return String(err);
+}
+
+export interface DropboxConnectionStatus {
+  ok: boolean;
+  accountEmail?: string;
+  accountName?: string;
+  error?: string;
+}
+
+/** Verifies DROPBOX_ACCESS_TOKEN works before folder discovery. */
+export async function verifyDropboxConnection(): Promise<DropboxConnectionStatus> {
+  try {
+    const account = await getDropbox().usersGetCurrentAccount();
+    return {
+      ok: true,
+      accountEmail: account.result.email,
+      accountName: account.result.name.display_name,
+    };
+  } catch (err) {
+    return { ok: false, error: extractDropboxError(err) };
+  }
 }
 
 export interface DiscoverCasesRootResult {
   path: string | null;
   source: string | null;
   caseFolderCount: number;
-  tried: Array<{ path: string; source: string; folderCount: number }>;
+  tried: Array<{ path: string; source: string; folderCount: number; error?: string }>;
+  dropboxConnection: DropboxConnectionStatus;
 }
 
 /**
@@ -76,6 +113,18 @@ export interface DiscoverCasesRootResult {
  */
 export async function discoverCasesRoot(): Promise<DiscoverCasesRootResult> {
   const tried: DiscoverCasesRootResult['tried'] = [];
+  const dropboxConnection = await verifyDropboxConnection();
+
+  if (!dropboxConnection.ok) {
+    return {
+      path: null,
+      source: null,
+      caseFolderCount: 0,
+      tried,
+      dropboxConnection,
+    };
+  }
+
   const envRoot = normalizePath(getEnv().DROPBOX_CASES_ROOT);
 
   const candidates: Array<{ path: string; source: string }> = [
@@ -85,14 +134,14 @@ export async function discoverCasesRoot(): Promise<DiscoverCasesRootResult> {
   ];
 
   const tryPath = async (path: string, source: string): Promise<string | null> => {
-    const folders = await listFolderEntriesInternal(path);
-    tried.push({ path, source, folderCount: folders.length });
-    if (folders.length > 0) {
+    const { entries, error } = await listFolderEntriesInternal(path);
+    tried.push({ path, source, folderCount: entries.length, error });
+    if (entries.length > 0) {
       resolvedCasesRoot = normalizePath(path);
       logger.info('Discovered Dropbox cases root', {
         path: resolvedCasesRoot,
         source,
-        caseFolderCount: folders.length,
+        caseFolderCount: entries.length,
       });
       return resolvedCasesRoot;
     }
@@ -102,19 +151,36 @@ export async function discoverCasesRoot(): Promise<DiscoverCasesRootResult> {
   for (const c of candidates) {
     const found = await tryPath(c.path, c.source);
     if (found) {
-      return { path: found, source: c.source, caseFolderCount: tried[tried.length - 1].folderCount, tried };
+      return {
+        path: found,
+        source: c.source,
+        caseFolderCount: tried[tried.length - 1].folderCount,
+        tried,
+        dropboxConnection,
+      };
     }
   }
 
   // Scan account home root for a matching folder name
-  const homeFolders = await listFolderEntriesInternal('');
-  tried.push({ path: '(account root)', source: 'account_root_scan', folderCount: homeFolders.length });
+  const homeResult = await listFolderEntriesInternal('');
+  tried.push({
+    path: '(account root)',
+    source: 'account_root_scan',
+    folderCount: homeResult.entries.length,
+    error: homeResult.error,
+  });
 
-  for (const folder of homeFolders) {
+  for (const folder of homeResult.entries) {
     if (matchesCasesRootHint(folder.name)) {
       const found = await tryPath(folder.path, 'account_root_match');
       if (found) {
-        return { path: found, source: 'account_root_match', caseFolderCount: tried[tried.length - 1].folderCount, tried };
+        return {
+          path: found,
+          source: 'account_root_match',
+          caseFolderCount: tried[tried.length - 1].folderCount,
+          tried,
+          dropboxConnection,
+        };
       }
     }
   }
@@ -134,11 +200,12 @@ export async function discoverCasesRoot(): Promise<DiscoverCasesRootResult> {
           source: 'sharing_list_mountable',
           caseFolderCount: tried[tried.length - 1].folderCount,
           tried,
+          dropboxConnection,
         };
       }
     }
   } catch (err) {
-    logger.warn('sharingListMountableFolders failed', { err: String(err) });
+    logger.warn('sharingListMountableFolders failed', { err: extractDropboxError(err) });
   }
 
   // Team / shared folders the user is a member of
@@ -151,18 +218,25 @@ export async function discoverCasesRoot(): Promise<DiscoverCasesRootResult> {
         : normalizePath(`/${folder.name}`);
       const found = await tryPath(folderPath, 'sharing_list_folders');
       if (found) {
-        return { path: found, source: 'sharing_list_folders', caseFolderCount: tried[tried.length - 1].folderCount, tried };
+        return {
+          path: found,
+          source: 'sharing_list_folders',
+          caseFolderCount: tried[tried.length - 1].folderCount,
+          tried,
+          dropboxConnection,
+        };
       }
     }
   } catch (err) {
-    logger.warn('sharingListFolders failed', { err: String(err) });
+    logger.warn('sharingListFolders failed', { err: extractDropboxError(err) });
   }
 
-  return { path: null, source: null, caseFolderCount: 0, tried };
+  return { path: null, source: null, caseFolderCount: 0, tried, dropboxConnection };
 }
 
 export async function listCaseFolders(rootPath: string): Promise<DropboxFolderEntry[]> {
-  return listFolderEntriesInternal(rootPath);
+  const { entries } = await listFolderEntriesInternal(rootPath);
+  return entries;
 }
 
 export async function ensureFolderExists(folderPath: string): Promise<boolean> {
