@@ -1,4 +1,3 @@
-import { getEnv } from '../config/env.js';
 import {
   listCases,
   updateCaseDropboxFolderName,
@@ -8,16 +7,13 @@ import {
   parseCaseNumberFromDropboxFolder,
   RJL_STANDARD_SUBFOLDERS,
 } from '../constants/rjlFolders.js';
-import {
-  discoverCasesRoot,
-  getCasesRootPath,
-  listCaseFolders,
-} from './dropboxService.js';
+import { discoverCasesRoot, listCaseFolders } from './dropboxService.js';
 import { logger } from '../utils/logger.js';
 
 export interface DropboxSyncResult {
   casesRootUsed: string;
   casesRootSource: string | null;
+  namespaceId: string | null;
   caseFoldersFound: number;
   casesLinked: number;
   subfoldersIndexed: number;
@@ -46,8 +42,9 @@ export async function syncDropboxStructure(): Promise<DropboxSyncResult> {
   if (syncInProgress) {
     logger.info('Dropbox sync already in progress, skipping');
     return {
-      casesRootUsed: getCasesRootPath(),
+      casesRootUsed: '',
       casesRootSource: null,
+      namespaceId: null,
       caseFoldersFound: 0,
       casesLinked: 0,
       subfoldersIndexed: 0,
@@ -58,24 +55,28 @@ export async function syncDropboxStructure(): Promise<DropboxSyncResult> {
 
   syncInProgress = true;
   try {
-    let casesRoot = getCasesRootPath();
-    let casesRootSource: string | null = 'cached_or_env';
-    let discoveryTried: DropboxSyncResult['discoveryTried'];
+    // Always discover — namespace is not persisted between HTTP requests on Railway
+    const discovery = await discoverCasesRoot();
 
-    let dropboxCaseFolders = await listCaseFolders(casesRoot);
-
-    if (dropboxCaseFolders.length === 0) {
-      logger.info('No folders at configured root, running Dropbox discovery');
-      const discovery = await discoverCasesRoot();
-      discoveryTried = discovery.tried;
-      if (discovery.path) {
-        casesRoot = discovery.path;
-        casesRootSource = discovery.source;
-        dropboxCaseFolders = await listCaseFolders(casesRoot);
-      } else {
-        logger.error('Dropbox cases root not found', { tried: discovery.tried });
-      }
+    if (!discovery.path) {
+      logger.error('Dropbox cases root not found', { tried: discovery.tried });
+      return {
+        casesRootUsed: '',
+        casesRootSource: null,
+        namespaceId: discovery.namespaceId,
+        caseFoldersFound: 0,
+        casesLinked: 0,
+        subfoldersIndexed: 0,
+        unmatchedDropboxFolders: [],
+        discoveryTried: discovery.tried,
+        syncedAt: new Date().toISOString(),
+      };
     }
+
+    const casesRoot = discovery.path;
+    const casesRootSource = discovery.source;
+    const namespaceId = discovery.namespaceId;
+    const dropboxCaseFolders = await listCaseFolders(casesRoot);
 
     const knownCases = await listCases();
     const knownByNumber = new Map(knownCases.map((c) => [c.case_number, c]));
@@ -111,11 +112,12 @@ export async function syncDropboxStructure(): Promise<DropboxSyncResult> {
     const result: DropboxSyncResult = {
       casesRootUsed: casesRoot,
       casesRootSource,
+      namespaceId,
       caseFoldersFound: dropboxCaseFolders.length,
       casesLinked,
       subfoldersIndexed,
       unmatchedDropboxFolders: unmatchedDropboxFolders.slice(0, 20),
-      discoveryTried,
+      discoveryTried: discovery.tried,
       syncedAt: lastSyncAt.toISOString(),
     };
 

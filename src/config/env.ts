@@ -12,6 +12,8 @@ const envSchema = z.object({
   DROPBOX_ACCESS_TOKEN: z.string().min(1),
   /** Root Dropbox folder containing all case folders */
   DROPBOX_CASES_ROOT: z.string().default('/RJL Cases'),
+  /** Dropbox Business home namespace id (from /admin/dropbox-connection) */
+  DROPBOX_NAMESPACE_ID: z.string().optional(),
   /** How often to scan Dropbox for new case folders (minutes). 0 = disabled. */
   DROPBOX_SYNC_INTERVAL_MINUTES: z.coerce.number().default(60),
   INBOUND_EMAIL_WEBHOOK_SECRET: z.string().optional(),

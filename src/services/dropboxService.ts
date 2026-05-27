@@ -5,7 +5,7 @@ import { logger } from '../utils/logger.js';
 /** Resolved after first successful discovery (may differ from env). */
 let resolvedCasesRoot: string | null = null;
 /** Dropbox Business namespace for API path root (team vs home). */
-let resolvedNamespaceId: string | null = null;
+let resolvedNamespaceId: string | null = process.env.DROPBOX_NAMESPACE_ID ?? null;
 
 function getDropboxClient(namespaceId?: string | null): Dropbox {
   const token = getEnv().DROPBOX_ACCESS_TOKEN;
@@ -127,6 +127,7 @@ export async function verifyDropboxConnection(): Promise<DropboxConnectionStatus
 export interface DiscoverCasesRootResult {
   path: string | null;
   source: string | null;
+  namespaceId: string | null;
   caseFolderCount: number;
   tried: Array<{ path: string; source: string; folderCount: number; error?: string }>;
   dropboxConnection: DropboxConnectionStatus;
@@ -143,11 +144,25 @@ export async function discoverCasesRoot(): Promise<DiscoverCasesRootResult> {
     return {
       path: null,
       source: null,
+      namespaceId: null,
       caseFolderCount: 0,
       tried,
       dropboxConnection,
     };
   }
+
+  const finish = (
+    path: string,
+    source: string,
+    caseFolderCount: number
+  ): DiscoverCasesRootResult => ({
+    path,
+    source,
+    namespaceId: resolvedNamespaceId,
+    caseFolderCount,
+    tried,
+    dropboxConnection,
+  });
 
   const envRoot = normalizePath(getEnv().DROPBOX_CASES_ROOT);
 
@@ -197,13 +212,7 @@ export async function discoverCasesRoot(): Promise<DiscoverCasesRootResult> {
     for (const c of teamCandidates) {
       const found = await tryPath(c.path, c.source, ns);
       if (found) {
-        return {
-          path: found,
-          source: c.source,
-          caseFolderCount: tried[tried.length - 1].folderCount,
-          tried,
-          dropboxConnection,
-        };
+        return finish(found, c.source, tried[tried.length - 1].folderCount);
       }
     }
   }
@@ -219,13 +228,7 @@ export async function discoverCasesRoot(): Promise<DiscoverCasesRootResult> {
     for (const c of homeCandidates) {
       const found = await tryPath(c.path, c.source, ns);
       if (found) {
-        return {
-          path: found,
-          source: c.source,
-          caseFolderCount: tried[tried.length - 1].folderCount,
-          tried,
-          dropboxConnection,
-        };
+        return finish(found, c.source, tried[tried.length - 1].folderCount);
       }
     }
   }
@@ -239,13 +242,7 @@ export async function discoverCasesRoot(): Promise<DiscoverCasesRootResult> {
   for (const c of candidates) {
     const found = await tryPath(c.path, c.source);
     if (found) {
-      return {
-        path: found,
-        source: c.source,
-        caseFolderCount: tried[tried.length - 1].folderCount,
-        tried,
-        dropboxConnection,
-      };
+      return finish(found, c.source, tried[tried.length - 1].folderCount);
     }
   }
 
@@ -262,13 +259,7 @@ export async function discoverCasesRoot(): Promise<DiscoverCasesRootResult> {
     if (matchesCasesRootHint(folder.name)) {
       const found = await tryPath(folder.path, 'account_root_match');
       if (found) {
-        return {
-          path: found,
-          source: 'account_root_match',
-          caseFolderCount: tried[tried.length - 1].folderCount,
-          tried,
-          dropboxConnection,
-        };
+        return finish(found, 'account_root_match', tried[tried.length - 1].folderCount);
       }
     }
   }
@@ -283,13 +274,7 @@ export async function discoverCasesRoot(): Promise<DiscoverCasesRootResult> {
         : normalizePath(`/${folder.name}`);
       const found = await tryPath(folderPath, 'sharing_list_mountable');
       if (found) {
-        return {
-          path: found,
-          source: 'sharing_list_mountable',
-          caseFolderCount: tried[tried.length - 1].folderCount,
-          tried,
-          dropboxConnection,
-        };
+        return finish(found, 'sharing_list_mountable', tried[tried.length - 1].folderCount);
       }
     }
   } catch (err) {
@@ -306,20 +291,21 @@ export async function discoverCasesRoot(): Promise<DiscoverCasesRootResult> {
         : normalizePath(`/${folder.name}`);
       const found = await tryPath(folderPath, 'sharing_list_folders');
       if (found) {
-        return {
-          path: found,
-          source: 'sharing_list_folders',
-          caseFolderCount: tried[tried.length - 1].folderCount,
-          tried,
-          dropboxConnection,
-        };
+        return finish(found, 'sharing_list_folders', tried[tried.length - 1].folderCount);
       }
     }
   } catch (err) {
     logger.warn('sharingListFolders failed', { err: extractDropboxError(err) });
   }
 
-  return { path: null, source: null, caseFolderCount: 0, tried, dropboxConnection };
+  return {
+    path: null,
+    source: null,
+    namespaceId: null,
+    caseFolderCount: 0,
+    tried,
+    dropboxConnection,
+  };
 }
 
 export async function listCaseFolders(rootPath: string): Promise<DropboxFolderEntry[]> {
