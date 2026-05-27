@@ -54,6 +54,14 @@ adminRouter.post('/admin/reindex-dropbox-folders', async (req, res) => {
 adminRouter.post('/admin/sync-dropbox-structure', async (_req, res) => {
   try {
     const result = await syncDropboxStructure();
+    if (result.skipped) {
+      res.status(409).json(result);
+      return;
+    }
+    if (result.error && result.caseFoldersFound === 0) {
+      res.status(500).json(result);
+      return;
+    }
     res.json(result);
   } catch (err) {
     logger.error('Dropbox sync failed', { err: String(err) });

@@ -5,11 +5,15 @@ import { logger } from '../utils/logger.js';
 /** Resolved after first successful discovery (may differ from env). */
 let resolvedCasesRoot: string | null = null;
 /** Dropbox Business namespace for API path root (team vs home). */
-let resolvedNamespaceId: string | null = process.env.DROPBOX_NAMESPACE_ID ?? null;
+let resolvedNamespaceId: string | null = null;
+
+function getNamespaceId(): string | null {
+  return resolvedNamespaceId ?? getEnv().DROPBOX_NAMESPACE_ID ?? null;
+}
 
 function getDropboxClient(namespaceId?: string | null): Dropbox {
   const token = getEnv().DROPBOX_ACCESS_TOKEN;
-  const ns = namespaceId ?? resolvedNamespaceId;
+  const ns = namespaceId ?? getNamespaceId();
   if (ns) {
     return new Dropbox({
       accessToken: token,
@@ -308,9 +312,36 @@ export async function discoverCasesRoot(): Promise<DiscoverCasesRootResult> {
   };
 }
 
-export async function listCaseFolders(rootPath: string): Promise<DropboxFolderEntry[]> {
-  const { entries } = await listFolderEntriesInternal(rootPath);
+export async function listCaseFolders(
+  rootPath: string,
+  namespaceId?: string | null
+): Promise<DropboxFolderEntry[]> {
+  const { entries } = await listFolderEntriesInternal(rootPath, namespaceId ?? getNamespaceId());
   return entries;
+}
+
+/**
+ * Fast path: use DROPBOX_CASES_ROOT + DROPBOX_NAMESPACE_ID from env (no full discovery scan).
+ */
+export async function resolveCasesRootFromEnv(): Promise<{
+  path: string;
+  namespaceId: string;
+  folderCount: number;
+} | null> {
+  const root = normalizePath(getEnv().DROPBOX_CASES_ROOT);
+  const ns = getEnv().DROPBOX_NAMESPACE_ID;
+  if (!ns) return null;
+
+  resolvedNamespaceId = ns;
+  const { entries, error } = await listFolderEntriesInternal(root, ns);
+  if (error) {
+    logger.warn('resolveCasesRootFromEnv failed', { root, error });
+    return null;
+  }
+  if (entries.length === 0) return null;
+
+  resolvedCasesRoot = root;
+  return { path: root, namespaceId: ns, folderCount: entries.length };
 }
 
 export async function ensureFolderExists(folderPath: string): Promise<boolean> {

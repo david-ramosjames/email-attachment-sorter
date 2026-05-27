@@ -235,6 +235,23 @@ export async function listCases(): Promise<Case[]> {
   return (data ?? []).map((row) => mapSlackChannelToCase(row as CaseSlackChannel));
 }
 
+export async function batchUpsertCaseFolders(
+  rows: Array<{ case_number: string; folder_label: string; dropbox_path: string }>
+): Promise<number> {
+  if (!rows.length) return 0;
+  const CHUNK = 200;
+  let total = 0;
+  for (let i = 0; i < rows.length; i += CHUNK) {
+    const chunk = rows.slice(i, i + CHUNK);
+    const { error } = await getSupabase()
+      .from('case_folders')
+      .upsert(chunk, { onConflict: 'case_number,folder_label' });
+    if (error) throw new Error(`Batch upsert folders failed: ${error.message}`);
+    total += chunk.length;
+  }
+  return total;
+}
+
 export async function upsertCaseFolder(
   caseNumber: string,
   folderLabel: string,

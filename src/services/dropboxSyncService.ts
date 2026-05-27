@@ -1,13 +1,18 @@
+import { getEnv } from '../config/env.js';
 import {
+  batchUpsertCaseFolders,
   listCases,
   updateCaseDropboxFolderName,
-  upsertCaseFolder,
 } from '../db/supabase.js';
 import {
   parseCaseNumberFromDropboxFolder,
   RJL_STANDARD_SUBFOLDERS,
 } from '../constants/rjlFolders.js';
-import { discoverCasesRoot, listCaseFolders } from './dropboxService.js';
+import {
+  discoverCasesRoot,
+  listCaseFolders,
+  resolveCasesRootFromEnv,
+} from './dropboxService.js';
 import { logger } from '../utils/logger.js';
 
 export interface DropboxSyncResult {
@@ -20,6 +25,8 @@ export interface DropboxSyncResult {
   unmatchedDropboxFolders: string[];
   discoveryTried?: Array<{ path: string; source: string; folderCount: number }>;
   syncedAt: string;
+  skipped?: boolean;
+  error?: string;
 }
 
 let lastSyncAt: Date | null = null;
@@ -27,6 +34,10 @@ let syncInProgress = false;
 
 export function getLastDropboxSyncAt(): string | null {
   return lastSyncAt?.toISOString() ?? null;
+}
+
+export function isSyncInProgress(): boolean {
+  return syncInProgress;
 }
 
 function caseRootPath(casesRoot: string, dropboxFolderName: string): string {
@@ -40,7 +51,7 @@ function caseRootPath(casesRoot: string, dropboxFolderName: string): string {
  */
 export async function syncDropboxStructure(): Promise<DropboxSyncResult> {
   if (syncInProgress) {
-    logger.info('Dropbox sync already in progress, skipping');
+    logger.info('Dropbox sync already in progress');
     return {
       casesRootUsed: '',
       casesRootSource: null,
@@ -49,41 +60,79 @@ export async function syncDropboxStructure(): Promise<DropboxSyncResult> {
       casesLinked: 0,
       subfoldersIndexed: 0,
       unmatchedDropboxFolders: [],
-      syncedAt: lastSyncAt?.toISOString() ?? new Date().toISOString(),
+      syncedAt: new Date().toISOString(),
+      skipped: true,
+      error:
+        'Sync already running (started by scheduler). Wait 2–5 minutes and try again, or check Railway logs.',
     };
   }
 
   syncInProgress = true;
   try {
-    // Always discover — namespace is not persisted between HTTP requests on Railway
-    const discovery = await discoverCasesRoot();
+    let casesRoot = '';
+    let casesRootSource: string | null = null;
+    let namespaceId: string | null = getEnv().DROPBOX_NAMESPACE_ID ?? null;
+    let discoveryTried: DropboxSyncResult['discoveryTried'];
 
-    if (!discovery.path) {
-      logger.error('Dropbox cases root not found', { tried: discovery.tried });
+    // Fast path: env vars you already confirmed work
+    const fromEnv = await resolveCasesRootFromEnv();
+    if (fromEnv) {
+      casesRoot = fromEnv.path;
+      casesRootSource = 'env';
+      namespaceId = fromEnv.namespaceId;
+      logger.info('Using Dropbox root from env', fromEnv);
+    } else {
+      logger.info('Env fast path failed, running full discovery');
+      const discovery = await discoverCasesRoot();
+      discoveryTried = discovery.tried;
+
+      if (!discovery.path) {
+        const connErr = discovery.dropboxConnection.error;
+        return {
+          casesRootUsed: '',
+          casesRootSource: null,
+          namespaceId: discovery.namespaceId,
+          caseFoldersFound: 0,
+          casesLinked: 0,
+          subfoldersIndexed: 0,
+          unmatchedDropboxFolders: [],
+          discoveryTried: discovery.tried,
+          syncedAt: new Date().toISOString(),
+          error: connErr ?? 'Could not find RAMOS JAMES LAW CASES in Dropbox. Set DROPBOX_NAMESPACE_ID=13922258995 in Railway.',
+        };
+      }
+
+      casesRoot = discovery.path;
+      casesRootSource = discovery.source;
+      namespaceId = discovery.namespaceId;
+    }
+
+    const dropboxCaseFolders = await listCaseFolders(casesRoot, namespaceId);
+    if (dropboxCaseFolders.length === 0) {
       return {
-        casesRootUsed: '',
-        casesRootSource: null,
-        namespaceId: discovery.namespaceId,
+        casesRootUsed: casesRoot,
+        casesRootSource,
+        namespaceId,
         caseFoldersFound: 0,
         casesLinked: 0,
         subfoldersIndexed: 0,
         unmatchedDropboxFolders: [],
-        discoveryTried: discovery.tried,
+        discoveryTried,
         syncedAt: new Date().toISOString(),
+        error: `Listed 0 folders at ${casesRoot}. Check DROPBOX_NAMESPACE_ID in Railway.`,
       };
     }
-
-    const casesRoot = discovery.path;
-    const casesRootSource = discovery.source;
-    const namespaceId = discovery.namespaceId;
-    const dropboxCaseFolders = await listCaseFolders(casesRoot);
 
     const knownCases = await listCases();
     const knownByNumber = new Map(knownCases.map((c) => [c.case_number, c]));
 
-    let casesLinked = 0;
-    let subfoldersIndexed = 0;
+    const folderRows: Array<{
+      case_number: string;
+      folder_label: string;
+      dropbox_path: string;
+    }> = [];
     const unmatchedDropboxFolders: string[] = [];
+    let casesLinked = 0;
 
     for (const entry of dropboxCaseFolders) {
       const caseNumber = parseCaseNumberFromDropboxFolder(entry.name);
@@ -92,8 +141,7 @@ export async function syncDropboxStructure(): Promise<DropboxSyncResult> {
         continue;
       }
 
-      const known = knownByNumber.get(caseNumber);
-      if (known) {
+      if (knownByNumber.has(caseNumber)) {
         await updateCaseDropboxFolderName(caseNumber, entry.name);
         casesLinked++;
       } else {
@@ -102,11 +150,15 @@ export async function syncDropboxStructure(): Promise<DropboxSyncResult> {
 
       const rootPath = caseRootPath(casesRoot, entry.name);
       for (const label of RJL_STANDARD_SUBFOLDERS) {
-        const dropboxPath = `${rootPath}/${label}`.replace(/\/+/g, '/');
-        await upsertCaseFolder(caseNumber, label, dropboxPath);
-        subfoldersIndexed++;
+        folderRows.push({
+          case_number: caseNumber,
+          folder_label: label,
+          dropbox_path: `${rootPath}/${label}`.replace(/\/+/g, '/'),
+        });
       }
     }
+
+    const subfoldersIndexed = await batchUpsertCaseFolders(folderRows);
 
     lastSyncAt = new Date();
     const result: DropboxSyncResult = {
@@ -117,12 +169,25 @@ export async function syncDropboxStructure(): Promise<DropboxSyncResult> {
       casesLinked,
       subfoldersIndexed,
       unmatchedDropboxFolders: unmatchedDropboxFolders.slice(0, 20),
-      discoveryTried: discovery.tried,
+      discoveryTried,
       syncedAt: lastSyncAt.toISOString(),
     };
 
     logger.info('Dropbox structure sync complete', { ...result });
     return result;
+  } catch (err) {
+    logger.error('Dropbox sync error', { err: String(err) });
+    return {
+      casesRootUsed: '',
+      casesRootSource: null,
+      namespaceId: null,
+      caseFoldersFound: 0,
+      casesLinked: 0,
+      subfoldersIndexed: 0,
+      unmatchedDropboxFolders: [],
+      syncedAt: new Date().toISOString(),
+      error: err instanceof Error ? err.message : String(err),
+    };
   } finally {
     syncInProgress = false;
   }
@@ -144,12 +209,17 @@ export function startDropboxSyncScheduler(intervalMinutes: number): void {
   if (intervalMinutes <= 0) return;
 
   const run = () => {
+    if (syncInProgress) {
+      logger.info('Skipping scheduled sync — previous sync still running');
+      return;
+    }
     syncDropboxStructure().catch((err) => {
       logger.error('Scheduled Dropbox sync failed', { err: String(err) });
     });
   };
 
-  setTimeout(run, 15_000);
+  // Delay first sync so deploy + manual testing isn't blocked
+  setTimeout(run, 120_000);
   setInterval(run, intervalMinutes * 60 * 1000);
-  logger.info('Dropbox sync scheduler started', { intervalMinutes });
+  logger.info('Dropbox sync scheduler started', { intervalMinutes, firstRunDelaySec: 120 });
 }
