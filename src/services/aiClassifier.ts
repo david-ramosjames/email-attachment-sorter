@@ -22,7 +22,7 @@ function buildCandidatePrompt(candidates: CaseCandidate[]): string {
   return candidates
     .map((c, i) => {
       const folders = c.folders.map((f) => f.folder_label).join(', ') || 'none indexed';
-      return `[${i + 1}] id=${c.case.id} case_name="${c.case.case_name}" client="${c.case.client_name}" cause="${c.case.cause_number ?? 'n/a'}" folders=[${folders}] match_score=${c.matchScore} reasons=${c.matchReasons.join('; ')}`;
+      return `[${i + 1}] case_number="${c.case.case_number}" slack_channel="${c.case.slack_channel_name}" folders=[${folders}] match_score=${c.matchScore} reasons=${c.matchReasons.join('; ')}`;
     })
     .join('\n');
 }
@@ -30,9 +30,9 @@ function buildCandidatePrompt(candidates: CaseCandidate[]): string {
 const classificationSchema = {
   type: 'object' as const,
   properties: {
-    suggested_case_id: {
+    suggested_case_number: {
       type: ['string', 'null'] as const,
-      description: 'UUID from candidate list, or null if needs_attention',
+      description: 'case_number from candidate list, or null if needs_attention',
     },
     suggested_folder_path: {
       type: ['string', 'null'] as const,
@@ -46,7 +46,7 @@ const classificationSchema = {
     reason: { type: 'string' as const },
   },
   required: [
-    'suggested_case_id',
+    'suggested_case_number',
     'suggested_folder_path',
     'document_type',
     'confidence',
@@ -61,7 +61,7 @@ export async function classifyDocument(
 ): Promise<ClassificationResult> {
   if (candidates.length === 0) {
     return {
-      suggestedCaseId: null,
+      suggestedCaseNumber: null,
       suggestedFolderPath: null,
       documentType: 'needs_attention',
       confidence: 0,
@@ -70,19 +70,21 @@ export async function classifyDocument(
     };
   }
 
-  const candidateIds = new Set(candidates.map((c) => c.case.id));
+  const candidateNumbers = new Set(candidates.map((c) => c.case.case_number));
   const validFolders = new Map<string, Set<string>>();
   for (const c of candidates) {
     validFolders.set(
-      c.case.id,
+      c.case.case_number,
       new Set(c.folders.map((f) => f.dropbox_path))
     );
   }
 
   const systemPrompt = `You are a legal document filing assistant for Ramos James Law.
-You MUST choose ONLY from the provided case candidates by using their exact id UUID.
-You MUST NOT invent case names, client names, or case IDs not in the list.
-If no candidate is a confident match, set suggested_case_id to null and document_type to "needs_attention".
+You MUST choose ONLY from the provided case candidates by using their exact case_number.
+Each candidate's slack_channel field is the primary human-readable case label (often "Client Name - case ref").
+Prefer matching by client/name signals in the email over bare case numbers.
+You MUST NOT invent case numbers or Slack channel names not in the list.
+If no candidate is a confident match, set suggested_case_number to null and document_type to "needs_attention".
 Folder paths must come from the candidate's indexed folders only.
 Document types: ${DOCUMENT_TYPES.join(', ')}.
 Return strict JSON only.`;
@@ -120,31 +122,31 @@ ${buildCandidatePrompt(candidates)}`;
   }
 
   const parsed = JSON.parse(content) as {
-    suggested_case_id: string | null;
+    suggested_case_number: string | null;
     suggested_folder_path: string | null;
     document_type: string;
     confidence: number;
     reason: string;
   };
 
-  let suggestedCaseId = parsed.suggested_case_id;
+  let suggestedCaseNumber = parsed.suggested_case_number;
   let suggestedFolderPath = parsed.suggested_folder_path;
   let documentType = parsed.document_type as DocumentType | 'needs_attention';
   let confidence = parsed.confidence;
   let reason = parsed.reason;
 
-  if (suggestedCaseId && !candidateIds.has(suggestedCaseId)) {
-    suggestedCaseId = null;
+  if (suggestedCaseNumber && !candidateNumbers.has(suggestedCaseNumber)) {
+    suggestedCaseNumber = null;
     suggestedFolderPath = null;
     documentType = 'needs_attention';
     confidence = 0;
-    reason = 'AI returned case ID not in candidate list — rejected';
+    reason = 'AI returned case number not in candidate list — rejected';
   }
 
-  if (suggestedCaseId && suggestedFolderPath) {
-    const allowed = validFolders.get(suggestedCaseId);
+  if (suggestedCaseNumber && suggestedFolderPath) {
+    const allowed = validFolders.get(suggestedCaseNumber);
     if (allowed && allowed.size > 0 && !allowed.has(suggestedFolderPath)) {
-      const match = candidates.find((c) => c.case.id === suggestedCaseId);
+      const match = candidates.find((c) => c.case.case_number === suggestedCaseNumber);
       suggestedFolderPath = match?.folders[0]?.dropbox_path ?? null;
       reason += ' (folder adjusted to indexed path)';
     }
@@ -152,11 +154,11 @@ ${buildCandidatePrompt(candidates)}`;
 
   const needsAttention =
     documentType === 'needs_attention' ||
-    !suggestedCaseId ||
+    !suggestedCaseNumber ||
     confidence < CONFIDENCE_THRESHOLD;
 
   return {
-    suggestedCaseId,
+    suggestedCaseNumber,
     suggestedFolderPath,
     documentType: needsAttention ? 'needs_attention' : (documentType as DocumentType),
     confidence,

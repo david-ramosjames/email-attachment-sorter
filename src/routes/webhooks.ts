@@ -119,8 +119,8 @@ webhooksRouter.post('/webhooks/slack/interactions', async (req, res) => {
         await import('../db/supabase.js').then((m) =>
           m.updateFileSorterItem(itemId, { status: 'failed' })
         );
-        const caseRow = item.suggested_case_id
-          ? await import('../db/supabase.js').then((m) => m.getCaseById(item.suggested_case_id!))
+        const caseRow = item.suggested_case_number
+          ? await import('../db/supabase.js').then((m) => m.getCaseById(item.suggested_case_number!))
           : null;
         await slackService.updateQueueMessage(
           { ...item, status: 'failed' },

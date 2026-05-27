@@ -20,6 +20,22 @@ export function getSupabase(): SupabaseClient {
   return client;
 }
 
+function dropboxRootForCase(caseNumber: string): string {
+  const root = getEnv().DROPBOX_CASES_ROOT.replace(/\/+$/, '');
+  return `${root}/${caseNumber}`.replace(/\/+/g, '/');
+}
+
+export function mapSlackChannelToCase(row: CaseSlackChannel): Case {
+  return {
+    id: row.case_number,
+    case_number: row.case_number,
+    slack_channel_name: row.slack_channel_name,
+    slack_channel_id: row.slack_channel_id,
+    topic_stage: row.topic_stage,
+    dropbox_root_path: dropboxRootForCase(row.case_number),
+  };
+}
+
 const TEMP_BUCKET = 'file-sorter-temp';
 
 export async function uploadTempAttachment(
@@ -51,43 +67,42 @@ export async function downloadTempAttachment(
 }
 
 export async function searchCases(query: {
-  clientName?: string;
-  causeNumber?: string;
   caseNumber?: string;
   keywords?: string[];
 }): Promise<Case[]> {
   const supabase = getSupabase();
-  let q = supabase.from('cases').select('*').eq('status', 'active');
+  let q = supabase.from('case_slack_channels').select('*');
 
-  if (query.causeNumber) {
-    q = q.ilike('cause_number', `%${query.causeNumber}%`);
-  } else if (query.caseNumber) {
+  if (query.caseNumber) {
     q = q.ilike('case_number', `%${query.caseNumber}%`);
-  } else if (query.clientName) {
-    q = q.ilike('client_name', `%${query.clientName}%`);
   } else if (query.keywords?.length) {
     const term = query.keywords[0];
     q = q.or(
-      `client_name.ilike.%${term}%,case_name.ilike.%${term}%,cause_number.ilike.%${term}%`
+      `case_number.ilike.%${term}%,slack_channel_name.ilike.%${term}%`
     );
   } else {
-    const { data } = await supabase.from('cases').select('*').eq('status', 'active').limit(50);
-    return (data ?? []) as Case[];
+    const { data, error } = await supabase
+      .from('case_slack_channels')
+      .select('*')
+      .limit(50);
+    if (error) throw new Error(`Case search failed: ${error.message}`);
+    return (data ?? []).map((row) => mapSlackChannelToCase(row as CaseSlackChannel));
   }
 
   const { data, error } = await q.limit(20);
   if (error) throw new Error(`Case search failed: ${error.message}`);
-  return (data ?? []) as Case[];
+  return (data ?? []).map((row) => mapSlackChannelToCase(row as CaseSlackChannel));
 }
 
-export async function getCaseById(id: string): Promise<Case | null> {
+/** @param caseNumber case_slack_channels.case_number */
+export async function getCaseById(caseNumber: string): Promise<Case | null> {
   const { data, error } = await getSupabase()
-    .from('cases')
+    .from('case_slack_channels')
     .select('*')
-    .eq('id', id)
-    .single();
-  if (error) return null;
-  return data as Case;
+    .eq('case_number', caseNumber)
+    .maybeSingle();
+  if (error || !data) return null;
+  return mapSlackChannelToCase(data as CaseSlackChannel);
 }
 
 export async function getSlackChannelForCase(
@@ -105,36 +120,42 @@ export async function getSlackChannelForCase(
 
 export async function getCaseByName(name: string): Promise<Case | null> {
   const { data, error } = await getSupabase()
-    .from('cases')
+    .from('case_slack_channels')
     .select('*')
-    .or(`case_name.ilike.%${name}%,client_name.ilike.%${name}%`)
-    .eq('status', 'active')
+    .or(`slack_channel_name.ilike.%${name}%,case_number.ilike.%${name}%`)
     .limit(1)
     .maybeSingle();
-  if (error) return null;
-  return data as Case | null;
+  if (error || !data) return null;
+  return mapSlackChannelToCase(data as CaseSlackChannel);
 }
 
-export async function getFoldersForCase(caseId: string): Promise<CaseFolder[]> {
+export async function getFoldersForCase(caseNumber: string): Promise<CaseFolder[]> {
   const { data, error } = await getSupabase()
     .from('case_folders')
     .select('*')
-    .eq('case_id', caseId);
-  if (error) throw new Error(`Folder fetch failed: ${error.message}`);
+    .eq('case_number', caseNumber);
+  if (error) {
+    // case_folders is optional until Dropbox reindex is run
+    return [];
+  }
   return (data ?? []) as CaseFolder[];
+}
+
+export async function listAllCases(): Promise<Case[]> {
+  return listCases();
 }
 
 export async function getSenderHistory(fromEmail: string): Promise<string[]> {
   const { data } = await getSupabase()
     .from('file_sorter_items')
-    .select('final_case_id')
+    .select('final_case_number')
     .eq('from_email', fromEmail)
     .eq('status', 'saved')
-    .not('final_case_id', 'is', null)
+    .not('final_case_number', 'is', null)
     .order('created_at', { ascending: false })
     .limit(10);
   const ids = (data ?? [])
-    .map((r) => r.final_case_id as string)
+    .map((r) => r.final_case_number as string)
     .filter(Boolean);
   return [...new Set(ids)];
 }
@@ -194,23 +215,23 @@ export async function listFileSorterItems(opts?: {
 
 export async function listCases(): Promise<Case[]> {
   const { data, error } = await getSupabase()
-    .from('cases')
+    .from('case_slack_channels')
     .select('*')
-    .order('case_name');
+    .order('case_number');
   if (error) throw new Error(`List cases failed: ${error.message}`);
-  return (data ?? []) as Case[];
+  return (data ?? []).map((row) => mapSlackChannelToCase(row as CaseSlackChannel));
 }
 
 export async function upsertCaseFolder(
-  caseId: string,
+  caseNumber: string,
   folderLabel: string,
   dropboxPath: string
 ): Promise<CaseFolder> {
   const { data, error } = await getSupabase()
     .from('case_folders')
     .upsert(
-      { case_id: caseId, folder_label: folderLabel, dropbox_path: dropboxPath },
-      { onConflict: 'case_id,folder_label' }
+      { case_number: caseNumber, folder_label: folderLabel, dropbox_path: dropboxPath },
+      { onConflict: 'case_number,folder_label' }
     )
     .select()
     .single();

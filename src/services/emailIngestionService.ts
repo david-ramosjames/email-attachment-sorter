@@ -97,7 +97,7 @@ async function processSingleAttachment(
     attachment_mime_type: attachment.mimeType,
     attachment_size: attachment.size,
     temp_storage_url: tempStorageUrl,
-    suggested_case_id: classification.suggestedCaseId,
+    suggested_case_number: classification.suggestedCaseNumber,
     suggested_folder_path: classification.suggestedFolderPath,
     suggested_document_type:
       classification.documentType === 'needs_attention'
@@ -106,7 +106,7 @@ async function processSingleAttachment(
     ai_confidence: classification.confidence,
     ai_reason: classification.reason,
     status,
-    final_case_id: null,
+    final_case_number: null,
     final_dropbox_path: null,
     dropbox_permalink: null,
     slack_queue_message_ts: null,
@@ -122,14 +122,14 @@ async function processSingleAttachment(
   });
 
   await auditService.log(item.id, 'classification_complete', {
-    suggestedCaseId: classification.suggestedCaseId,
+    suggestedCaseNumber: classification.suggestedCaseNumber,
     confidence: classification.confidence,
     reason: classification.reason,
     candidateCount: candidates.length,
   });
 
-  const caseRow = classification.suggestedCaseId
-    ? await getCaseById(classification.suggestedCaseId)
+  const caseRow = classification.suggestedCaseNumber
+    ? await getCaseById(classification.suggestedCaseNumber)
     : null;
 
   const slackMsg = await slackService.postQueueItem(item, caseRow);

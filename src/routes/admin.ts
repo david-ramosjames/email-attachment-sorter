@@ -30,13 +30,13 @@ adminRouter.get('/admin/cases', async (_req, res) => {
 
 adminRouter.post('/admin/reindex-dropbox-folders', async (req, res) => {
   try {
-    const caseId = req.body?.caseId as string | undefined;
-    if (!caseId) {
-      res.status(400).json({ error: 'caseId is required' });
+    const caseNumber = req.body?.caseNumber as string | undefined;
+    if (!caseNumber) {
+      res.status(400).json({ error: 'caseNumber is required' });
       return;
     }
-    const count = await reindexDropboxFoldersForCase(caseId);
-    res.json({ caseId, foldersIndexed: count });
+    const count = await reindexDropboxFoldersForCase(caseNumber);
+    res.json({ caseNumber, foldersIndexed: count });
   } catch (err) {
     logger.error('Reindex failed', { err: String(err) });
     res.status(500).json({

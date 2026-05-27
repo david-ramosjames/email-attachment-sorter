@@ -19,14 +19,14 @@ import { parseThreadReply } from '../utils/threadParser.js';
 import { logger } from '../utils/logger.js';
 
 async function resolveFinalPaths(itemId: string): Promise<{
-  caseId: string;
+  caseNumber: string;
   folderPath: string;
   caseRow: NonNullable<Awaited<ReturnType<typeof getCaseById>>>;
 }> {
   const item = await getFileSorterItem(itemId);
   if (!item) throw new Error('Item not found');
 
-  let caseId = item.final_case_id ?? item.suggested_case_id;
+  let caseNumber = item.final_case_number ?? item.suggested_case_number;
   let folderPath = item.final_dropbox_path ?? item.suggested_folder_path;
 
   if (item.slack_queue_channel_id && item.slack_queue_message_ts) {
@@ -40,15 +40,15 @@ async function resolveFinalPaths(itemId: string): Promise<{
       if (override.caseName) {
         const matched = await getCaseByName(override.caseName);
         if (matched) {
-          caseId = matched.id;
+          caseNumber = matched.case_number;
           await auditService.log(itemId, 'thread_override', {
             caseName: override.caseName,
-            caseId: matched.id,
+            caseNumber: matched.case_number,
           });
         }
       }
-      if (override.folderLabel && caseId) {
-        const folders = await getFoldersForCase(caseId);
+      if (override.folderLabel && caseNumber) {
+        const folders = await getFoldersForCase(caseNumber);
         const folder = folders.find(
           (f) => f.folder_label.toLowerCase() === override.folderLabel!.toLowerCase()
         );
@@ -58,8 +58,8 @@ async function resolveFinalPaths(itemId: string): Promise<{
             folderLabel: override.folderLabel,
             dropboxPath: folder.dropbox_path,
           });
-        } else if (caseId) {
-          const caseRow = await getCaseById(caseId);
+        } else if (caseNumber) {
+          const caseRow = await getCaseById(caseNumber);
           if (caseRow) {
             folderPath = `${caseRow.dropbox_root_path}/${override.folderLabel}`;
           }
@@ -68,14 +68,14 @@ async function resolveFinalPaths(itemId: string): Promise<{
     }
   }
 
-  if (!caseId || !folderPath) {
+  if (!caseNumber || !folderPath) {
     throw new Error('Case and folder must be set before approval (use thread overrides or AI suggestion)');
   }
 
-  const caseRow = await getCaseById(caseId);
+  const caseRow = await getCaseById(caseNumber);
   if (!caseRow) throw new Error('Case not found');
 
-  return { caseId, folderPath, caseRow };
+  return { caseNumber, folderPath, caseRow };
 }
 
 export async function handleApprove(itemId: string, slackUserId: string): Promise<void> {
@@ -85,7 +85,7 @@ export async function handleApprove(itemId: string, slackUserId: string): Promis
     throw new Error(`Item already ${item.status}`);
   }
 
-  const { caseId, folderPath, caseRow } = await resolveFinalPaths(itemId);
+  const { caseNumber, folderPath, caseRow } = await resolveFinalPaths(itemId);
 
   const exists = await fileExistsInDropbox(folderPath, item.attachment_filename);
   if (exists) {
@@ -100,13 +100,13 @@ export async function handleApprove(itemId: string, slackUserId: string): Promis
 
   await updateFileSorterItem(itemId, {
     status: 'approved',
-    final_case_id: caseId,
+    final_case_number: caseNumber,
     final_dropbox_path: folderPath,
     reviewed_by_slack_user_id: slackUserId,
     reviewed_at: new Date().toISOString(),
   });
 
-  await auditService.log(itemId, 'approved', { caseId, folderPath }, slackUserId);
+  await auditService.log(itemId, 'approved', { caseNumber, folderPath }, slackUserId);
 
   const buffer = await downloadTempAttachment(itemId, item.attachment_filename);
   const upload = await uploadFileToDropbox(folderPath, item.attachment_filename, buffer);
@@ -163,8 +163,8 @@ export async function handleNeedsAttention(
 
   await auditService.log(itemId, 'needs_attention', {}, slackUserId);
 
-  const caseRow = updated.suggested_case_id
-    ? await getCaseById(updated.suggested_case_id)
+  const caseRow = updated.suggested_case_number
+    ? await getCaseById(updated.suggested_case_number)
     : null;
   await slackService.updateQueueMessage(updated, caseRow);
 }
@@ -181,20 +181,20 @@ export async function handleDoNotSort(itemId: string, slackUserId: string): Prom
 
   await auditService.log(itemId, 'ignored', {}, slackUserId);
 
-  const caseRow = updated.suggested_case_id
-    ? await getCaseById(updated.suggested_case_id)
+  const caseRow = updated.suggested_case_number
+    ? await getCaseById(updated.suggested_case_number)
     : null;
   await slackService.updateQueueMessage(updated, caseRow, { disabled: true });
 }
 
-export async function reindexDropboxFoldersForCase(caseId: string): Promise<number> {
-  const caseRow = await getCaseById(caseId);
+export async function reindexDropboxFoldersForCase(caseNumber: string): Promise<number> {
+  const caseRow = await getCaseById(caseNumber);
   if (!caseRow) throw new Error('Case not found');
 
   const folders = await listCaseFolders(caseRow.dropbox_root_path);
   for (const f of folders) {
-    await upsertCaseFolder(caseId, f.name, f.path);
+    await upsertCaseFolder(caseNumber, f.name, f.path);
   }
-  logger.info('Reindexed case folders', { caseId, count: folders.length });
+  logger.info('Reindexed case folders', { caseNumber, count: folders.length });
   return folders.length;
 }

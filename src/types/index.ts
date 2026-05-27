@@ -6,19 +6,15 @@ export type FileSorterItemStatus =
   | 'ignored'
   | 'failed';
 
-export type CaseStatus = 'active' | 'closed' | 'archived';
-
+/** Case record sourced from case_slack_channels (+ computed Dropbox path). */
 export interface Case {
+  /** Same as case_number — used as identifier throughout the app */
   id: string;
-  case_name: string;
-  case_number: string | null;
-  client_name: string;
-  cause_number: string | null;
-  dropbox_root_path: string;
+  case_number: string;
+  slack_channel_name: string;
   slack_channel_id: string | null;
-  status: CaseStatus;
-  created_at: string;
-  updated_at: string;
+  topic_stage: string | null;
+  dropbox_root_path: string;
 }
 
 export interface CaseSlackChannel {
@@ -32,7 +28,7 @@ export interface CaseSlackChannel {
 
 export interface CaseFolder {
   id: string;
-  case_id: string;
+  case_number: string;
   folder_label: string;
   dropbox_path: string;
   created_at: string;
@@ -50,13 +46,13 @@ export interface FileSorterItem {
   attachment_mime_type: string | null;
   attachment_size: number | null;
   temp_storage_url: string | null;
-  suggested_case_id: string | null;
+  suggested_case_number: string | null;
   suggested_folder_path: string | null;
   suggested_document_type: string | null;
   ai_confidence: number | null;
   ai_reason: string | null;
   status: FileSorterItemStatus;
-  final_case_id: string | null;
+  final_case_number: string | null;
   final_dropbox_path: string | null;
   dropbox_permalink: string | null;
   slack_queue_message_ts: string | null;
@@ -100,9 +96,7 @@ export interface InboundAttachment {
   filename: string;
   mimeType: string;
   size: number;
-  /** Base64-encoded file content */
   contentBase64?: string;
-  /** URL to fetch attachment (provider-specific) */
   downloadUrl?: string;
 }
 
@@ -126,7 +120,7 @@ export type DocumentType =
   | 'Misc';
 
 export interface ClassificationResult {
-  suggestedCaseId: string | null;
+  suggestedCaseNumber: string | null;
   suggestedFolderPath: string | null;
   documentType: DocumentType | 'needs_attention';
   confidence: number;

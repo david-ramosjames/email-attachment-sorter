@@ -59,8 +59,8 @@ function buildQueueBlocks(
   const disabled = options?.disabled ?? false;
   const status = options?.statusOverride ?? item.status;
   const caseLabel = caseRow
-    ? `${caseRow.case_name} (${caseRow.client_name})`
-    : item.suggested_case_id ?? '—';
+    ? `${caseRow.slack_channel_name} (${caseRow.case_number})`
+    : item.suggested_case_number ?? '—';
 
   const blocks: Record<string, unknown>[] = [
     {
