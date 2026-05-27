@@ -8,17 +8,17 @@ import {
   updateFileSorterItem,
   upsertCaseFolder,
 } from '../db/supabase.js';
-import { getEnv } from '../config/env.js';
 import {
-  parseCaseNumberFromDropboxFolder,
-  RJL_STANDARD_SUBFOLDERS,
-} from '../constants/rjlFolders.js';
-import {
+  getCasesRootPath,
   fileExistsInDropbox,
   generateDropboxPermalink,
   listCaseFolders,
   uploadFileToDropbox,
 } from './dropboxService.js';
+import {
+  parseCaseNumberFromDropboxFolder,
+  RJL_STANDARD_SUBFOLDERS,
+} from '../constants/rjlFolders.js';
 import { slackService } from './slackService.js';
 import { auditService } from './auditService.js';
 import { parseThreadReply } from '../utils/threadParser.js';
@@ -197,7 +197,7 @@ export async function reindexDropboxFoldersForCase(caseNumber: string): Promise<
   const caseRow = await getCaseById(caseNumber);
   if (!caseRow) throw new Error('Case not found');
 
-  const root = getEnv().DROPBOX_CASES_ROOT.replace(/\/+$/, '');
+  const root = getCasesRootPath().replace(/\/+$/, '');
   const dropboxCaseFolders = await listCaseFolders(root);
   const match = dropboxCaseFolders.find(
     (f) => parseCaseNumberFromDropboxFolder(f.name) === caseNumber

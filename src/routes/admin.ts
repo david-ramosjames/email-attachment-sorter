@@ -6,6 +6,7 @@ import {
   getLastDropboxSyncAt,
   syncDropboxStructure,
 } from '../services/dropboxSyncService.js';
+import { discoverCasesRoot, getCasesRootPath } from '../services/dropboxService.js';
 import { logger } from '../utils/logger.js';
 
 export const adminRouter = Router();
@@ -63,5 +64,21 @@ adminRouter.post('/admin/sync-dropbox-structure', async (_req, res) => {
 });
 
 adminRouter.get('/admin/dropbox-sync-status', (_req, res) => {
-  res.json({ lastSyncAt: getLastDropboxSyncAt() });
+  res.json({
+    lastSyncAt: getLastDropboxSyncAt(),
+    casesRootPath: getCasesRootPath(),
+  });
+});
+
+/** Discover RAMOS JAMES LAW CASES root without full index. */
+adminRouter.post('/admin/discover-dropbox-root', async (_req, res) => {
+  try {
+    const result = await discoverCasesRoot();
+    res.json(result);
+  } catch (err) {
+    logger.error('Dropbox discovery failed', { err: String(err) });
+    res.status(500).json({
+      error: err instanceof Error ? err.message : 'Discovery failed',
+    });
+  }
 });

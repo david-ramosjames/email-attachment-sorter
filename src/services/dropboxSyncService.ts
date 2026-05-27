@@ -8,14 +8,21 @@ import {
   parseCaseNumberFromDropboxFolder,
   RJL_STANDARD_SUBFOLDERS,
 } from '../constants/rjlFolders.js';
-import { listCaseFolders } from './dropboxService.js';
+import {
+  discoverCasesRoot,
+  getCasesRootPath,
+  listCaseFolders,
+} from './dropboxService.js';
 import { logger } from '../utils/logger.js';
 
 export interface DropboxSyncResult {
+  casesRootUsed: string;
+  casesRootSource: string | null;
   caseFoldersFound: number;
   casesLinked: number;
   subfoldersIndexed: number;
   unmatchedDropboxFolders: string[];
+  discoveryTried?: Array<{ path: string; source: string; folderCount: number }>;
   syncedAt: string;
 }
 
@@ -26,19 +33,21 @@ export function getLastDropboxSyncAt(): string | null {
   return lastSyncAt?.toISOString() ?? null;
 }
 
-function caseRootPath(dropboxFolderName: string): string {
-  const root = getEnv().DROPBOX_CASES_ROOT.replace(/\/+$/, '');
+function caseRootPath(casesRoot: string, dropboxFolderName: string): string {
+  const root = casesRoot.replace(/\/+$/, '');
   return `${root}/${dropboxFolderName}`.replace(/\/+/g, '/');
 }
 
 /**
- * Scans DROPBOX_CASES_ROOT for case folders, links them to case_slack_channels
- * by leading case number, and indexes the standard RJL subfolders.
+ * Scans Dropbox cases root for case folders, links to case_slack_channels,
+ * and indexes standard RJL subfolders.
  */
 export async function syncDropboxStructure(): Promise<DropboxSyncResult> {
   if (syncInProgress) {
     logger.info('Dropbox sync already in progress, skipping');
     return {
+      casesRootUsed: getCasesRootPath(),
+      casesRootSource: null,
       caseFoldersFound: 0,
       casesLinked: 0,
       subfoldersIndexed: 0,
@@ -49,8 +58,25 @@ export async function syncDropboxStructure(): Promise<DropboxSyncResult> {
 
   syncInProgress = true;
   try {
-    const root = getEnv().DROPBOX_CASES_ROOT;
-    const dropboxCaseFolders = await listCaseFolders(root);
+    let casesRoot = getCasesRootPath();
+    let casesRootSource: string | null = 'cached_or_env';
+    let discoveryTried: DropboxSyncResult['discoveryTried'];
+
+    let dropboxCaseFolders = await listCaseFolders(casesRoot);
+
+    if (dropboxCaseFolders.length === 0) {
+      logger.info('No folders at configured root, running Dropbox discovery');
+      const discovery = await discoverCasesRoot();
+      discoveryTried = discovery.tried;
+      if (discovery.path) {
+        casesRoot = discovery.path;
+        casesRootSource = discovery.source;
+        dropboxCaseFolders = await listCaseFolders(casesRoot);
+      } else {
+        logger.error('Dropbox cases root not found', { tried: discovery.tried });
+      }
+    }
+
     const knownCases = await listCases();
     const knownByNumber = new Map(knownCases.map((c) => [c.case_number, c]));
 
@@ -73,8 +99,7 @@ export async function syncDropboxStructure(): Promise<DropboxSyncResult> {
         unmatchedDropboxFolders.push(entry.name);
       }
 
-      // Index standard subfolders for every parsed case folder (even if not in Slack yet)
-      const rootPath = caseRootPath(entry.name);
+      const rootPath = caseRootPath(casesRoot, entry.name);
       for (const label of RJL_STANDARD_SUBFOLDERS) {
         const dropboxPath = `${rootPath}/${label}`.replace(/\/+/g, '/');
         await upsertCaseFolder(caseNumber, label, dropboxPath);
@@ -84,10 +109,13 @@ export async function syncDropboxStructure(): Promise<DropboxSyncResult> {
 
     lastSyncAt = new Date();
     const result: DropboxSyncResult = {
+      casesRootUsed: casesRoot,
+      casesRootSource,
       caseFoldersFound: dropboxCaseFolders.length,
       casesLinked,
       subfoldersIndexed,
-      unmatchedDropboxFolders,
+      unmatchedDropboxFolders: unmatchedDropboxFolders.slice(0, 20),
+      discoveryTried,
       syncedAt: lastSyncAt.toISOString(),
     };
 
@@ -98,7 +126,6 @@ export async function syncDropboxStructure(): Promise<DropboxSyncResult> {
   }
 }
 
-/** Run sync if stale; used before case matching on inbound email. */
 export async function syncDropboxStructureIfStale(maxAgeMinutes: number): Promise<void> {
   const stale =
     !lastSyncAt || Date.now() - lastSyncAt.getTime() > maxAgeMinutes * 60 * 1000;
@@ -120,7 +147,6 @@ export function startDropboxSyncScheduler(intervalMinutes: number): void {
     });
   };
 
-  // Initial sync shortly after boot (let server finish starting)
   setTimeout(run, 15_000);
   setInterval(run, intervalMinutes * 60 * 1000);
   logger.info('Dropbox sync scheduler started', { intervalMinutes });

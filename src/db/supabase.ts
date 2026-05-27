@@ -1,5 +1,6 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { getEnv } from '../config/env.js';
+import { getCasesRootPath } from '../services/dropboxService.js';
 import type {
   AuditEvent,
   Case,
@@ -21,7 +22,7 @@ export function getSupabase(): SupabaseClient {
 }
 
 function dropboxRootForCase(row: CaseSlackChannel): string {
-  const root = getEnv().DROPBOX_CASES_ROOT.replace(/\/+$/, '');
+  const root = getCasesRootPath().replace(/\/+$/, '');
   const folderName = row.dropbox_folder_name ?? row.case_number;
   return `${root}/${folderName}`.replace(/\/+/g, '/');
 }
