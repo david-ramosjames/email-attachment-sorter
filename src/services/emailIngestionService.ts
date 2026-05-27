@@ -11,6 +11,7 @@ import { classifyDocument } from './aiClassifier.js';
 import { slackService } from './slackService.js';
 import { auditService } from './auditService.js';
 import { parseInboundEmail } from './emailIngestion/index.js';
+import { syncDropboxStructureIfStale } from './dropboxSyncService.js';
 import type { InboundAttachment, InboundEmailPayload } from '../types/index.js';
 import { logger } from '../utils/logger.js';
 
@@ -33,6 +34,9 @@ export async function processInboundEmail(
   headers: Record<string, string | string[] | undefined>,
   body: unknown
 ): Promise<{ processed: number; skipped: number }> {
+  // Refresh Dropbox index if stale (picks up new case folders)
+  await syncDropboxStructureIfStale(30);
+
   const payload = parseInboundEmail(headers, body);
 
   if (!payload.attachments.length) {

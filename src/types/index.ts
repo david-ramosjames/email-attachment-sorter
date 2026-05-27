@@ -21,6 +21,7 @@ export interface CaseSlackChannel {
   case_number: string;
   slack_channel_id: string | null;
   slack_channel_name: string;
+  dropbox_folder_name: string | null;
   topic_stage: string | null;
   synced_at: string;
   updated_at: string;

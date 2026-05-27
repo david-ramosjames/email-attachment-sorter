@@ -2,6 +2,10 @@ import { Router } from 'express';
 import { listCases, listFileSorterItems } from '../db/supabase.js';
 import type { FileSorterItemStatus } from '../types/index.js';
 import { reindexDropboxFoldersForCase } from '../services/fileSorterWorkflow.js';
+import {
+  getLastDropboxSyncAt,
+  syncDropboxStructure,
+} from '../services/dropboxSyncService.js';
 import { logger } from '../utils/logger.js';
 
 export const adminRouter = Router();
@@ -43,4 +47,21 @@ adminRouter.post('/admin/reindex-dropbox-folders', async (req, res) => {
       error: err instanceof Error ? err.message : 'Reindex failed',
     });
   }
+});
+
+/** Scan Dropbox for all case folders and index standard subfolders. */
+adminRouter.post('/admin/sync-dropbox-structure', async (_req, res) => {
+  try {
+    const result = await syncDropboxStructure();
+    res.json(result);
+  } catch (err) {
+    logger.error('Dropbox sync failed', { err: String(err) });
+    res.status(500).json({
+      error: err instanceof Error ? err.message : 'Dropbox sync failed',
+    });
+  }
+});
+
+adminRouter.get('/admin/dropbox-sync-status', (_req, res) => {
+  res.json({ lastSyncAt: getLastDropboxSyncAt() });
 });

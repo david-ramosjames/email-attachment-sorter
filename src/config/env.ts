@@ -10,8 +10,10 @@ const envSchema = z.object({
   SLACK_SIGNING_SECRET: z.string().min(1),
   SLACK_FILE_SORTER_QUEUE_CHANNEL_ID: z.string().min(1),
   DROPBOX_ACCESS_TOKEN: z.string().min(1),
-  /** Root Dropbox folder; case paths become {root}/{case_number} */
+  /** Root Dropbox folder containing all case folders */
   DROPBOX_CASES_ROOT: z.string().default('/RJL Cases'),
+  /** How often to scan Dropbox for new case folders (minutes). 0 = disabled. */
+  DROPBOX_SYNC_INTERVAL_MINUTES: z.coerce.number().default(60),
   INBOUND_EMAIL_WEBHOOK_SECRET: z.string().optional(),
 });
 

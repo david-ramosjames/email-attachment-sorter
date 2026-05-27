@@ -4,9 +4,15 @@ import {
   getCaseByName,
   getFileSorterItem,
   getFoldersForCase,
+  updateCaseDropboxFolderName,
   updateFileSorterItem,
   upsertCaseFolder,
 } from '../db/supabase.js';
+import { getEnv } from '../config/env.js';
+import {
+  parseCaseNumberFromDropboxFolder,
+  RJL_STANDARD_SUBFOLDERS,
+} from '../constants/rjlFolders.js';
 import {
   fileExistsInDropbox,
   generateDropboxPermalink,
@@ -191,10 +197,27 @@ export async function reindexDropboxFoldersForCase(caseNumber: string): Promise<
   const caseRow = await getCaseById(caseNumber);
   if (!caseRow) throw new Error('Case not found');
 
-  const folders = await listCaseFolders(caseRow.dropbox_root_path);
-  for (const f of folders) {
-    await upsertCaseFolder(caseNumber, f.name, f.path);
+  const root = getEnv().DROPBOX_CASES_ROOT.replace(/\/+$/, '');
+  const dropboxCaseFolders = await listCaseFolders(root);
+  const match = dropboxCaseFolders.find(
+    (f) => parseCaseNumberFromDropboxFolder(f.name) === caseNumber
+  );
+
+  const folderName = match?.name ?? caseRow.dropbox_root_path.split('/').pop() ?? caseNumber;
+  const caseRoot = `${root}/${folderName}`.replace(/\/+/g, '/');
+
+  if (match) {
+    await updateCaseDropboxFolderName(caseNumber, match.name);
   }
-  logger.info('Reindexed case folders', { caseNumber, count: folders.length });
-  return folders.length;
+
+  for (const label of RJL_STANDARD_SUBFOLDERS) {
+    await upsertCaseFolder(
+      caseNumber,
+      label,
+      `${caseRoot}/${label}`.replace(/\/+/g, '/')
+    );
+  }
+
+  logger.info('Reindexed case folders', { caseNumber, folderName });
+  return RJL_STANDARD_SUBFOLDERS.length;
 }

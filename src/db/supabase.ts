@@ -20,9 +20,10 @@ export function getSupabase(): SupabaseClient {
   return client;
 }
 
-function dropboxRootForCase(caseNumber: string): string {
+function dropboxRootForCase(row: CaseSlackChannel): string {
   const root = getEnv().DROPBOX_CASES_ROOT.replace(/\/+$/, '');
-  return `${root}/${caseNumber}`.replace(/\/+/g, '/');
+  const folderName = row.dropbox_folder_name ?? row.case_number;
+  return `${root}/${folderName}`.replace(/\/+/g, '/');
 }
 
 export function mapSlackChannelToCase(row: CaseSlackChannel): Case {
@@ -32,7 +33,7 @@ export function mapSlackChannelToCase(row: CaseSlackChannel): Case {
     slack_channel_name: row.slack_channel_name,
     slack_channel_id: row.slack_channel_id,
     topic_stage: row.topic_stage,
-    dropbox_root_path: dropboxRootForCase(row.case_number),
+    dropbox_root_path: dropboxRootForCase(row),
   };
 }
 
@@ -127,6 +128,17 @@ export async function getCaseByName(name: string): Promise<Case | null> {
     .maybeSingle();
   if (error || !data) return null;
   return mapSlackChannelToCase(data as CaseSlackChannel);
+}
+
+export async function updateCaseDropboxFolderName(
+  caseNumber: string,
+  dropboxFolderName: string
+): Promise<void> {
+  const { error } = await getSupabase()
+    .from('case_slack_channels')
+    .update({ dropbox_folder_name: dropboxFolderName, updated_at: new Date().toISOString() })
+    .eq('case_number', caseNumber);
+  if (error) throw new Error(`Update dropbox folder failed: ${error.message}`);
 }
 
 export async function getFoldersForCase(caseNumber: string): Promise<CaseFolder[]> {

@@ -8,6 +8,7 @@ import {
   type DocumentType,
   type MatchContext,
 } from '../types/index.js';
+import { DOCUMENT_TYPE_TO_SUBFOLDER } from '../constants/rjlFolders.js';
 
 let openai: OpenAI | null = null;
 
@@ -149,6 +150,17 @@ ${buildCandidatePrompt(candidates)}`;
       const match = candidates.find((c) => c.case.case_number === suggestedCaseNumber);
       suggestedFolderPath = match?.folders[0]?.dropbox_path ?? null;
       reason += ' (folder adjusted to indexed path)';
+    }
+  }
+
+  // Map document type → RJL subfolder when AI picked case but not path
+  if (suggestedCaseNumber && !suggestedFolderPath && documentType !== 'needs_attention') {
+    const subfolder = DOCUMENT_TYPE_TO_SUBFOLDER[documentType];
+    const match = candidates.find((c) => c.case.case_number === suggestedCaseNumber);
+    const folder = match?.folders.find((f) => f.folder_label === subfolder);
+    if (folder) {
+      suggestedFolderPath = folder.dropbox_path;
+      reason += ` (mapped ${documentType} → ${subfolder})`;
     }
   }
 
