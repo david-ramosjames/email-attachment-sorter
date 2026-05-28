@@ -80,6 +80,8 @@ export interface MatchContext {
   subject: string;
   bodyExcerpt: string;
   attachmentFilename: string;
+  /** Populated on second-pass classification after document extraction */
+  documentExcerpt?: string;
 }
 
 export interface InboundEmailPayload {
@@ -142,4 +144,4 @@ export const DOCUMENT_TYPES: DocumentType[] = [
   'Misc',
 ];
 
-export const CONFIDENCE_THRESHOLD = 0.75;
+export { CONFIDENCE_THRESHOLD } from '../constants/classification.js';

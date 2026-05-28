@@ -6,6 +6,10 @@ const envSchema = z.object({
   SUPABASE_SERVICE_ROLE_KEY: z.string().min(1),
   OPENAI_API_KEY: z.string().min(1),
   OPENAI_MODEL: z.string().default('gpt-4o-mini'),
+  /** Vision/OCR model for scanned PDFs and photos (defaults to OPENAI_MODEL) */
+  OPENAI_VISION_MODEL: z.string().optional(),
+  /** Re-analyze attachment when email-only confidence is below this (0–1) */
+  DOCUMENT_ANALYSIS_CONFIDENCE_THRESHOLD: z.coerce.number().min(0).max(1).default(0.5),
   SLACK_BOT_TOKEN: z.string().min(1),
   SLACK_SIGNING_SECRET: z.string().min(1),
   SLACK_FILE_SORTER_QUEUE_CHANNEL_ID: z.string().min(1),

@@ -34,7 +34,14 @@ function scoreCase(
 ): { score: number; reasons: string[] } {
   let score = 0;
   const reasons: string[] = [];
-  const combined = `${ctx.subject} ${ctx.bodyExcerpt} ${ctx.attachmentFilename}`.toLowerCase();
+  const combined = [
+    ctx.subject,
+    ctx.bodyExcerpt,
+    ctx.attachmentFilename,
+    ctx.documentExcerpt ?? '',
+  ]
+    .join(' ')
+    .toLowerCase();
   const channelNameLower = caseRow.slack_channel_name.toLowerCase();
   const caseNumberLower = caseRow.case_number.toLowerCase();
   const nameTokens = nameTokensFromChannel(caseRow.slack_channel_name);
@@ -84,7 +91,8 @@ export async function findCaseCandidates(ctx: MatchContext): Promise<CaseCandida
   const extractedNumber =
     extractCaseNumber(ctx.subject) ??
     extractCaseNumber(ctx.bodyExcerpt) ??
-    extractCaseNumber(ctx.attachmentFilename);
+    extractCaseNumber(ctx.attachmentFilename) ??
+    (ctx.documentExcerpt ? extractCaseNumber(ctx.documentExcerpt) : null);
 
   const scored = await Promise.all(
     allCases.map(async (caseRow) => {

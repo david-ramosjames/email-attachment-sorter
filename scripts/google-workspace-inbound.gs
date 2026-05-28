@@ -110,6 +110,12 @@ function processThread_(thread) {
     if (!message.getAttachments().length) return;
     if (hasLabel_(message, SCRIPT_CONFIG.PROCESSED_LABEL)) return;
 
+    if (!hasProcessableAttachments_(message)) {
+      markProcessed_(message);
+      Logger.log('Skipped (calendar invite only): %s (%s)', message.getSubject(), message.getId());
+      return;
+    }
+
     try {
       postMessageToWebhook_(message);
       markProcessed_(message);
@@ -125,6 +131,10 @@ function postMessageToWebhook_(message) {
   const payloadAttachments = [];
 
   attachments.forEach(function (att) {
+    if (isCalendarAttachment_(att)) {
+      Logger.log('Skipping calendar attachment: %s', att.getName());
+      return;
+    }
     const size = att.getSize();
     if (size > SCRIPT_CONFIG.MAX_ATTACHMENT_BYTES) {
       Logger.log('Skipping oversized attachment: %s (%s bytes)', att.getName(), size);
@@ -175,6 +185,25 @@ function postMessageToWebhook_(message) {
     throw new Error('Webhook HTTP ' + code + ': ' + body);
   }
   Logger.log('Webhook OK: %s', body);
+}
+
+/** Calendar invites (.ics) are not case documents — skip them. */
+function isCalendarAttachment_(att) {
+  const name = (att.getName() || '').toLowerCase();
+  const mime = (att.getContentType() || '').toLowerCase();
+  return (
+    name.endsWith('.ics') ||
+    mime === 'text/calendar' ||
+    mime.indexOf('application/ics') !== -1
+  );
+}
+
+function hasProcessableAttachments_(message) {
+  return message.getAttachments().some(function (att) {
+    if (isCalendarAttachment_(att)) return false;
+    if (att.getSize() > SCRIPT_CONFIG.MAX_ATTACHMENT_BYTES) return false;
+    return true;
+  });
 }
 
 function markProcessed_(message) {

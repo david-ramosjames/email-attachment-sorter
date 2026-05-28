@@ -6,13 +6,19 @@ import {
   updateFileSorterItem,
   uploadTempAttachment,
 } from '../db/supabase.js';
+import { getEnv } from '../config/env.js';
 import { findCaseCandidates } from './caseMatcher.js';
 import { classifyDocument } from './aiClassifier.js';
+import { extractDocumentExcerpt } from './documentExtractor.js';
 import { slackService } from './slackService.js';
 import { auditService } from './auditService.js';
 import { parseInboundEmail } from './emailIngestion/index.js';
 import { syncDropboxStructureIfStale } from './dropboxSyncService.js';
-import type { InboundAttachment, InboundEmailPayload } from '../types/index.js';
+import type {
+  InboundAttachment,
+  InboundEmailPayload,
+  MatchContext,
+} from '../types/index.js';
 import { logger } from '../utils/logger.js';
 
 async function resolveAttachmentBuffer(
@@ -75,7 +81,7 @@ async function processSingleAttachment(
     });
   }
 
-  const matchContext = {
+  const matchContext: MatchContext = {
     fromEmail: payload.fromEmail,
     toEmails: payload.toEmails,
     ccEmails: payload.ccEmails,
@@ -84,8 +90,44 @@ async function processSingleAttachment(
     attachmentFilename: attachment.filename,
   };
 
-  const candidates = await findCaseCandidates(matchContext);
-  const classification = await classifyDocument(matchContext, candidates);
+  let candidates = await findCaseCandidates(matchContext);
+  let classification = await classifyDocument(matchContext, candidates);
+  let documentExtraction: { method: string; excerptLength: number } | null = null;
+
+  const docThreshold = getEnv().DOCUMENT_ANALYSIS_CONFIDENCE_THRESHOLD;
+  if (classification.confidence < docThreshold) {
+    const extracted = await extractDocumentExcerpt(
+      buffer,
+      attachment.mimeType,
+      attachment.filename
+    );
+    if (extracted?.excerpt) {
+      matchContext.documentExcerpt = extracted.excerpt;
+      documentExtraction = {
+        method: extracted.method,
+        excerptLength: extracted.excerpt.length,
+      };
+      candidates = await findCaseCandidates(matchContext);
+      classification = await classifyDocument(matchContext, candidates, {
+        usedDocumentContent: true,
+      });
+      classification = {
+        ...classification,
+        reason: `[Email confidence below ${docThreshold}; analyzed attachment via ${extracted.method}] ${classification.reason}`,
+      };
+      logger.info('Second-pass classification with document content', {
+        itemId,
+        method: extracted.method,
+        confidence: classification.confidence,
+      });
+    } else {
+      logger.info('Document extraction skipped or empty', {
+        itemId,
+        filename: attachment.filename,
+        emailConfidence: classification.confidence,
+      });
+    }
+  }
 
   const status = classification.needsAttention ? 'needs_attention' : 'pending_review';
 
@@ -130,6 +172,7 @@ async function processSingleAttachment(
     confidence: classification.confidence,
     reason: classification.reason,
     candidateCount: candidates.length,
+    documentExtraction,
   });
 
   const caseRow = classification.suggestedCaseNumber

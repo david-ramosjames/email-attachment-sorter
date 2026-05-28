@@ -1,7 +1,7 @@
 import OpenAI from 'openai';
 import { getEnv } from '../config/env.js';
+import { CONFIDENCE_THRESHOLD } from '../constants/classification.js';
 import {
-  CONFIDENCE_THRESHOLD,
   DOCUMENT_TYPES,
   type CaseCandidate,
   type ClassificationResult,
@@ -58,7 +58,8 @@ const classificationSchema = {
 
 export async function classifyDocument(
   ctx: MatchContext,
-  candidates: CaseCandidate[]
+  candidates: CaseCandidate[],
+  options?: { usedDocumentContent?: boolean }
 ): Promise<ClassificationResult> {
   if (candidates.length === 0) {
     return {
@@ -90,12 +91,16 @@ Folder paths must come from the candidate's indexed folders only.
 Document types: ${DOCUMENT_TYPES.join(', ')}.
 Return strict JSON only.`;
 
+  const documentSection = ctx.documentExcerpt
+    ? `\nDocument content (from attachment${options?.usedDocumentContent ? ', email match was low confidence' : ''}):\n${ctx.documentExcerpt.slice(0, 4000)}`
+    : '';
+
   const userPrompt = `Email context:
 From: ${ctx.fromEmail}
 To: ${ctx.toEmails.join(', ')}
 Subject: ${ctx.subject}
 Body excerpt: ${ctx.bodyExcerpt.slice(0, 1500)}
-Attachment: ${ctx.attachmentFilename}
+Attachment filename: ${ctx.attachmentFilename}${documentSection}
 
 Candidate cases (choose ONLY from these):
 ${buildCandidatePrompt(candidates)}`;
