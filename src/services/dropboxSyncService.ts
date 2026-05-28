@@ -82,7 +82,10 @@ export async function syncDropboxStructure(): Promise<DropboxSyncResult> {
       namespaceId = fromEnv.namespaceId;
       logger.info('Using Dropbox root from env', fromEnv);
     } else {
-      logger.info('Env fast path failed, running full discovery');
+      logger.warn('Dropbox env fast path failed — check token, namespace, and cases root', {
+        dropboxCasesRoot: getEnv().DROPBOX_CASES_ROOT,
+        dropboxNamespaceId: getEnv().DROPBOX_NAMESPACE_ID ?? '(not set)',
+      });
       const discovery = await discoverCasesRoot();
       discoveryTried = discovery.tried;
 

@@ -335,7 +335,12 @@ export async function resolveCasesRootFromEnv(): Promise<{
   resolvedNamespaceId = ns;
   const { entries, error } = await listFolderEntriesInternal(root, ns);
   if (error) {
-    logger.warn('resolveCasesRootFromEnv failed', { root, error });
+    logger.warn('resolveCasesRootFromEnv failed', {
+      root,
+      namespaceId: ns,
+      error,
+      hint: 'Usually expired token, wrong DROPBOX_NAMESPACE_ID, or path not visible in that namespace',
+    });
     return null;
   }
   if (entries.length === 0) return null;
