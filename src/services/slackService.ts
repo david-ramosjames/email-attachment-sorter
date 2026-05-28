@@ -311,7 +311,7 @@ function buildQueueBlocks(
         },
         {
           type: 'button',
-          text: { type: 'plain_text', text: 'Change', emoji: true },
+          text: { type: 'plain_text', text: 'Change Case/Folder', emoji: true },
           action_id: actionIdFor('change', itemId),
           value: itemId,
         },
@@ -326,15 +326,6 @@ function buildQueueBlocks(
           text: { type: 'plain_text', text: 'Do Not Sort', emoji: true },
           action_id: actionIdFor('do_not_sort', itemId),
           value: itemId,
-        },
-      ],
-    });
-    blocks.push({
-      type: 'context',
-      elements: [
-        {
-          type: 'mrkdwn',
-          text: threadOverrideHelpText(),
         },
       ],
     });
@@ -443,8 +434,9 @@ export const slackService = {
       channel: item.slack_queue_channel_id,
       thread_ts: item.slack_queue_message_ts,
       text:
-        'Reply in this thread with overrides, then click Approve.\n' +
-        threadOverrideHelpText(),
+        '*How to change case or folder before Approve:*\n' +
+        threadOverrideHelpText() +
+        '\n\nReply in this thread with your values, then click Approve.',
     });
   },
 
