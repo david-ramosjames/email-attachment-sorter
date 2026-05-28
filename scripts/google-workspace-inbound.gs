@@ -19,6 +19,8 @@ const SCRIPT_CONFIG = {
   MAX_BODY_CHARS: 12000,
   /** Skip messages larger than this per attachment (bytes). Gmail/Apps Script limit ~25MB */
   MAX_ATTACHMENT_BYTES: 20 * 1024 * 1024,
+  /** From addresses to skip (lowercase); still marked processed so they are not retried */
+  IGNORED_SENDER_EMAILS: ['listsender-ttlaadvocates@lyris.ttla.com'],
 };
 
 function setup() {
@@ -113,6 +115,12 @@ function processThread_(thread) {
     if (!hasProcessableAttachments_(message)) {
       markProcessed_(message);
       Logger.log('Skipped (calendar invite only): %s (%s)', message.getSubject(), message.getId());
+      return;
+    }
+
+    if (isIgnoredSender_(message)) {
+      markProcessed_(message);
+      Logger.log('Skipped (ignored sender): %s from %s', message.getSubject(), message.getFrom());
       return;
     }
 
@@ -222,6 +230,14 @@ function hasLabel_(message, labelName) {
 function extractEmail_(raw) {
   const match = raw.match(/<([^>]+)>/);
   return (match ? match[1] : raw).trim();
+}
+
+function isIgnoredSender_(message) {
+  const from = extractEmail_(message.getFrom()).toLowerCase();
+  const ignored = SCRIPT_CONFIG.IGNORED_SENDER_EMAILS || [];
+  return ignored.some(function (addr) {
+    return from === String(addr).toLowerCase();
+  });
 }
 
 function parseAddressList_(raw) {

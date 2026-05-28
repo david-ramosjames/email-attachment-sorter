@@ -22,6 +22,7 @@ import type {
 } from '../types/index.js';
 import { extractPatientNamesFromText } from '../utils/patientNameExtract.js';
 import { buildSmartBodyExcerpt } from '../utils/emailBodyExcerpt.js';
+import { isIgnoredInboundSender } from '../constants/ignoredSenders.js';
 import { logger } from '../utils/logger.js';
 
 /** Shared state while processing all attachments in one inbound email. */
@@ -53,6 +54,14 @@ export async function processInboundEmail(
   await syncDropboxStructureIfStale(30);
 
   const payload = parseInboundEmail(headers, body);
+
+  if (isIgnoredInboundSender(payload.fromEmail)) {
+    logger.info('Skipping email from ignored sender', {
+      gmailMessageId: payload.gmailMessageId,
+      fromEmail: payload.fromEmail,
+    });
+    return { processed: 0, skipped: 1 };
+  }
 
   if (!payload.attachments.length) {
     logger.info('Skipping email with no attachments', {
