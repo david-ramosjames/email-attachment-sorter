@@ -169,6 +169,7 @@ export async function handleApprove(
     item: saved,
     dropboxLink: permalink,
     approvedByUserId: slackUserId,
+    fileBuffer: buffer,
   });
 
   if (!crossPosted) {
@@ -178,7 +179,7 @@ export async function handleApprove(
       {
         caseNumber: caseRow.case_number,
         slackChannelName: caseRow.slack_channel_name,
-        note: 'Invite the File Sorter bot to this case channel, or ensure channels:read scope is enabled.',
+        note: 'Invite the File Sorter bot to this case channel; ensure channels:read and files:write scopes are enabled.',
       },
       slackUserId
     );

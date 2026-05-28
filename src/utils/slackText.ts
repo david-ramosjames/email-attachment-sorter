@@ -29,3 +29,22 @@ export function slackSectionText(text: string): string {
     escapeSlackMrkdwn(truncateSlackField(text, SLACK_SECTION_TEXT_MAX))
   );
 }
+
+/** Slack mrkdwn hyperlink — must not be passed through escapeSlackMrkdwn. */
+export function slackMrkdwnLink(url: string, label: string): string {
+  const safeUrl = url.trim().replace(/[<>]/g, '');
+  const safeLabel = label.trim().replace(/[|<>]/g, '');
+  return `<${safeUrl}|${safeLabel}>`;
+}
+
+/** Escaped body plus unescaped links/mentions appended (for section blocks). */
+export function slackSectionWithExtras(
+  body: string,
+  extras: string[],
+  max = SLACK_SECTION_TEXT_MAX
+): string {
+  const suffix = extras.filter(Boolean).join('\n');
+  const room = max - suffix.length - (suffix ? 1 : 0);
+  const head = slackSectionText(truncateSlackField(body, Math.max(room, 0)));
+  return suffix ? `${head}\n${suffix}` : head;
+}

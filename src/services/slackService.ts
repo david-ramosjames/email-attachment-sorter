@@ -2,7 +2,12 @@ import { getEnv } from '../config/env.js';
 import { getSlackChannelForCase, updateCaseSlackChannelId } from '../db/supabase.js';
 import type { Case, FileSorterItem } from '../types/index.js';
 import { logger } from '../utils/logger.js';
-import { slackFieldText, slackSectionText } from '../utils/slackText.js';
+import {
+  slackFieldText,
+  slackMrkdwnLink,
+  slackSectionText,
+  slackSectionWithExtras,
+} from '../utils/slackText.js';
 
 const SLACK_API = 'https://slack.com/api';
 
@@ -67,6 +72,34 @@ async function slackApi<T>(method: string, body: Record<string, unknown>): Promi
     throw new Error(`Slack API ${method} failed: ${(data as { error?: string }).error}`);
   }
   return data;
+}
+
+/** Upload a file into a channel (optionally in a thread). Requires files:write scope. */
+async function slackUploadFile(opts: {
+  channelId: string;
+  filename: string;
+  buffer: Buffer;
+  mimeType?: string | null;
+  threadTs?: string;
+  title?: string;
+}): Promise<void> {
+  const form = new FormData();
+  form.append('channels', opts.channelId);
+  form.append('filename', opts.filename);
+  if (opts.title) form.append('title', opts.title);
+  if (opts.threadTs) form.append('thread_ts', opts.threadTs);
+  const mime = opts.mimeType?.trim() || 'application/octet-stream';
+  form.append('file', new Blob([opts.buffer], { type: mime }), opts.filename);
+
+  const res = await fetch(`${SLACK_API}/files.upload`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${getEnv().SLACK_BOT_TOKEN}` },
+    body: form,
+  });
+  const data = (await res.json()) as { ok: boolean; error?: string };
+  if (!data.ok) {
+    throw new Error(`Slack API files.upload failed: ${data.error ?? 'unknown'}`);
+  }
 }
 
 /** Form-encoded POST — required for some methods (e.g. conversations.replies). */
@@ -197,29 +230,29 @@ function buildQueueBlocks(
   if (status === 'saved') {
     const sortedPath = item.final_dropbox_path ?? item.suggested_folder_path;
     const folderName = folderLabelFromPath(sortedPath);
-    const byLine = reviewedBy ? ` by ${slackUserMention(reviewedBy)}` : '';
-    const linkLine = options?.dropboxLink
-      ? `\n<${options.dropboxLink}|Open in Dropbox>`
-      : '';
+    const successExtras = [
+      reviewedBy ? `Sorted by: ${slackUserMention(reviewedBy)}` : '',
+      options?.dropboxLink ? slackMrkdwnLink(options.dropboxLink, 'Open in Dropbox') : '',
+    ].filter(Boolean);
     blocks.unshift({
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: slackSectionText(
-          `:white_check_mark: *Successfully sorted to Dropbox*${byLine}\n` +
-            `Case: ${caseLabel} · Folder: ${folderName}${linkLine}`
+        text: slackSectionWithExtras(
+          `:white_check_mark: *Successfully sorted to Dropbox*\n` +
+            `Case: ${caseLabel} · Folder: ${folderName}`,
+          successExtras
         ),
       },
     });
   } else if (status === 'ignored') {
-    const byLine = reviewedBy ? ` by ${slackUserMention(reviewedBy)}` : '';
     blocks.unshift({
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: slackSectionText(
-          `:no_entry_sign: *Do Not Sort pressed*${byLine}\n` +
-            'This attachment was not filed to Dropbox.'
+        text: slackSectionWithExtras(
+          ':no_entry_sign: *Do Not Sort pressed*\nThis attachment was not filed to Dropbox.',
+          reviewedBy ? [`Pressed by: ${slackUserMention(reviewedBy)}`] : []
         ),
       },
     });
@@ -228,9 +261,9 @@ function buildQueueBlocks(
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: slackSectionText(
-          `:warning: *Needs Attention* — flagged by ${slackUserMention(reviewedBy)}`
-        ),
+        text: slackSectionWithExtras(':warning: *Needs Attention*', [
+          `Flagged by: ${slackUserMention(reviewedBy)}`,
+        ]),
       },
     });
   } else if (status === 'needs_attention') {
@@ -444,6 +477,7 @@ export const slackService = {
     item: FileSorterItem;
     dropboxLink: string;
     approvedByUserId: string;
+    fileBuffer: Buffer;
   }): Promise<boolean> {
     const channelId = await resolveCaseSlackChannelId(opts.caseRow);
 
@@ -459,28 +493,46 @@ export const slackService = {
       opts.item.final_dropbox_path ?? opts.item.suggested_folder_path
     );
 
+    const dropboxLink = slackMrkdwnLink(opts.dropboxLink, 'Open in Dropbox');
+    const sectionText = slackSectionWithExtras(
+      `:white_check_mark: *Document sorted to Dropbox*\n` +
+        `*${slackFieldText(opts.item.attachment_filename, 200)}*\n` +
+        `Case: #${opts.caseRow.slack_channel_name} · Folder: ${slackFieldText(folderName, 80)}\n` +
+        `From: ${slackFieldText(opts.item.from_email, 120)}\n` +
+        `Subject: ${slackFieldText(opts.item.subject ?? '—', 200)}`,
+      [`Sorted by: ${slackUserMention(opts.approvedByUserId)}`, dropboxLink]
+    );
+
     try {
-      await slackApi('chat.postMessage', {
+      const posted = await slackApi<{ ts: string }>('chat.postMessage', {
         channel: channelId,
         text: `Document sorted to Dropbox: ${opts.item.attachment_filename}`,
         blocks: [
           {
             type: 'section',
-            text: {
-              type: 'mrkdwn',
-              text: slackSectionText(
-                `:white_check_mark: *Document sorted to Dropbox*\n` +
-                  `*${opts.item.attachment_filename}*\n` +
-                  `Case: #${opts.caseRow.slack_channel_name} · Folder: ${folderName}\n` +
-                  `From: ${opts.item.from_email}\n` +
-                  `Subject: ${opts.item.subject ?? '—'}\n` +
-                  `Sorted by: ${slackUserMention(opts.approvedByUserId)}\n` +
-                  `<${opts.dropboxLink}|Open in Dropbox>`
-              ),
-            },
+            text: { type: 'mrkdwn', text: sectionText },
           },
         ],
       });
+
+      try {
+        await slackUploadFile({
+          channelId,
+          threadTs: posted.ts,
+          filename: opts.item.attachment_filename,
+          buffer: opts.fileBuffer,
+          mimeType: opts.item.attachment_mime_type,
+          title: opts.item.attachment_filename,
+        });
+      } catch (uploadErr) {
+        logger.warn('Case channel summary posted but file upload failed', {
+          caseNumber: opts.caseRow.case_number,
+          channelId,
+          filename: opts.item.attachment_filename,
+          err: String(uploadErr),
+        });
+      }
+
       logger.info('Cross-posted sorted document to case Slack channel', {
         caseNumber: opts.caseRow.case_number,
         channelId,
