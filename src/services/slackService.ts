@@ -102,12 +102,16 @@ function statusLabel(status: string): string {
   const map: Record<string, string> = {
     pending_review: 'Pending review',
     approved: 'Approved',
-    saved: 'Saved',
+    saved: 'Sorted to Dropbox',
     needs_attention: 'Needs attention',
-    ignored: 'Ignored',
+    ignored: 'Do not sort',
     failed: 'Failed',
   };
   return map[status] ?? status;
+}
+
+function slackUserMention(userId: string): string {
+  return `<@${userId.trim()}>`;
 }
 
 function folderLabelFromPath(path: string | null): string {
@@ -121,13 +125,14 @@ function buildQueueBlocks(
   caseRow: Case | null,
   options?: {
     statusOverride?: string;
-    approvedBy?: string;
+    reviewedByUserId?: string;
     dropboxLink?: string;
     disabled?: boolean;
   }
 ): Record<string, unknown>[] {
   const disabled = options?.disabled ?? false;
   const status = options?.statusOverride ?? item.status;
+  const reviewedBy = options?.reviewedByUserId?.trim();
   const caseLabel = caseRow
     ? `${caseRow.slack_channel_name} (${caseRow.case_number})`
     : item.suggested_case_number ?? '—';
@@ -137,10 +142,19 @@ function buildQueueBlocks(
       : '—';
   const toLine = [...item.to_emails, ...item.cc_emails].filter(Boolean).join(', ') || '—';
 
+  const headerText =
+    status === 'saved'
+      ? 'File sorted'
+      : status === 'ignored'
+        ? 'Not sorted'
+        : status === 'needs_attention'
+          ? 'Needs attention'
+          : 'New File Sorter Item';
+
   const blocks: Record<string, unknown>[] = [
     {
       type: 'header',
-      text: { type: 'plain_text', text: 'New File Sorter Item', emoji: false },
+      text: { type: 'plain_text', text: headerText, emoji: false },
     },
     {
       type: 'section',
@@ -177,28 +191,49 @@ function buildQueueBlocks(
     },
   ];
 
-  if (status === 'needs_attention') {
+  if (status === 'saved') {
+    const sortedPath = item.final_dropbox_path ?? item.suggested_folder_path;
+    const folderName = folderLabelFromPath(sortedPath);
+    const byLine = reviewedBy ? ` by ${slackUserMention(reviewedBy)}` : '';
+    const linkLine = options?.dropboxLink
+      ? `\n<${options.dropboxLink}|Open in Dropbox>`
+      : '';
+    blocks.unshift({
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: slackSectionText(
+          `:white_check_mark: *Successfully sorted to Dropbox*${byLine}\n` +
+            `Case: ${caseLabel} · Folder: ${folderName}${linkLine}`
+        ),
+      },
+    });
+  } else if (status === 'ignored') {
+    const byLine = reviewedBy ? ` by ${slackUserMention(reviewedBy)}` : '';
+    blocks.unshift({
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: slackSectionText(
+          `:no_entry_sign: *Do Not Sort pressed*${byLine}\n` +
+            'This attachment was not filed to Dropbox.'
+        ),
+      },
+    });
+  } else if (status === 'needs_attention' && reviewedBy) {
+    blocks.unshift({
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: slackSectionText(
+          `:warning: *Needs Attention* — flagged by ${slackUserMention(reviewedBy)}`
+        ),
+      },
+    });
+  } else if (status === 'needs_attention') {
     blocks.unshift({
       type: 'context',
-      elements: [{ type: 'mrkdwn', text: ':warning: *NEEDS ATTENTION*' }],
-    });
-  }
-
-  if (options?.approvedBy) {
-    blocks.push({
-      type: 'context',
-      elements: [{ type: 'mrkdwn', text: `Approved by ${slackFieldText(options.approvedBy, 80)}` }],
-    });
-  }
-  if (options?.dropboxLink) {
-    blocks.push({
-      type: 'context',
-      elements: [
-        {
-          type: 'mrkdwn',
-          text: `<${options.dropboxLink}|Open in Dropbox>`,
-        },
-      ],
+      elements: [{ type: 'mrkdwn', text: ':warning: *Needs attention*' }],
     });
   }
 
@@ -240,7 +275,10 @@ function buildQueueBlocks(
       elements: [
         {
           type: 'mrkdwn',
-          text: 'To override before Approve, reply in thread: `case: Client Name` · `folder: Medical`',
+          text:
+            '_Optional — reply in thread before Approve (examples only; use your own values):_\n' +
+            '• `case: Maria Lopez`\n' +
+            '• `folder: Medical`',
         },
       ],
     });
@@ -267,19 +305,31 @@ export const slackService = {
   async updateQueueMessage(
     item: FileSorterItem,
     caseRow: Case | null,
-    options?: { approvedBy?: string; dropboxLink?: string; disabled?: boolean }
+    options?: {
+      reviewedByUserId?: string;
+      dropboxLink?: string;
+      disabled?: boolean;
+    }
   ): Promise<void> {
     if (!item.slack_queue_channel_id || !item.slack_queue_message_ts) return;
+    const reviewedByUserId =
+      options?.reviewedByUserId ?? item.reviewed_by_slack_user_id ?? undefined;
     const blocks = buildQueueBlocks(item, caseRow, {
       statusOverride: item.status,
-      approvedBy: options?.approvedBy,
+      reviewedByUserId,
       dropboxLink: options?.dropboxLink,
       disabled: options?.disabled ?? ['saved', 'ignored', 'failed'].includes(item.status),
     });
+    const fallbackText =
+      item.status === 'saved'
+        ? `Sorted to Dropbox: ${item.attachment_filename}`
+        : item.status === 'ignored'
+          ? `Do not sort: ${item.attachment_filename}`
+          : `File Sorter Item: ${item.attachment_filename} — ${statusLabel(item.status)}`;
     await slackApi('chat.update', {
       channel: item.slack_queue_channel_id,
       ts: item.slack_queue_message_ts,
-      text: `File Sorter Item: ${item.attachment_filename} — ${statusLabel(item.status)}`,
+      text: fallbackText,
       blocks,
     });
   },
@@ -316,11 +366,16 @@ export const slackService = {
 
   async getUserDisplayName(userId: string): Promise<string> {
     try {
-      const result = await slackApi<{ user: { real_name?: string; name?: string } }>(
-        'users.info',
-        { user: userId }
-      );
-      return result.user.real_name ?? result.user.name ?? userId;
+      const result = await slackApi<{
+        user: {
+          real_name?: string;
+          name?: string;
+          profile?: { display_name?: string; real_name?: string };
+        };
+      }>('users.info', { user: userId });
+      const u = result.user;
+      const fromProfile = u.profile?.display_name?.trim() || u.profile?.real_name?.trim();
+      return fromProfile || u.real_name?.trim() || u.name?.trim() || userId;
     } catch {
       return userId;
     }
@@ -334,7 +389,7 @@ export const slackService = {
     caseRow: Case;
     item: FileSorterItem;
     dropboxLink: string;
-    approvedBy: string;
+    approvedByUserId: string;
   }): Promise<void> {
     const channelMapping = await getSlackChannelForCase(opts.caseRow.case_number);
     const channelId =
@@ -356,9 +411,10 @@ export const slackService = {
           text: {
             type: 'mrkdwn',
             text: slackSectionText(
-              `*${opts.item.attachment_filename}*\n` +
+              `:white_check_mark: *Document sorted to Dropbox*\n` +
+                `*${opts.item.attachment_filename}*\n` +
                 `Folder: ${opts.item.final_dropbox_path ?? '—'}\n` +
-                `Approved by: ${opts.approvedBy}\n` +
+                `Sorted by: ${slackUserMention(opts.approvedByUserId)}\n` +
                 `<${opts.dropboxLink}|Open in Dropbox>`
             ),
           },

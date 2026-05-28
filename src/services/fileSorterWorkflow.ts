@@ -145,8 +145,6 @@ export async function handleApprove(
   const upload = await uploadFileToDropbox(folderPath, item.attachment_filename, buffer);
   const permalink = await generateDropboxPermalink(upload.path);
 
-  const approverName = await slackService.getUserDisplayName(slackUserId);
-
   const saved = await updateFileSorterItem(itemId, {
     status: 'saved',
     final_dropbox_path: upload.path,
@@ -161,7 +159,7 @@ export async function handleApprove(
   );
 
   await slackService.updateQueueMessage(saved, caseRow, {
-    approvedBy: approverName,
+    reviewedByUserId: slackUserId,
     dropboxLink: permalink,
     disabled: true,
   });
@@ -170,7 +168,7 @@ export async function handleApprove(
     caseRow,
     item: saved,
     dropboxLink: permalink,
-    approvedBy: approverName,
+    approvedByUserId: slackUserId,
   });
 }
 
@@ -199,7 +197,10 @@ export async function handleNeedsAttention(
   const caseRow = updated.suggested_case_number
     ? await getCaseById(updated.suggested_case_number)
     : null;
-  await slackService.updateQueueMessage(updated, caseRow);
+  await slackService.updateQueueMessage(updated, caseRow, {
+    reviewedByUserId: slackUserId,
+    disabled: true,
+  });
 }
 
 export async function handleDoNotSort(itemId: string, slackUserId: string): Promise<void> {
@@ -217,7 +218,10 @@ export async function handleDoNotSort(itemId: string, slackUserId: string): Prom
   const caseRow = updated.suggested_case_number
     ? await getCaseById(updated.suggested_case_number)
     : null;
-  await slackService.updateQueueMessage(updated, caseRow, { disabled: true });
+  await slackService.updateQueueMessage(updated, caseRow, {
+    reviewedByUserId: slackUserId,
+    disabled: true,
+  });
 }
 
 export async function reindexDropboxFoldersForCase(caseNumber: string): Promise<number> {
