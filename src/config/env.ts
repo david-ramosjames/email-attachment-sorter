@@ -1,27 +1,43 @@
 import { z } from 'zod';
 
-const envSchema = z.object({
-  PORT: z.coerce.number().default(3000),
-  SUPABASE_URL: z.string().url(),
-  SUPABASE_SERVICE_ROLE_KEY: z.string().min(1),
-  OPENAI_API_KEY: z.string().min(1),
-  OPENAI_MODEL: z.string().default('gpt-4o-mini'),
-  /** Vision/OCR model for scanned PDFs and photos (defaults to OPENAI_MODEL) */
-  OPENAI_VISION_MODEL: z.string().optional(),
-  /** Re-analyze attachment when email-only confidence is below this (0–1) */
-  DOCUMENT_ANALYSIS_CONFIDENCE_THRESHOLD: z.coerce.number().min(0).max(1).default(0.5),
-  SLACK_BOT_TOKEN: z.string().min(1),
-  SLACK_SIGNING_SECRET: z.string().min(1),
-  SLACK_FILE_SORTER_QUEUE_CHANNEL_ID: z.string().min(1),
-  DROPBOX_ACCESS_TOKEN: z.string().min(1),
-  /** Root Dropbox folder containing all case folders */
-  DROPBOX_CASES_ROOT: z.string().default('/RJL Cases'),
-  /** Dropbox Business home namespace id (from /admin/dropbox-connection) */
-  DROPBOX_NAMESPACE_ID: z.string().optional(),
-  /** How often to scan Dropbox for new case folders (minutes). 0 = disabled. */
-  DROPBOX_SYNC_INTERVAL_MINUTES: z.coerce.number().default(60),
-  INBOUND_EMAIL_WEBHOOK_SECRET: z.string().optional(),
-});
+const envSchema = z
+  .object({
+    PORT: z.coerce.number().default(3000),
+    SUPABASE_URL: z.string().url(),
+    SUPABASE_SERVICE_ROLE_KEY: z.string().min(1),
+    OPENAI_API_KEY: z.string().min(1),
+    OPENAI_MODEL: z.string().default('gpt-4o-mini'),
+    /** Vision/OCR model for scanned PDFs and photos (defaults to OPENAI_MODEL) */
+    OPENAI_VISION_MODEL: z.string().optional(),
+    /** Re-analyze attachment when email-only confidence is below this (0–1) */
+    DOCUMENT_ANALYSIS_CONFIDENCE_THRESHOLD: z.coerce.number().min(0).max(1).default(0.5),
+    SLACK_BOT_TOKEN: z.string().min(1),
+    SLACK_SIGNING_SECRET: z.string().min(1),
+    SLACK_FILE_SORTER_QUEUE_CHANNEL_ID: z.string().min(1),
+    /** Optional if refresh-token trio is set (short-lived; expires ~4h) */
+    DROPBOX_ACCESS_TOKEN: z.string().optional(),
+    DROPBOX_APP_KEY: z.string().optional(),
+    DROPBOX_APP_SECRET: z.string().optional(),
+    DROPBOX_REFRESH_TOKEN: z.string().optional(),
+    /** Root Dropbox folder containing all case folders */
+    DROPBOX_CASES_ROOT: z.string().default('/RJL Cases'),
+    /** Dropbox Business home namespace id (from /admin/dropbox-connection) */
+    DROPBOX_NAMESPACE_ID: z.string().optional(),
+    /** How often to scan Dropbox for new case folders (minutes). 0 = disabled. */
+    DROPBOX_SYNC_INTERVAL_MINUTES: z.coerce.number().default(60),
+    INBOUND_EMAIL_WEBHOOK_SECRET: z.string().optional(),
+  })
+  .refine(
+    (data) =>
+      Boolean(data.DROPBOX_ACCESS_TOKEN) ||
+      Boolean(
+        data.DROPBOX_APP_KEY && data.DROPBOX_APP_SECRET && data.DROPBOX_REFRESH_TOKEN
+      ),
+    {
+      message:
+        'Dropbox auth required: set DROPBOX_REFRESH_TOKEN + DROPBOX_APP_KEY + DROPBOX_APP_SECRET (recommended), or DROPBOX_ACCESS_TOKEN',
+    }
+  );
 
 export type Env = z.infer<typeof envSchema>;
 

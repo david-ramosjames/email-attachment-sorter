@@ -91,7 +91,7 @@ adminRouter.post('/admin/discover-dropbox-root', async (_req, res) => {
   }
 });
 
-/** Check whether DROPBOX_ACCESS_TOKEN is valid. */
+/** Check whether Dropbox credentials (refresh token or access token) work. */
 adminRouter.get('/admin/dropbox-connection', async (_req, res) => {
   try {
     const status = await verifyDropboxConnection();

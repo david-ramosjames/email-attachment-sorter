@@ -1,5 +1,11 @@
 import { Dropbox } from 'dropbox';
 import { getEnv } from '../config/env.js';
+import {
+  clearDropboxTokenCache,
+  dropboxAuthMode,
+  getDropboxAccessToken,
+  isExpiredDropboxTokenError,
+} from './dropboxAuth.js';
 import { logger } from '../utils/logger.js';
 
 /** Resolved after first successful discovery (may differ from env). */
@@ -11,8 +17,8 @@ function getNamespaceId(): string | null {
   return resolvedNamespaceId ?? getEnv().DROPBOX_NAMESPACE_ID ?? null;
 }
 
-function getDropboxClient(namespaceId?: string | null): Dropbox {
-  const token = getEnv().DROPBOX_ACCESS_TOKEN;
+async function getDropboxClient(namespaceId?: string | null): Promise<Dropbox> {
+  const token = await getDropboxAccessToken();
   const ns = namespaceId ?? getNamespaceId();
   if (ns) {
     return new Dropbox({
@@ -56,11 +62,12 @@ export interface DropboxFolderEntry {
 
 async function listFolderEntriesInternal(
   path: string,
-  namespaceId?: string | null
+  namespaceId?: string | null,
+  isRetry = false
 ): Promise<{ entries: DropboxFolderEntry[]; error?: string }> {
   const normalized = path === '' ? '' : normalizePath(path);
   const entries: DropboxFolderEntry[] = [];
-  const client = getDropboxClient(namespaceId);
+  const client = await getDropboxClient(namespaceId);
 
   try {
     let result = await client.filesListFolder({ path: normalized });
@@ -79,6 +86,11 @@ async function listFolderEntriesInternal(
     return { entries };
   } catch (err) {
     const message = extractDropboxError(err);
+    if (!isRetry && isExpiredDropboxTokenError(message)) {
+      clearDropboxTokenCache();
+      logger.info('Dropbox token expired — refreshing and retrying', { path: normalized });
+      return listFolderEntriesInternal(path, namespaceId, true);
+    }
     logger.debug('listFolderEntries failed', { path: normalized, namespaceId, error: message });
     return { entries: [], error: message };
   }
@@ -98,6 +110,7 @@ function extractDropboxError(err: unknown): string {
 
 export interface DropboxConnectionStatus {
   ok: boolean;
+  authMode?: 'refresh_token' | 'static_access_token';
   accountEmail?: string;
   accountName?: string;
   homePath?: string;
@@ -106,13 +119,14 @@ export interface DropboxConnectionStatus {
   error?: string;
 }
 
-/** Verifies DROPBOX_ACCESS_TOKEN works before folder discovery. */
+/** Verifies Dropbox credentials (refresh token or static access token). */
 export async function verifyDropboxConnection(): Promise<DropboxConnectionStatus> {
   try {
-    const account = await getDropboxClient().usersGetCurrentAccount();
+    const account = await (await getDropboxClient()).usersGetCurrentAccount();
     const root = account.result.root_info;
     const status: DropboxConnectionStatus = {
       ok: true,
+      authMode: dropboxAuthMode(),
       accountEmail: account.result.email,
       accountName: account.result.name.display_name,
     };
@@ -270,7 +284,7 @@ export async function discoverCasesRoot(): Promise<DiscoverCasesRootResult> {
 
   // Shared folders available to mount (and often already visible in /)
   try {
-    const mountable = await getDropboxClient().sharingListMountableFolders({});
+    const mountable = await (await getDropboxClient()).sharingListMountableFolders({});
     for (const folder of mountable.result.entries) {
       if (!matchesCasesRootHint(folder.name)) continue;
       const folderPath = folder.path_lower
@@ -287,7 +301,7 @@ export async function discoverCasesRoot(): Promise<DiscoverCasesRootResult> {
 
   // Team / shared folders the user is a member of
   try {
-    const shared = await getDropboxClient().sharingListFolders({});
+    const shared = await (await getDropboxClient()).sharingListFolders({});
     for (const folder of shared.result.entries) {
       if (!matchesCasesRootHint(folder.name)) continue;
       const folderPath = folder.path_lower
@@ -352,7 +366,7 @@ export async function resolveCasesRootFromEnv(): Promise<{
 export async function ensureFolderExists(folderPath: string): Promise<boolean> {
   const normalized = folderPath.startsWith('/') ? folderPath : `/${folderPath}`;
   try {
-    await getDropboxClient().filesCreateFolderV2({ path: normalized, autorename: false });
+    await (await getDropboxClient()).filesCreateFolderV2({ path: normalized, autorename: false });
     return true;
   } catch (err: unknown) {
     const e = err as { error?: { error_summary?: string } };
@@ -369,7 +383,7 @@ export async function fileExistsInDropbox(
   const normalized = folderPath.startsWith('/') ? folderPath : `/${folderPath}`;
   const fullPath = `${normalized}/${filename}`.replace(/\/+/g, '/');
   try {
-    await getDropboxClient().filesGetMetadata({ path: fullPath });
+    await (await getDropboxClient()).filesGetMetadata({ path: fullPath });
     return true;
   } catch {
     return false;
@@ -385,7 +399,7 @@ export async function uploadFileToDropbox(
   const folderCreated = await ensureFolderExists(normalized);
   const fullPath = `${normalized}/${filename}`.replace(/\/+/g, '/');
 
-  const response = await getDropboxClient().filesUpload({
+  const response = await (await getDropboxClient()).filesUpload({
     path: fullPath,
     contents,
     mode: { '.tag': 'add' },
@@ -402,7 +416,7 @@ export async function uploadFileToDropbox(
 
 export async function generateDropboxPermalink(filePath: string): Promise<string> {
   const normalized = filePath.startsWith('/') ? filePath : `/${filePath}`;
-  const shared = await getDropboxClient().sharingCreateSharedLinkWithSettings({
+  const shared = await (await getDropboxClient()).sharingCreateSharedLinkWithSettings({
     path: normalized,
     settings: { requested_visibility: { '.tag': 'team_only' } },
   });
