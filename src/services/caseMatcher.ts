@@ -4,9 +4,38 @@ import {
   listAllCases,
   searchCases,
 } from '../db/supabase.js';
+import { MAX_AI_CANDIDATES } from '../constants/classification.js';
 import type { Case, CaseCandidate, MatchContext } from '../types/index.js';
 import { logger } from '../utils/logger.js';
 import { isPhoneLikeNumber, maskPhoneAndFaxNumbers } from '../utils/phoneMask.js';
+
+const SEARCH_STOPWORDS = new Set([
+  'from',
+  'with',
+  'that',
+  'this',
+  'your',
+  'have',
+  'been',
+  'will',
+  'page',
+  'notice',
+  'letter',
+  'email',
+  'fax',
+  'hellofax',
+  'dropbox',
+  'ramos',
+  'james',
+  'legal',
+  'assistant',
+  'noreply',
+  'mail',
+  'incoming',
+  'attachment',
+  'document',
+  'subject',
+]);
 
 const CASE_NUMBER_PATTERN =
   /\b(?:case|cause|docket|file\s*#?|file\s+no\.?)\s*#?\s*([A-Z0-9-]+)/i;
@@ -223,7 +252,87 @@ async function buildCandidates(
   return scored
     .filter((c) => c.matchScore > 0)
     .sort((a, b) => b.matchScore - a.matchScore)
-    .slice(0, 8);
+    .slice(0, MAX_AI_CANDIDATES);
+}
+
+function extractAiSearchTerms(ctx: MatchContext): string[] {
+  const raw = maskPhoneAndFaxNumbers(
+    [
+      ctx.subject,
+      ctx.bodyExcerpt,
+      ctx.attachmentFilename,
+      ctx.documentExcerpt ?? '',
+    ].join(' ')
+  ).toLowerCase();
+
+  return [
+    ...new Set(
+      raw
+        .split(/[^a-z0-9]+/)
+        .map((w) => w.trim())
+        .filter(
+          (w) =>
+            w.length >= 4 &&
+            !SEARCH_STOPWORDS.has(w) &&
+            !isPhoneLikeNumber(w) &&
+            !/^\d+$/.test(w)
+        )
+    ),
+  ].slice(0, 10);
+}
+
+/** When rule matching is thin, search DB by document/name terms for OpenAI to evaluate. */
+async function widenCandidatesForAi(
+  ctx: MatchContext,
+  existing: CaseCandidate[]
+): Promise<CaseCandidate[]> {
+  const terms = extractAiSearchTerms(ctx);
+  if (!terms.length) return [];
+
+  const seen = new Set(existing.map((c) => c.case.case_number));
+  const widened: CaseCandidate[] = [];
+
+  for (const term of terms) {
+    const rows = await searchCases({ keywords: [term] });
+    for (const caseRow of rows) {
+      if (seen.has(caseRow.case_number)) continue;
+      seen.add(caseRow.case_number);
+      const folders = await getFoldersForCase(caseRow.case_number);
+      widened.push({
+        case: caseRow,
+        folders,
+        matchScore: 1,
+        matchReasons: [`Widened search: "${term}" matched case index`],
+      });
+      if (existing.length + widened.length >= MAX_AI_CANDIDATES) break;
+    }
+    if (existing.length + widened.length >= MAX_AI_CANDIDATES) break;
+  }
+
+  if (widened.length) {
+    logger.info('Widened AI candidate pool', {
+      terms,
+      added: widened.map((c) => c.case.case_number),
+    });
+  }
+
+  return widened;
+}
+
+function mergeCandidates(
+  primary: CaseCandidate[],
+  extra: CaseCandidate[]
+): CaseCandidate[] {
+  const byCase = new Map<string, CaseCandidate>();
+  for (const c of [...primary, ...extra]) {
+    const prev = byCase.get(c.case.case_number);
+    if (!prev || c.matchScore > prev.matchScore) {
+      byCase.set(c.case.case_number, c);
+    }
+  }
+  return [...byCase.values()]
+    .sort((a, b) => b.matchScore - a.matchScore)
+    .slice(0, MAX_AI_CANDIDATES);
 }
 
 async function keywordFallbackCandidates(
@@ -307,6 +416,12 @@ export async function findCaseCandidates(ctx: MatchContext): Promise<CaseCandida
         knownCaseNumbers
       );
     }
+  }
+
+  // Give OpenAI more options when rules are uncertain (it filters bad matches)
+  if (candidates.length < 5) {
+    const widened = await widenCandidatesForAi(ctx, candidates);
+    candidates = mergeCandidates(candidates, widened);
   }
 
   return candidates;

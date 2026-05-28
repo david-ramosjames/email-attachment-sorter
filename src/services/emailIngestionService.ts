@@ -3,6 +3,7 @@ import {
   createFileSorterItem,
   downloadTempAttachment,
   getCaseById,
+  getSenderHistory,
   updateFileSorterItem,
   uploadTempAttachment,
 } from '../db/supabase.js';
@@ -83,6 +84,8 @@ async function processSingleAttachment(
     });
   }
 
+  const senderPriorCaseNumbers = await getSenderHistory(payload.fromEmail);
+
   const matchContext: MatchContext = {
     fromEmail: payload.fromEmail,
     toEmails: payload.toEmails,
@@ -90,6 +93,7 @@ async function processSingleAttachment(
     subject: payload.subject,
     bodyExcerpt: payload.bodyExcerpt,
     attachmentFilename: attachment.filename,
+    senderPriorCaseNumbers,
   };
 
   let candidates = await findCaseCandidates(matchContext);

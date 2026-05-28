@@ -14,3 +14,9 @@ export const MAX_DOCUMENT_PAGES = 5;
 
 /** Max pages sent to vision API (cost control). */
 export const MAX_VISION_PAGES = 2;
+
+/** Max cases sent to OpenAI per classification (wider pool, model filters). */
+export const MAX_AI_CANDIDATES = 12;
+
+/** Max attachment text chars included in the AI prompt. */
+export const MAX_DOCUMENT_TEXT_FOR_AI = 6000;

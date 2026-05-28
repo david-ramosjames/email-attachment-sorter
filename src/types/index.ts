@@ -83,6 +83,8 @@ export interface MatchContext {
   attachmentFilename: string;
   /** Populated on second-pass classification after document extraction */
   documentExcerpt?: string;
+  /** Cases this sender previously filed to (helps AI disambiguate) */
+  senderPriorCaseNumbers?: string[];
 }
 
 export interface InboundEmailPayload {

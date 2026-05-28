@@ -1,6 +1,9 @@
 import OpenAI from 'openai';
 import { getEnv } from '../config/env.js';
-import { CONFIDENCE_THRESHOLD } from '../constants/classification.js';
+import {
+  CONFIDENCE_THRESHOLD,
+  MAX_DOCUMENT_TEXT_FOR_AI,
+} from '../constants/classification.js';
 import {
   DOCUMENT_TYPES,
   type CaseCandidate,
@@ -23,7 +26,8 @@ function buildCandidatePrompt(candidates: CaseCandidate[]): string {
   return candidates
     .map((c, i) => {
       const folders = c.folders.map((f) => f.folder_label).join(', ') || 'none indexed';
-      return `[${i + 1}] case_number="${c.case.case_number}" slack_channel="${c.case.slack_channel_name}" folders=[${folders}] match_score=${c.matchScore} reasons=${c.matchReasons.join('; ')}`;
+      const dropboxFolder = c.case.dropbox_folder_name ?? '(not linked yet)';
+      return `[${i + 1}] case_number="${c.case.case_number}" slack_channel="${c.case.slack_channel_name}" dropbox_folder="${dropboxFolder}" folders=[${folders}] rule_match_score=${c.matchScore} rule_signals="${c.matchReasons.join('; ') || 'widened pool — verify against document'}"`;
     })
     .join('\n');
 }
@@ -85,27 +89,39 @@ export async function classifyDocument(
   }
 
   const systemPrompt = `You are a legal document filing assistant for Ramos James Law.
-You MUST choose ONLY from the provided case candidates by using their exact case_number.
-Each candidate's slack_channel field is the primary human-readable case label (often "Client Name - case ref").
-Prefer matching by client/name signals in the email over bare case numbers.
-You MUST NOT invent case numbers or Slack channel names not in the list.
-If no candidate is a confident match, set suggested_case_number to null and document_type to "needs_attention".
-Folder paths must come from the candidate's indexed folders only.
+
+Your job: pick the best matching case and document type from the candidate list, using ALL context (email + attachment text + Dropbox folder names).
+
+Rules:
+- Choose ONLY from the candidate list using the exact case_number string.
+- rule_match_score and rule_signals are automated hints — they can be WRONG (e.g. phone area codes mistaken for case numbers). Always verify against document content.
+- NEVER match a case based only on a short number inside a phone number, fax header, date, or page number.
+- Fax/scan emails (HelloFax, "Incoming fax", filenames with 10+ digit ids) usually need client/name matching from the document body, not fax metadata.
+- Prefer client name tokens, Dropbox folder names (e.g. "1321. CLIENT NAME"), and labeled "Case/Cause/File No." over bare 3-digit numbers.
+- If no candidate fits well, set suggested_case_number to null, document_type to "needs_attention", and confidence below 0.5.
+- Folder paths must be from the candidate's indexed folders only.
+- Calibrate confidence honestly: 0.9+ only when name/case evidence is clear; 0.5–0.75 when plausible but ambiguous.
+
 Document types: ${DOCUMENT_TYPES.join(', ')}.
 Return strict JSON only.`;
 
   const documentSection = ctx.documentExcerpt
-    ? `\nDocument content (from attachment${options?.usedDocumentContent ? ', email match was low confidence' : ''}):\n${ctx.documentExcerpt.slice(0, 4000)}`
+    ? `\n\nAttachment text (primary evidence for fax/scanned docs):\n${ctx.documentExcerpt.slice(0, MAX_DOCUMENT_TEXT_FOR_AI)}`
     : '';
 
-  const userPrompt = `Email context:
+  const senderSection =
+    ctx.senderPriorCaseNumbers?.length
+      ? `\nSender previously filed to case(s): ${ctx.senderPriorCaseNumbers.join(', ')}`
+      : '';
+
+  const userPrompt = `Email metadata:
 From: ${ctx.fromEmail}
 To: ${ctx.toEmails.join(', ')}
 Subject: ${ctx.subject}
-Body excerpt: ${ctx.bodyExcerpt.slice(0, 1500)}
-Attachment filename: ${ctx.attachmentFilename}${documentSection}
+Body excerpt: ${ctx.bodyExcerpt.slice(0, 2000)}
+Attachment filename: ${ctx.attachmentFilename}${senderSection}${documentSection}
 
-Candidate cases (choose ONLY from these):
+Candidate cases (${candidates.length} — choose ONLY from this list):
 ${buildCandidatePrompt(candidates)}`;
 
   const response = await getOpenAI().chat.completions.create({
