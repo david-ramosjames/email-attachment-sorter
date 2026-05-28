@@ -15,6 +15,10 @@ import {
   extractPatientNamesFromText,
   tokensFromPersonName,
 } from '../utils/patientNameExtract.js';
+import {
+  caseMatchesClientIdentity,
+  scoreCaseForClientIdentity,
+} from '../utils/caseNameMatch.js';
 import { logger } from '../utils/logger.js';
 import { isPhoneLikeNumber, maskPhoneAndFaxNumbers } from '../utils/phoneMask.js';
 
@@ -502,6 +506,73 @@ async function keywordFallbackCandidates(
   return buildCandidates(matched, ctx, senderCaseNumbers, numericRefs, known);
 }
 
+async function findCandidatesByClientIdentity(
+  ctx: MatchContext,
+  allCases: Case[],
+  senderCaseNumbers: string[],
+  numericRefs: string[],
+  knownCaseNumbers: Set<string>
+): Promise<CaseCandidate[]> {
+  const identity = ctx.aiClientIdentity;
+  if (!identity?.nameTokens.length && !identity?.slackChannelHint && !identity?.caseNumberHint) {
+    return [];
+  }
+
+  const scored = allCases
+    .map((caseRow) => ({
+      caseRow,
+      score: scoreCaseForClientIdentity(caseRow, identity),
+    }))
+    .filter((s) => s.score > 0)
+    .sort((a, b) => b.score - a.score);
+
+  let matched = scored.map((s) => s.caseRow);
+
+  if (identity.slackChannelHint) {
+    const hint = identity.slackChannelHint.toLowerCase();
+    const byChannel = allCases.filter((c) =>
+      c.slack_channel_name.toLowerCase().includes(hint)
+    );
+    matched = [...new Map([...matched, ...byChannel].map((c) => [c.case_number, c])).values()];
+  }
+
+  for (const token of identity.nameTokens) {
+    const rows = await searchCases({ keywords: [token] });
+    for (const row of rows) {
+      if (!matched.some((m) => m.case_number === row.case_number)) {
+        matched.push(row);
+      }
+    }
+  }
+
+  if (!matched.length) return [];
+
+  logger.info('Candidates from AI client identity', {
+    clientFullName: identity.clientFullName,
+    slackChannelHint: identity.slackChannelHint,
+    caseNumberHint: identity.caseNumberHint,
+    nameTokens: identity.nameTokens,
+    cases: matched.slice(0, 5).map((c) => c.slack_channel_name),
+  });
+
+  const candidates = await buildCandidates(
+    matched.slice(0, MAX_AI_CANDIDATES),
+    ctx,
+    senderCaseNumbers,
+    numericRefs,
+    knownCaseNumbers
+  );
+
+  return candidates.map((c) => ({
+    ...c,
+    matchScore: c.matchScore + 180,
+    matchReasons: [
+      ...c.matchReasons,
+      `AI identity: ${identity.clientFullName ?? identity.slackChannelHint ?? 'client'} (${identity.reason.slice(0, 80)})`,
+    ],
+  }));
+}
+
 async function findCasesFromFilename(ctx: MatchContext): Promise<Case[]> {
   const tokens = clientTokensFromFilename(ctx.attachmentFilename);
   const seen = new Set<string>();
@@ -542,6 +613,14 @@ export async function findCaseCandidates(ctx: MatchContext): Promise<CaseCandida
     knownCaseNumbers.has(n)
   );
 
+  const identityCandidates = await findCandidatesByClientIdentity(
+    ctx,
+    allCases,
+    senderCaseNumbers,
+    numericRefs,
+    knownCaseNumbers
+  );
+
   const patientCandidates = await findCandidatesByPatientNames(
     ctx,
     allCases,
@@ -558,6 +637,10 @@ export async function findCaseCandidates(ctx: MatchContext): Promise<CaseCandida
     numericRefs,
     knownCaseNumbers
   );
+
+  if (identityCandidates.length) {
+    candidates = mergeCandidates(identityCandidates, candidates);
+  }
 
   if (patientCandidates.length) {
     candidates = mergeCandidates(patientCandidates, candidates);
@@ -641,6 +724,25 @@ export async function findCaseCandidates(ctx: MatchContext): Promise<CaseCandida
       knownCaseNumbers
     );
     candidates = retry;
+  }
+
+  if (!candidates.length && ctx.aiClientIdentity) {
+    const identity = ctx.aiClientIdentity;
+    const fallbackCases = allCases
+      .filter((c) => caseMatchesClientIdentity(c, identity))
+      .slice(0, MAX_AI_CANDIDATES);
+    if (fallbackCases.length) {
+      candidates = await buildCandidates(
+        fallbackCases,
+        ctx,
+        senderCaseNumbers,
+        numericRefs,
+        knownCaseNumbers
+      );
+      logger.info('Identity fallback matched cases', {
+        cases: fallbackCases.map((c) => c.slack_channel_name),
+      });
+    }
   }
 
   return candidates;

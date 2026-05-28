@@ -91,6 +91,18 @@ export interface MatchContext {
   siblingAttachmentFilenames?: string[];
   /** Prior attachment in this email already matched this case */
   batchSharedCaseNumber?: string;
+  /** OpenAI-extracted client/case identity from all text sources */
+  aiClientIdentity?: ClientIdentity;
+}
+
+/** From OpenAI reading subject + body + filename + attachment text */
+export interface ClientIdentity {
+  clientFullName: string | null;
+  nameTokens: string[];
+  caseNumberHint: string | null;
+  slackChannelHint: string | null;
+  confidence: number;
+  reason: string;
 }
 
 export interface InboundEmailPayload {

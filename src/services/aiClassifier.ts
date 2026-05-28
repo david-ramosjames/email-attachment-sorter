@@ -21,6 +21,7 @@ import {
   allPatientNameTokens,
   extractPatientNamesFromText,
 } from '../utils/patientNameExtract.js';
+import { caseMatchesClientIdentity } from '../utils/caseNameMatch.js';
 import type { CaseFolder } from '../types/index.js';
 
 let openai: OpenAI | null = null;
@@ -126,6 +127,11 @@ Return strict JSON only.`;
       ? `\nSender previously filed to case(s): ${ctx.senderPriorCaseNumbers.join(', ')}`
       : '';
 
+  const identity = ctx.aiClientIdentity;
+  const identitySection = identity?.clientFullName
+    ? `\nAI identity (from all text — use as primary):\n  Client: ${identity.clientFullName}\n  Name tokens: ${identity.nameTokens.join(', ')}\n  Case # hint: ${identity.caseNumberHint ?? 'none'}\n  Slack channel hint: ${identity.slackChannelHint ?? 'none'}\n  Identity confidence: ${identity.confidence}\n  ${identity.reason}`
+    : '';
+
   const patientSection = ctx.emailPatientNames?.length
     ? `\nPatient/client name(s) from email: ${ctx.emailPatientNames.join('; ')}`
     : '';
@@ -145,7 +151,7 @@ Subject: ${ctx.subject}
 Email body (PRIMARY for client identity — read carefully):
 ${ctx.bodyExcerpt.slice(0, 4000)}
 Current attachment filename: ${ctx.attachmentFilename}
-Filename tokens (often NOT the client name for affidavits): ${ctx.attachmentFilename.replace(/\.[a-z0-9]+$/i, '').split(/[^a-zA-Z]+/).filter((t) => t.length >= 4).join(', ') || '(none)'}${patientSection}${siblingSection}${batchSection}${senderSection}${documentSection}
+Filename tokens (often NOT the client name for affidavits): ${ctx.attachmentFilename.replace(/\.[a-z0-9]+$/i, '').split(/[^a-zA-Z]+/).filter((t) => t.length >= 4).join(', ') || '(none)'}${identitySection}${patientSection}${siblingSection}${batchSection}${senderSection}${documentSection}
 
 Candidate cases (${candidates.length} — choose ONLY from this list):
 ${buildCandidatePrompt(candidates)}`;
@@ -214,6 +220,30 @@ ${buildCandidatePrompt(candidates)}`;
     extractPatientNamesFromText(
       [ctx.subject, ctx.bodyExcerpt, ctx.documentExcerpt ?? ''].join('\n')
     );
+
+  if (ctx.aiClientIdentity && suggestedCaseNumber) {
+    const picked = candidates.find((c) => c.case.case_number === suggestedCaseNumber);
+    if (picked && !caseMatchesClientIdentity(picked.case, ctx.aiClientIdentity)) {
+      const better = candidates.find((c) =>
+        caseMatchesClientIdentity(c.case, ctx.aiClientIdentity!)
+      );
+      if (better) {
+        suggestedCaseNumber = better.case.case_number;
+        confidence = Math.max(confidence, 0.92);
+        reason += ` (corrected to ${better.case.slack_channel_name} — AI client identity)`;
+      }
+    } else if (!picked) {
+      const better = candidates.find((c) =>
+        caseMatchesClientIdentity(c.case, ctx.aiClientIdentity!)
+      );
+      if (better) {
+        suggestedCaseNumber = better.case.case_number;
+        confidence = Math.max(confidence, 0.9);
+        reason += ` (picked ${better.case.slack_channel_name} from AI identity)`;
+      }
+    }
+  }
+
   if (suggestedCaseNumber && patientNames.length) {
     const picked = candidates.find((c) => c.case.case_number === suggestedCaseNumber);
     if (picked && !caseMatchesPatientNames(picked.case, patientNames)) {
@@ -222,7 +252,7 @@ ${buildCandidatePrompt(candidates)}`;
         suggestedCaseNumber = better.case.case_number;
         confidence = Math.max(confidence, 0.88);
         reason += ` (corrected to ${better.case.case_number} — patient name in email/PDF)`;
-      } else {
+      } else if (!ctx.aiClientIdentity?.slackChannelHint) {
         confidence = Math.min(confidence, 0.45);
         suggestedCaseNumber = null;
         documentType = 'needs_attention';

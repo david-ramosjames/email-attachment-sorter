@@ -7,14 +7,11 @@ import {
   updateFileSorterItem,
   uploadTempAttachment,
 } from '../db/supabase.js';
-import { getEnv } from '../config/env.js';
+import { extractClientIdentity } from './clientIdentityAi.js';
 import { findCaseCandidates } from './caseMatcher.js';
 import { classifyDocument } from './aiClassifier.js';
 import { extractDocumentExcerpt } from './documentExtractor.js';
-import {
-  clientTokensFromFilename,
-  topCandidateMatchesFilename,
-} from '../utils/filenameCaseMatch.js';
+import { clientTokensFromFilename } from '../utils/filenameCaseMatch.js';
 import { slackService } from './slackService.js';
 import { auditService } from './auditService.js';
 import { parseInboundEmail } from './emailIngestion/index.js';
@@ -121,11 +118,8 @@ async function processSingleAttachment(
     batchSharedCaseNumber: batch.sharedCaseNumber ?? undefined,
   };
 
-  let candidates = await findCaseCandidates(matchContext);
-  let classification = await classifyDocument(matchContext, candidates);
   let documentExtraction: { method: string; excerptLength: number } | null = null;
 
-  const docThreshold = getEnv().DOCUMENT_ANALYSIS_CONFIDENCE_THRESHOLD;
   const isFilingDocument =
     /\.(pdf|docx?)$/i.test(attachment.filename) ||
     attachment.mimeType.includes('pdf') ||
@@ -133,25 +127,11 @@ async function processSingleAttachment(
     attachment.mimeType.includes('msword') ||
     attachment.mimeType.startsWith('image/');
 
-  const filenameTokens = clientTokensFromFilename(attachment.filename);
-  const filenameMismatch =
-    filenameTokens.length > 0 &&
-    classification.suggestedCaseNumber &&
-    !topCandidateMatchesFilename(candidates, attachment.filename);
-
   const genericAffidavitFilename =
     /^(records|billings?)affidavit_/i.test(attachment.filename) &&
     clientTokensFromFilename(attachment.filename).length === 0;
 
-  const needsDocumentPass =
-    isFilingDocument ||
-    classification.confidence < docThreshold ||
-    candidates.length === 0 ||
-    filenameMismatch ||
-    genericAffidavitFilename ||
-    batch.patientNames.length > 0;
-
-  if (needsDocumentPass) {
+  if (isFilingDocument || genericAffidavitFilename || batch.patientNames.length > 0) {
     const extracted = await extractDocumentExcerpt(
       buffer,
       attachment.mimeType,
@@ -164,45 +144,46 @@ async function processSingleAttachment(
         matchContext.emailPatientNames = [
           ...new Set([...(matchContext.emailPatientNames ?? []), ...fromDoc]),
         ];
-        batch.patientNames = [
-          ...new Set([...batch.patientNames, ...fromDoc]),
-        ];
+        batch.patientNames = [...new Set([...batch.patientNames, ...fromDoc])];
       }
       documentExtraction = {
         method: extracted.method,
         excerptLength: extracted.excerpt.length,
       };
-      candidates = await findCaseCandidates(matchContext);
-      classification = await classifyDocument(matchContext, candidates, {
-        usedDocumentContent: true,
-      });
-      classification = {
-        ...classification,
-        reason: `[Analyzed attachment via ${extracted.method}] ${classification.reason}`,
-      };
-      logger.info('Second-pass classification with document content', {
-        itemId,
-        method: extracted.method,
-        candidateCount: candidates.length,
-        candidateCases: candidates.map((c) => c.case.case_number),
-        confidence: classification.confidence,
-        excerptPreview: extracted.excerpt.slice(0, 200),
-      });
-    } else {
-      logger.warn('Document extraction empty — cannot match from PDF', {
-        itemId,
-        filename: attachment.filename,
-        candidateCount: candidates.length,
-        emailConfidence: classification.confidence,
-      });
     }
-  } else {
-    logger.info('Email-only classification (non-document attachment)', {
-      itemId,
-      candidateCount: candidates.length,
-      confidence: classification.confidence,
-    });
   }
+
+  matchContext.aiClientIdentity = await extractClientIdentity(matchContext);
+  if (matchContext.aiClientIdentity.clientFullName) {
+    const names = [
+      matchContext.aiClientIdentity.clientFullName,
+      ...(matchContext.emailPatientNames ?? []),
+    ];
+    matchContext.emailPatientNames = [...new Set(names)];
+    batch.patientNames = [...new Set([...batch.patientNames, ...names])];
+  }
+
+  let candidates = await findCaseCandidates(matchContext);
+  let classification = await classifyDocument(matchContext, candidates, {
+    usedDocumentContent: Boolean(matchContext.documentExcerpt),
+  });
+
+  if (matchContext.aiClientIdentity.clientFullName) {
+    classification = {
+      ...classification,
+      reason: `[Client: ${matchContext.aiClientIdentity.clientFullName}${matchContext.aiClientIdentity.slackChannelHint ? ` → ${matchContext.aiClientIdentity.slackChannelHint}` : ''}] ${classification.reason}`,
+    };
+  }
+
+  logger.info('Classification complete', {
+    itemId,
+    candidateCount: candidates.length,
+    candidateCases: candidates.map((c) => c.case.slack_channel_name),
+    identity: matchContext.aiClientIdentity.clientFullName,
+    slackHint: matchContext.aiClientIdentity.slackChannelHint,
+    confidence: classification.confidence,
+    suggestedCase: classification.suggestedCaseNumber,
+  });
 
   if (
     classification.suggestedCaseNumber &&
@@ -257,6 +238,7 @@ async function processSingleAttachment(
     reason: classification.reason,
     candidateCount: candidates.length,
     documentExtraction,
+    aiClientIdentity: matchContext.aiClientIdentity,
   });
 
   const caseRow = classification.suggestedCaseNumber
