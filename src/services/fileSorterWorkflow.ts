@@ -164,12 +164,25 @@ export async function handleApprove(
     disabled: true,
   });
 
-  await slackService.postCaseChannelConfirmation({
+  const crossPosted = await slackService.postCaseChannelConfirmation({
     caseRow,
     item: saved,
     dropboxLink: permalink,
     approvedByUserId: slackUserId,
   });
+
+  if (!crossPosted) {
+    await auditService.log(
+      itemId,
+      'case_channel_cross_post_failed',
+      {
+        caseNumber: caseRow.case_number,
+        slackChannelName: caseRow.slack_channel_name,
+        note: 'Invite the File Sorter bot to this case channel, or ensure channels:read scope is enabled.',
+      },
+      slackUserId
+    );
+  }
 }
 
 export async function handleChange(itemId: string, slackUserId: string): Promise<void> {

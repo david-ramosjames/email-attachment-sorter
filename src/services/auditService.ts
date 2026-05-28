@@ -12,6 +12,7 @@ export type AuditEventType =
   | 'failed'
   | 'thread_override'
   | 'duplicate_detected'
+  | 'case_channel_cross_post_failed'
   | 'reindex_folders';
 
 export const auditService = {

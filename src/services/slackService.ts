@@ -1,10 +1,13 @@
 import { getEnv } from '../config/env.js';
-import { getSlackChannelForCase } from '../db/supabase.js';
+import { getSlackChannelForCase, updateCaseSlackChannelId } from '../db/supabase.js';
 import type { Case, FileSorterItem } from '../types/index.js';
 import { logger } from '../utils/logger.js';
 import { slackFieldText, slackSectionText } from '../utils/slackText.js';
 
 const SLACK_API = 'https://slack.com/api';
+
+/** channel name (lowercase) → channel id; refreshed on first lookup per process */
+let slackChannelIdByName: Map<string, string> | null = null;
 
 /** action_id must be unique per message; value carries item UUID for the handler. */
 const ACTION_PREFIX = {
@@ -277,7 +280,8 @@ function buildQueueBlocks(
           type: 'mrkdwn',
           text:
             '_Optional — reply in thread before Approve (examples only; use your own values):_\n' +
-            '• `case: Maria Lopez`\n' +
+            '• `case: 1277` (case number)\n' +
+            '• `case: First Last` (client first and last name)\n' +
             '• `folder: Medical`',
         },
       ],
@@ -285,6 +289,53 @@ function buildQueueBlocks(
   }
 
   return blocks;
+}
+
+async function resolveCaseSlackChannelId(caseRow: Case): Promise<string | null> {
+  const mapping = await getSlackChannelForCase(caseRow.case_number);
+  const storedId = mapping?.slack_channel_id ?? caseRow.slack_channel_id;
+  if (storedId?.trim()) return storedId.trim();
+
+  const channelName = caseRow.slack_channel_name.trim().toLowerCase();
+  if (!channelName) return null;
+
+  if (!slackChannelIdByName) {
+    slackChannelIdByName = new Map();
+    let cursor: string | undefined;
+    do {
+      const page = await slackApiForm<{
+        channels: Array<{ id?: string; name?: string }>;
+        response_metadata?: { next_cursor?: string };
+      }>('conversations.list', {
+        types: 'public_channel,private_channel',
+        limit: 200,
+        exclude_archived: true,
+        cursor,
+      });
+      for (const ch of page.channels ?? []) {
+        if (ch.id && ch.name) {
+          slackChannelIdByName.set(ch.name.toLowerCase(), ch.id);
+        }
+      }
+      cursor = page.response_metadata?.next_cursor || undefined;
+    } while (cursor);
+    logger.info('Slack channel list loaded for case cross-post', {
+      count: slackChannelIdByName.size,
+    });
+  }
+
+  const resolved = slackChannelIdByName.get(channelName) ?? null;
+  if (resolved) {
+    try {
+      await updateCaseSlackChannelId(caseRow.case_number, resolved);
+    } catch (err) {
+      logger.warn('Could not persist slack_channel_id', {
+        caseNumber: caseRow.case_number,
+        err: String(err),
+      });
+    }
+  }
+  return resolved;
 }
 
 export const slackService = {
@@ -339,7 +390,10 @@ export const slackService = {
     await slackApi('chat.postMessage', {
       channel: item.slack_queue_channel_id,
       thread_ts: item.slack_queue_message_ts,
-      text: 'Reply in this thread with overrides, then click Approve:\n```case: Client or Case Name\nfolder: Pleadings```',
+      text:
+        'Reply in this thread with overrides, then click Approve.\n' +
+        'Examples (use your own values):\n' +
+        '```case: 1277\ncase: First Last\nfolder: Medical```',
     });
   },
 
@@ -390,36 +444,57 @@ export const slackService = {
     item: FileSorterItem;
     dropboxLink: string;
     approvedByUserId: string;
-  }): Promise<void> {
-    const channelMapping = await getSlackChannelForCase(opts.caseRow.case_number);
-    const channelId =
-      channelMapping?.slack_channel_id ?? opts.caseRow.slack_channel_id ?? null;
+  }): Promise<boolean> {
+    const channelId = await resolveCaseSlackChannelId(opts.caseRow);
 
     if (!channelId) {
-      logger.warn('No Slack channel for case', {
-        caseId: opts.caseRow.id,
+      logger.warn('No Slack channel for case cross-post', {
         caseNumber: opts.caseRow.case_number,
+        slackChannelName: opts.caseRow.slack_channel_name,
       });
-      return;
+      return false;
     }
-    await slackApi('chat.postMessage', {
-      channel: channelId,
-      text: `Saved to Dropbox: ${opts.item.attachment_filename}`,
-      blocks: [
-        {
-          type: 'section',
-          text: {
-            type: 'mrkdwn',
-            text: slackSectionText(
-              `:white_check_mark: *Document sorted to Dropbox*\n` +
-                `*${opts.item.attachment_filename}*\n` +
-                `Folder: ${opts.item.final_dropbox_path ?? '—'}\n` +
-                `Sorted by: ${slackUserMention(opts.approvedByUserId)}\n` +
-                `<${opts.dropboxLink}|Open in Dropbox>`
-            ),
+
+    const folderName = folderLabelFromPath(
+      opts.item.final_dropbox_path ?? opts.item.suggested_folder_path
+    );
+
+    try {
+      await slackApi('chat.postMessage', {
+        channel: channelId,
+        text: `Document sorted to Dropbox: ${opts.item.attachment_filename}`,
+        blocks: [
+          {
+            type: 'section',
+            text: {
+              type: 'mrkdwn',
+              text: slackSectionText(
+                `:white_check_mark: *Document sorted to Dropbox*\n` +
+                  `*${opts.item.attachment_filename}*\n` +
+                  `Case: #${opts.caseRow.slack_channel_name} · Folder: ${folderName}\n` +
+                  `From: ${opts.item.from_email}\n` +
+                  `Subject: ${opts.item.subject ?? '—'}\n` +
+                  `Sorted by: ${slackUserMention(opts.approvedByUserId)}\n` +
+                  `<${opts.dropboxLink}|Open in Dropbox>`
+              ),
+            },
           },
-        },
-      ],
-    });
+        ],
+      });
+      logger.info('Cross-posted sorted document to case Slack channel', {
+        caseNumber: opts.caseRow.case_number,
+        channelId,
+        filename: opts.item.attachment_filename,
+      });
+      return true;
+    } catch (err) {
+      logger.error('Failed to cross-post to case Slack channel', {
+        caseNumber: opts.caseRow.case_number,
+        channelId,
+        slackChannelName: opts.caseRow.slack_channel_name,
+        err: String(err),
+      });
+      return false;
+    }
   },
 };

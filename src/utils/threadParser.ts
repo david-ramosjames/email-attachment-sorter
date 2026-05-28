@@ -3,8 +3,9 @@ import { RJL_STANDARD_SUBFOLDERS } from '../constants/rjlFolders.js';
 /**
  * Parses reviewer thread replies for case/folder overrides.
  * Expected format (case-insensitive keys):
- *   case: Maria Lopez
- *   folder: Pleadings
+ *   case: 1277
+ *   case: First Last
+ *   folder: Medical
  */
 export interface ThreadOverride {
   caseName?: string;

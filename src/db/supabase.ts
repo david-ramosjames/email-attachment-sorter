@@ -126,14 +126,55 @@ export async function getSlackChannelForCase(
 }
 
 export async function getCaseByName(name: string): Promise<Case | null> {
+  const trimmed = name.trim();
+  if (!trimmed) return null;
+
+  const exact = await getCaseById(trimmed);
+  if (exact) return exact;
+
   const { data, error } = await getSupabase()
     .from('case_slack_channels')
     .select('*')
-    .or(`slack_channel_name.ilike.%${name}%,case_number.ilike.%${name}%`)
+    .or(`slack_channel_name.ilike.%${trimmed}%,case_number.ilike.%${trimmed}%`)
     .limit(1)
     .maybeSingle();
-  if (error || !data) return null;
-  return mapSlackChannelToCase(data as CaseSlackChannel);
+  if (!error && data) return mapSlackChannelToCase(data as CaseSlackChannel);
+
+  const tokens = trimmed
+    .toLowerCase()
+    .split(/[\s,]+/)
+    .map((t) => t.replace(/[^a-z0-9]/g, ''))
+    .filter((t) => t.length > 1);
+  if (tokens.length >= 2) {
+    const last = tokens[tokens.length - 1]!;
+    const candidates = await searchCases({ keywords: [last] });
+    const hits = candidates.filter((c) => {
+      const hay = [c.slack_channel_name, c.dropbox_folder_name ?? '', c.case_number]
+        .join(' ')
+        .toLowerCase();
+      return tokens.every((t) => hay.includes(t));
+    });
+    if (hits.length === 1) return hits[0]!;
+    if (hits.length > 1) {
+      const channelMatch = hits.find((c) =>
+        tokens.every((t) => c.slack_channel_name.toLowerCase().includes(t))
+      );
+      return channelMatch ?? hits[0]!;
+    }
+  }
+
+  return null;
+}
+
+export async function updateCaseSlackChannelId(
+  caseNumber: string,
+  slackChannelId: string
+): Promise<void> {
+  const { error } = await getSupabase()
+    .from('case_slack_channels')
+    .update({ slack_channel_id: slackChannelId, updated_at: new Date().toISOString() })
+    .eq('case_number', caseNumber);
+  if (error) throw new Error(`Update slack channel id failed: ${error.message}`);
 }
 
 export async function updateCaseDropboxFolderName(
