@@ -11,7 +11,13 @@ import {
   type DocumentType,
   type MatchContext,
 } from '../types/index.js';
-import { DOCUMENT_TYPE_TO_SUBFOLDER } from '../constants/rjlFolders.js';
+import { RJL_STANDARD_SUBFOLDERS } from '../constants/rjlFolders.js';
+import {
+  inferDocumentTypeFromContent,
+  inferFolderLabelFromContent,
+  subfolderForDocumentType,
+} from '../utils/folderInference.js';
+import type { CaseFolder } from '../types/index.js';
 
 let openai: OpenAI | null = null;
 
@@ -39,9 +45,10 @@ const classificationSchema = {
       type: ['string', 'null'] as const,
       description: 'case_number from candidate list, or null if needs_attention',
     },
-    suggested_folder_path: {
+    suggested_folder_label: {
       type: ['string', 'null'] as const,
-      description: 'Dropbox folder path from candidate folders, or null',
+      description:
+        'RJL subfolder label from candidate folders list (e.g. Medical, Pleadings), or null to infer from document_type',
     },
     document_type: {
       type: 'string' as const,
@@ -52,7 +59,7 @@ const classificationSchema = {
   },
   required: [
     'suggested_case_number',
-    'suggested_folder_path',
+    'suggested_folder_label',
     'document_type',
     'confidence',
     'reason',
@@ -80,13 +87,6 @@ export async function classifyDocument(
   }
 
   const candidateNumbers = new Set(candidates.map((c) => c.case.case_number));
-  const validFolders = new Map<string, Set<string>>();
-  for (const c of candidates) {
-    validFolders.set(
-      c.case.case_number,
-      new Set(c.folders.map((f) => f.dropbox_path))
-    );
-  }
 
   const systemPrompt = `You are a legal document filing assistant for Ramos James Law.
 
@@ -101,7 +101,11 @@ Rules:
 - Prefer client name tokens, Dropbox folder names (e.g. "1321. CLIENT NAME"), and labeled "Case/Cause/File No." over bare 3-digit numbers.
 - Do NOT match a case when the filename names a different client than the candidate's slack_channel / dropbox_folder.
 - If no candidate fits well, set suggested_case_number to null, document_type to "needs_attention", and confidence below 0.5.
-- Folder paths must be from the candidate's indexed folders only.
+- Pick suggested_folder_label from the candidate's indexed folder labels only (standard RJL labels: ${RJL_STANDARD_SUBFOLDERS.join(', ')}).
+- Folder must match document content — do NOT default to Correspondence.
+- Medical provider records/affidavits (e.g. RecordsAffidavit, BillingsAffidavit, records@…injury.com, procare) → document_type "Medical Records", folder_label "Medical".
+- Attorney pleadings/motions/complaints → "Pleadings". Generic letters → "Correspondence".
+- If unsure of folder, set suggested_folder_label to null (system maps from document_type).
 - Calibrate confidence honestly: 0.9+ only when name/case evidence is clear; 0.5–0.75 when plausible but ambiguous.
 
 Document types: ${DOCUMENT_TYPES.join(', ')}.
@@ -151,44 +155,52 @@ ${buildCandidatePrompt(candidates)}`;
 
   const parsed = JSON.parse(content) as {
     suggested_case_number: string | null;
-    suggested_folder_path: string | null;
+    suggested_folder_label: string | null;
     document_type: string;
     confidence: number;
     reason: string;
   };
 
   let suggestedCaseNumber = parsed.suggested_case_number;
-  let suggestedFolderPath = parsed.suggested_folder_path;
   let documentType = parsed.document_type as DocumentType | 'needs_attention';
   let confidence = parsed.confidence;
   let reason = parsed.reason;
 
+  const contentParts = {
+    attachmentFilename: ctx.attachmentFilename,
+    subject: ctx.subject,
+    bodyExcerpt: ctx.bodyExcerpt,
+    documentExcerpt: ctx.documentExcerpt,
+  };
+
+  const inferredType = inferDocumentTypeFromContent(contentParts);
+  if (
+    inferredType &&
+    documentType !== 'needs_attention' &&
+    (documentType === 'Bills' || documentType === 'Misc' || documentType === 'Correspondence')
+  ) {
+    documentType = inferredType;
+    reason += ` (document type adjusted to ${inferredType} from filename/content)`;
+  }
+
   if (suggestedCaseNumber && !candidateNumbers.has(suggestedCaseNumber)) {
     suggestedCaseNumber = null;
-    suggestedFolderPath = null;
     documentType = 'needs_attention';
     confidence = 0;
     reason = 'AI returned case number not in candidate list — rejected';
   }
 
-  if (suggestedCaseNumber && suggestedFolderPath) {
-    const allowed = validFolders.get(suggestedCaseNumber);
-    if (allowed && allowed.size > 0 && !allowed.has(suggestedFolderPath)) {
-      const match = candidates.find((c) => c.case.case_number === suggestedCaseNumber);
-      suggestedFolderPath = match?.folders[0]?.dropbox_path ?? null;
-      reason += ' (folder adjusted to indexed path)';
-    }
-  }
-
-  // Map document type → RJL subfolder when AI picked case but not path
-  if (suggestedCaseNumber && !suggestedFolderPath && documentType !== 'needs_attention') {
-    const subfolder = DOCUMENT_TYPE_TO_SUBFOLDER[documentType];
-    const match = candidates.find((c) => c.case.case_number === suggestedCaseNumber);
-    const folder = match?.folders.find((f) => f.folder_label === subfolder);
-    if (folder) {
-      suggestedFolderPath = folder.dropbox_path;
-      reason += ` (mapped ${documentType} → ${subfolder})`;
-    }
+  let suggestedFolderPath: string | null = null;
+  if (suggestedCaseNumber && documentType !== 'needs_attention') {
+    const resolved = resolveFolderForCase(
+      suggestedCaseNumber,
+      candidates,
+      parsed.suggested_folder_label,
+      documentType,
+      contentParts
+    );
+    suggestedFolderPath = resolved.path;
+    if (resolved.reasonSuffix) reason += resolved.reasonSuffix;
   }
 
   const needsAttention =
@@ -204,4 +216,64 @@ ${buildCandidatePrompt(candidates)}`;
     reason,
     needsAttention,
   };
+}
+
+function findFolderByLabel(
+  folders: CaseFolder[],
+  label: string | null | undefined
+): CaseFolder | undefined {
+  if (!label?.trim()) return undefined;
+  const norm = label.trim().toLowerCase();
+  return folders.find((f) => f.folder_label.toLowerCase() === norm);
+}
+
+/** Resolve Dropbox path: content rules → AI label → document_type map (never folders[0]). */
+function resolveFolderForCase(
+  caseNumber: string,
+  candidates: CaseCandidate[],
+  aiFolderLabel: string | null,
+  documentType: string,
+  contentParts: {
+    attachmentFilename: string;
+    subject: string;
+    bodyExcerpt: string;
+    documentExcerpt?: string;
+  }
+): { path: string | null; reasonSuffix: string } {
+  const match = candidates.find((c) => c.case.case_number === caseNumber);
+  if (!match?.folders.length) {
+    return { path: null, reasonSuffix: ' (no indexed folders for case)' };
+  }
+
+  const fromContent = inferFolderLabelFromContent(contentParts);
+  if (fromContent) {
+    const folder = findFolderByLabel(match.folders, fromContent);
+    if (folder) {
+      return {
+        path: folder.dropbox_path,
+        reasonSuffix: ` (folder ${fromContent} from filename/email/document)`,
+      };
+    }
+  }
+
+  const fromAi = findFolderByLabel(match.folders, aiFolderLabel);
+  if (fromAi) {
+    return { path: fromAi.dropbox_path, reasonSuffix: '' };
+  }
+  if (aiFolderLabel) {
+    // AI picked a label not in index — fall through to type mapping, not Correspondence
+  }
+
+  const subfolder = subfolderForDocumentType(documentType);
+  if (subfolder) {
+    const folder = findFolderByLabel(match.folders, subfolder);
+    if (folder) {
+      return {
+        path: folder.dropbox_path,
+        reasonSuffix: ` (mapped ${documentType} → ${subfolder})`,
+      };
+    }
+  }
+
+  return { path: null, reasonSuffix: ' (could not resolve folder — use thread override)' };
 }

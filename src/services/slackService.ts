@@ -184,7 +184,7 @@ function buildQueueBlocks(
       elements: [
         {
           type: 'mrkdwn',
-          text: 'Thread override: `case: Name` · `folder: Pleadings`',
+          text: 'To override before Approve, reply in thread: `case: Client Name` · `folder: Medical`',
         },
       ],
     });
