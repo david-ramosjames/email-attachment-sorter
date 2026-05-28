@@ -1,4 +1,4 @@
-import { getEnv } from '../config/env.js';
+import { getDropboxConfigIssue, getEnv } from '../config/env.js';
 import { logger } from '../utils/logger.js';
 
 let cachedAccessToken: string | null = null;
@@ -28,12 +28,15 @@ export function dropboxAuthMode(): 'refresh_token' | 'static_access_token' | 'mi
 
 export function getDropboxAuthStatus(): {
   mode: ReturnType<typeof dropboxAuthMode>;
+  configured: boolean;
+  configIssue: string | null;
   tokenCached: boolean;
   expiresAt: string | null;
   lastRefreshError: string | null;
   staticTokenWarning: string | null;
 } {
   const mode = dropboxAuthMode();
+  const configIssue = getDropboxConfigIssue();
   let staticTokenWarning: string | null = null;
   const staticToken = getEnv().DROPBOX_ACCESS_TOKEN;
   if (staticToken?.startsWith('sl.') && !usesDropboxRefreshToken()) {
@@ -46,6 +49,8 @@ export function getDropboxAuthStatus(): {
   }
   return {
     mode,
+    configured: configIssue === null,
+    configIssue,
     tokenCached: Boolean(cachedAccessToken),
     expiresAt: accessTokenExpiresAt > 0 ? new Date(accessTokenExpiresAt).toISOString() : null,
     lastRefreshError,
@@ -130,9 +135,8 @@ export async function getDropboxAccessToken(): Promise<string> {
     return staticToken;
   }
 
-  throw new Error(
-    'Dropbox not configured: set DROPBOX_REFRESH_TOKEN + DROPBOX_APP_KEY + DROPBOX_APP_SECRET on Railway'
-  );
+  const issue = getDropboxConfigIssue();
+  throw new Error(issue ?? 'Dropbox not configured');
 }
 
 /** Warm token on boot so misconfiguration fails early in logs. */
