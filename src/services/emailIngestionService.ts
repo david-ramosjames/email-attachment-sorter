@@ -22,7 +22,11 @@ import type {
   MatchContext,
 } from '../types/index.js';
 import { extractPatientNamesFromText } from '../utils/patientNameExtract.js';
-import { isLikelyNewClientContract } from '../utils/intakeDetect.js';
+import { buildSmartBodyExcerpt } from '../utils/emailBodyExcerpt.js';
+import {
+  isEmploymentRecordsAuthorization,
+  isLikelyNewClientContract,
+} from '../utils/intakeDetect.js';
 import { logger } from '../utils/logger.js';
 
 /** Shared state while processing all attachments in one inbound email. */
@@ -63,8 +67,11 @@ export async function processInboundEmail(
     return { processed: 0, skipped: 1 };
   }
 
+  const bodyExcerpt = buildSmartBodyExcerpt(payload.bodyExcerpt);
+  const enrichedPayload = { ...payload, bodyExcerpt };
+
   const patientNames = extractPatientNamesFromText(
-    [payload.subject, payload.bodyExcerpt].join('\n')
+    [enrichedPayload.subject, bodyExcerpt].join('\n')
   );
   const batch: EmailBatchState = {
     patientNames,
@@ -73,8 +80,8 @@ export async function processInboundEmail(
   };
 
   let processed = 0;
-  for (const attachment of payload.attachments) {
-    await processSingleAttachment(payload, attachment, batch);
+  for (const attachment of enrichedPayload.attachments) {
+    await processSingleAttachment(enrichedPayload, attachment, batch);
     processed++;
   }
   return { processed, skipped: 0 };
@@ -167,7 +174,21 @@ async function processSingleAttachment(
   }
 
   matchContext.aiClientIdentity = await extractClientIdentity(matchContext);
-  if (likelyContract) {
+
+  const employmentAuth = isEmploymentRecordsAuthorization({
+    subject: payload.subject,
+    bodyExcerpt: payload.bodyExcerpt,
+    attachmentFilename: attachment.filename,
+    documentExcerpt: matchContext.documentExcerpt,
+  });
+
+  if (employmentAuth) {
+    matchContext.aiClientIdentity = {
+      ...matchContext.aiClientIdentity,
+      isNewClientIntake: false,
+      documentKind: 'employment_authorization',
+    };
+  } else if (likelyContract) {
     matchContext.aiClientIdentity = {
       ...matchContext.aiClientIdentity,
       isNewClientIntake: true,

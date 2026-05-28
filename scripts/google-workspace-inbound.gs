@@ -16,7 +16,7 @@ const SCRIPT_CONFIG = {
   WEBHOOK_URL: 'https://YOUR-RAILWAY-DOMAIN/webhooks/inbound-email',
   WEBHOOK_SECRET: '', // must match INBOUND_EMAIL_WEBHOOK_SECRET in Railway (optional)
   PROCESSED_LABEL: 'file-sorter-processed',
-  MAX_BODY_CHARS: 2000,
+  MAX_BODY_CHARS: 12000,
   /** Skip messages larger than this per attachment (bytes). Gmail/Apps Script limit ~25MB */
   MAX_ATTACHMENT_BYTES: 20 * 1024 * 1024,
 };

@@ -22,7 +22,10 @@ import {
   extractPatientNamesFromText,
 } from '../utils/patientNameExtract.js';
 import { caseMatchesClientIdentity, identityConflictsWithCase } from '../utils/caseNameMatch.js';
-import { isLikelyNewClientContract } from '../utils/intakeDetect.js';
+import {
+  isEmploymentRecordsAuthorization,
+  isLikelyNewClientContract,
+} from '../utils/intakeDetect.js';
 import type { CaseFolder } from '../types/index.js';
 
 let openai: OpenAI | null = null;
@@ -78,11 +81,19 @@ export async function classifyDocument(
   candidates: CaseCandidate[],
   options?: { usedDocumentContent?: boolean }
 ): Promise<ClassificationResult> {
+  const employmentAuth = isEmploymentRecordsAuthorization({
+    subject: ctx.subject,
+    bodyExcerpt: ctx.bodyExcerpt,
+    attachmentFilename: ctx.attachmentFilename,
+    documentExcerpt: ctx.documentExcerpt,
+  });
+
   const likelyNewClientContract = isLikelyNewClientContract({
     fromEmail: ctx.fromEmail,
     subject: ctx.subject,
     bodyExcerpt: ctx.bodyExcerpt,
     attachmentFilename: ctx.attachmentFilename,
+    documentExcerpt: ctx.documentExcerpt,
   });
 
   if (ctx.aiClientIdentity) {
@@ -92,9 +103,10 @@ export async function classifyDocument(
   }
 
   if (
-    ctx.aiClientIdentity?.isNewClientIntake ||
-    likelyNewClientContract ||
-    ctx.aiClientIdentity?.documentKind === 'client_contract'
+    !employmentAuth &&
+    (ctx.aiClientIdentity?.isNewClientIntake ||
+      likelyNewClientContract ||
+      ctx.aiClientIdentity?.documentKind === 'client_contract')
   ) {
     const client = ctx.aiClientIdentity?.clientFullName ?? 'unknown client';
     return {

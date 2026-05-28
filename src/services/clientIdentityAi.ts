@@ -2,6 +2,7 @@ import OpenAI from 'openai';
 import { getEnv } from '../config/env.js';
 import { MAX_DOCUMENT_TEXT_FOR_AI } from '../constants/classification.js';
 import type { ClientIdentity, MatchContext } from '../types/index.js';
+import { buildSmartBodyExcerpt } from '../utils/emailBodyExcerpt.js';
 import { logger } from '../utils/logger.js';
 
 export type { ClientIdentity };
@@ -94,12 +95,20 @@ Adobe Sign / DocuSign contracts (adobesign@): the email names the client party (
 - First AND last name must match the case — never match on surname alone (Israel Mejia ≠ Javier Mejias / javiermejias-etal-625)
 - Do NOT guess slack_channel_hint from a similar surname or different first name
 
+Employment authorization / employee records (HR reply to Jorge Barros, forwarded threads):
+- The CLIENT is the person whose records are requested (e.g. "represents Kisha Ann Williams in a personal injury", "employment of KISHA ANN WILLIAMS", Employee Records Request - Kisha Williams).
+- NOT the HR person emailing (Michele Nelson, Les Stobart). NOT Jorge Barros (RJL staff).
+- document_kind = employment_authorization, is_new_client_intake = false — match existing case like kishawilliams-1277
+- Ignore top-of-thread HR chit-chat; read forwarded message and attachment text for the client name.
+
 Return strict JSON only.`;
+
+  const bodyForAi = buildSmartBodyExcerpt(ctx.bodyExcerpt, 8000);
 
   const userPrompt = `From: ${ctx.fromEmail}
 Subject: ${ctx.subject}
-Email body:
-${ctx.bodyExcerpt.slice(0, 4000)}
+Email body (includes forwarded thread tail):
+${bodyForAi}
 Attachment filename: ${ctx.attachmentFilename}${siblings}${attachmentSection}`;
 
   try {

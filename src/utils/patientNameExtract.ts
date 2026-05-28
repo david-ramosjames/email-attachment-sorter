@@ -44,6 +44,26 @@ export function extractPatientNamesFromText(text: string): string[] {
   );
   if (recordsFor) add(recordsFor[1]);
 
+  const representsPi = text.match(
+    /represents\s+([A-Za-z][A-Za-z\s.'-]{4,80}?)\s+in\s+a\s+personal\s+injury/i
+  );
+  if (representsPi) add(representsPi[1]);
+
+  const employeeRequest = text.match(
+    /Employee Records Request\s*[-–:]\s*([A-Za-z][A-Za-z\s.'-]{4,60})/i
+  );
+  if (employeeRequest) add(employeeRequest[1]);
+
+  const employmentOf = text.match(
+    /employment\s+of\s+([A-Z][A-Za-z\s.'-]{4,60})/i
+  );
+  if (employmentOf) add(employmentOf[1]);
+
+  const printedName = text.match(
+    /([A-Z][A-Z\s.'-]{6,50})\s*\n\s*\(Printed Name of Signature\)/i
+  );
+  if (printedName) add(printedName[1]);
+
   return [...new Set(names)];
 }
 

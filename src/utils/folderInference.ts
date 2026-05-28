@@ -40,6 +40,13 @@ export function inferFolderLabelFromContent(parts: {
   if (/\b(lost wages|wage statement|pay stub|employer verification)\b/.test(text)) {
     return 'Lost Wages';
   }
+  if (
+    /\b(employment\s+authorization|employee\s+records|employment\s+records|personnel\s+file|payroll)\b/.test(
+      text
+    )
+  ) {
+    return 'Lost Wages';
+  }
   if (/\b(photo|photograph|image of (scene|injury|vehicle))\b/.test(text)) {
     return 'Photos';
   }
@@ -107,8 +114,15 @@ export function inferDocumentTypeFromContent(parts: {
   }
 
   if (
+    /\b(employment\s+authorization|employee\s+records|employment\s+records)\b/.test(text)
+  ) {
+    return 'Misc';
+  }
+
+  if (
     /\b(contract|retainer|engagement)\b/.test(text) &&
-    /\b(signed|adobesign|docusign)\b/.test(text)
+    /\b(signed|adobesign|docusign)\b/.test(text) &&
+    !/\bemployment\b/.test(text)
   ) {
     return 'Intake';
   }
