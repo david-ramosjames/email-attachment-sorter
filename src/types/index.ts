@@ -85,6 +85,12 @@ export interface MatchContext {
   documentExcerpt?: string;
   /** Cases this sender previously filed to (helps AI disambiguate) */
   senderPriorCaseNumbers?: string[];
+  /** Parsed from email body (e.g. "Attached are Lourdes Galeas Montoya records") */
+  emailPatientNames?: string[];
+  /** Other attachments in the same inbound email */
+  siblingAttachmentFilenames?: string[];
+  /** Prior attachment in this email already matched this case */
+  batchSharedCaseNumber?: string;
 }
 
 export interface InboundEmailPayload {

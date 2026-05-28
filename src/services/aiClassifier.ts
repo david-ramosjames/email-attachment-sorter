@@ -17,6 +17,10 @@ import {
   inferFolderLabelFromContent,
   subfolderForDocumentType,
 } from '../utils/folderInference.js';
+import {
+  allPatientNameTokens,
+  extractPatientNamesFromText,
+} from '../utils/patientNameExtract.js';
 import type { CaseFolder } from '../types/index.js';
 
 let openai: OpenAI | null = null;
@@ -90,11 +94,13 @@ export async function classifyDocument(
 
   const systemPrompt = `You are a legal document filing assistant for Ramos James Law.
 
-Your job: pick the best matching case and document type from the candidate list, using ALL context (email + attachment text + Dropbox folder names).
+Your job: pick the best matching case, folder, and document type. YOU make the final decision — automated rule_match_score hints are often wrong.
 
 Rules:
 - Choose ONLY from the candidate list using the exact case_number string.
-- rule_match_score and rule_signals are automated hints — they can be WRONG (e.g. phone area codes mistaken for case numbers). Always verify against document content.
+- The EMAIL BODY is primary evidence for medical-records packages (records@, procare, "Attached are … records and billing"). Attachment filenames like RecordsAffidavit_*.pdf often do NOT contain the client name — use email + PDF text.
+- When multiple attachments are listed in one email, they are almost always the SAME case unless patient names clearly differ.
+- rule_match_score can be WRONG (e.g. matching "wallace" from the wrong field). Prefer patient name in email/PDF vs partial token matches in slack_channel_name.
 - NEVER match a case based only on a short number inside a phone number, fax header, date, or page number.
 - Fax/scan emails (HelloFax, "Incoming fax", filenames with 10+ digit ids) usually need client/name matching from the document body, not fax metadata.
 - The attachment FILENAME often contains the client name (e.g. "Galeas Montoya Lourdes 89195.pdf") — treat filename tokens as primary evidence, stronger than vendor senders like settlement@ or adobesign@.
@@ -120,13 +126,26 @@ Return strict JSON only.`;
       ? `\nSender previously filed to case(s): ${ctx.senderPriorCaseNumbers.join(', ')}`
       : '';
 
+  const patientSection = ctx.emailPatientNames?.length
+    ? `\nPatient/client name(s) from email: ${ctx.emailPatientNames.join('; ')}`
+    : '';
+
+  const siblingSection = ctx.siblingAttachmentFilenames?.length
+    ? `\nAll attachments in this email (same case): ${ctx.siblingAttachmentFilenames.join(', ')}`
+    : '';
+
+  const batchSection = ctx.batchSharedCaseNumber
+    ? `\nPrior attachment in this email was matched to case_number="${ctx.batchSharedCaseNumber}" — use the same case unless this document names a different patient.`
+    : '';
+
   const userPrompt = `Email metadata:
 From: ${ctx.fromEmail}
 To: ${ctx.toEmails.join(', ')}
 Subject: ${ctx.subject}
-Body excerpt: ${ctx.bodyExcerpt.slice(0, 2000)}
-Attachment filename (PRIMARY for client identity): ${ctx.attachmentFilename}
-Filename name tokens to match: ${ctx.attachmentFilename.replace(/\.[a-z0-9]+$/i, '').split(/[^a-zA-Z]+/).filter((t) => t.length >= 4).join(', ') || '(none)'}${senderSection}${documentSection}
+Email body (PRIMARY for client identity — read carefully):
+${ctx.bodyExcerpt.slice(0, 4000)}
+Current attachment filename: ${ctx.attachmentFilename}
+Filename tokens (often NOT the client name for affidavits): ${ctx.attachmentFilename.replace(/\.[a-z0-9]+$/i, '').split(/[^a-zA-Z]+/).filter((t) => t.length >= 4).join(', ') || '(none)'}${patientSection}${siblingSection}${batchSection}${senderSection}${documentSection}
 
 Candidate cases (${candidates.length} — choose ONLY from this list):
 ${buildCandidatePrompt(candidates)}`;
@@ -190,6 +209,39 @@ ${buildCandidatePrompt(candidates)}`;
     reason = 'AI returned case number not in candidate list — rejected';
   }
 
+  const patientNames =
+    ctx.emailPatientNames ??
+    extractPatientNamesFromText(
+      [ctx.subject, ctx.bodyExcerpt, ctx.documentExcerpt ?? ''].join('\n')
+    );
+  if (suggestedCaseNumber && patientNames.length) {
+    const picked = candidates.find((c) => c.case.case_number === suggestedCaseNumber);
+    if (picked && !caseMatchesPatientNames(picked.case, patientNames)) {
+      const better = candidates.find((c) => caseMatchesPatientNames(c.case, patientNames));
+      if (better) {
+        suggestedCaseNumber = better.case.case_number;
+        confidence = Math.max(confidence, 0.88);
+        reason += ` (corrected to ${better.case.case_number} — patient name in email/PDF)`;
+      } else {
+        confidence = Math.min(confidence, 0.45);
+        suggestedCaseNumber = null;
+        documentType = 'needs_attention';
+        reason += ' (AI case did not match patient name in email/document)';
+      }
+    }
+  }
+
+  if (ctx.batchSharedCaseNumber && suggestedCaseNumber !== ctx.batchSharedCaseNumber) {
+    const batchCase = candidates.find(
+      (c) => c.case.case_number === ctx.batchSharedCaseNumber
+    );
+    if (batchCase && patientNames.length && caseMatchesPatientNames(batchCase.case, patientNames)) {
+      suggestedCaseNumber = ctx.batchSharedCaseNumber;
+      confidence = Math.max(confidence, 0.9);
+      reason += ` (same email batch → case ${ctx.batchSharedCaseNumber})`;
+    }
+  }
+
   let suggestedFolderPath: string | null = null;
   if (suggestedCaseNumber && documentType !== 'needs_attention') {
     const resolved = resolveFolderForCase(
@@ -216,6 +268,22 @@ ${buildCandidatePrompt(candidates)}`;
     reason,
     needsAttention,
   };
+}
+
+function caseMatchesPatientNames(
+  caseRow: CaseCandidate['case'],
+  patientNames: string[]
+): boolean {
+  const tokens = allPatientNameTokens(patientNames);
+  if (tokens.length < 2) return true;
+  const haystack = [
+    caseRow.slack_channel_name,
+    caseRow.dropbox_folder_name ?? '',
+  ]
+    .join(' ')
+    .toLowerCase();
+  const hits = tokens.filter((t) => haystack.includes(t));
+  return hits.length >= 2;
 }
 
 function findFolderByLabel(
@@ -264,7 +332,8 @@ function resolveFolderForCase(
     // AI picked a label not in index — fall through to type mapping, not Correspondence
   }
 
-  const subfolder = subfolderForDocumentType(documentType);
+  const subfolder =
+    fromContent ?? subfolderForDocumentType(documentType) ?? null;
   if (subfolder) {
     const folder = findFolderByLabel(match.folders, subfolder);
     if (folder) {
@@ -273,6 +342,11 @@ function resolveFolderForCase(
         reasonSuffix: ` (mapped ${documentType} → ${subfolder})`,
       };
     }
+    const root = match.case.dropbox_root_path.replace(/\/+$/, '');
+    return {
+      path: `${root}/${subfolder}`.replace(/\/+/g, '/'),
+      reasonSuffix: ` (constructed ${subfolder} under case root)`,
+    };
   }
 
   return { path: null, reasonSuffix: ' (could not resolve folder — use thread override)' };

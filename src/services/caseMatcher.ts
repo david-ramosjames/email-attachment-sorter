@@ -10,6 +10,11 @@ import {
   clientTokensFromFilename,
   isGenericFilingSender,
 } from '../utils/filenameCaseMatch.js';
+import {
+  allPatientNameTokens,
+  extractPatientNamesFromText,
+  tokensFromPersonName,
+} from '../utils/patientNameExtract.js';
 import { logger } from '../utils/logger.js';
 import { isPhoneLikeNumber, maskPhoneAndFaxNumbers } from '../utils/phoneMask.js';
 
@@ -135,8 +140,84 @@ function combinedContext(ctx: MatchContext): string {
     ctx.bodyExcerpt,
     ctx.attachmentFilename,
     ctx.documentExcerpt ?? '',
+    ...(ctx.emailPatientNames ?? []),
   ].join(' ');
   return maskPhoneAndFaxNumbers(raw).toLowerCase();
+}
+
+function patientNamesForContext(ctx: MatchContext): string[] {
+  const fromEmail = extractPatientNamesFromText(
+    [ctx.subject, ctx.bodyExcerpt, ctx.documentExcerpt ?? ''].join('\n')
+  );
+  const merged = [...fromEmail, ...(ctx.emailPatientNames ?? [])];
+  return [...new Set(merged)];
+}
+
+/** Match cases when client name is in email/PDF but slack channel is unrelated (e.g. heidievans + folder "1455. LOURDES GALEAS"). */
+async function findCandidatesByPatientNames(
+  ctx: MatchContext,
+  allCases: Case[],
+  senderCaseNumbers: string[],
+  numericRefs: string[],
+  knownCaseNumbers: Set<string>
+): Promise<CaseCandidate[]> {
+  const patientNames = patientNamesForContext(ctx);
+  if (!patientNames.length) return [];
+
+  const tokens = allPatientNameTokens(patientNames);
+  if (tokens.length < 2) return [];
+
+  const matched = allCases.filter((caseRow) => {
+    const haystack = [
+      caseRow.slack_channel_name,
+      caseRow.dropbox_folder_name ?? '',
+    ]
+      .join(' ')
+      .toLowerCase();
+    const hits = tokens.filter((t) => haystack.includes(t));
+    return hits.length >= 2;
+  });
+
+  if (!matched.length) {
+    const seen = new Set<string>();
+    const fromSearch: Case[] = [];
+    for (const token of tokens) {
+      const rows = await searchCases({ keywords: [token] });
+      for (const row of rows) {
+        if (!seen.has(row.case_number)) {
+          seen.add(row.case_number);
+          fromSearch.push(row);
+        }
+      }
+    }
+    if (!fromSearch.length) return [];
+    return buildCandidates(
+      fromSearch,
+      ctx,
+      senderCaseNumbers,
+      numericRefs,
+      knownCaseNumbers
+    );
+  }
+
+  logger.info('Matched cases by patient name from email/document', {
+    patientNames,
+    tokens,
+    cases: matched.map((c) => c.case_number),
+  });
+
+  const candidates = await buildCandidates(
+    matched,
+    ctx,
+    senderCaseNumbers,
+    numericRefs,
+    knownCaseNumbers
+  );
+  return candidates.map((c) => ({
+    ...c,
+    matchScore: c.matchScore + 120,
+    matchReasons: [...c.matchReasons, 'Boosted: patient name from email/document'],
+  }));
 }
 
 function scoreCase(
@@ -180,6 +261,23 @@ function scoreCase(
   } else if (matchedTokens.length === 1) {
     score += 40;
     reasons.push(`Name token matched: ${matchedTokens[0]}`);
+  }
+
+  for (const patientName of patientNamesForContext(ctx)) {
+    const patientTokens = tokensFromPersonName(patientName);
+    const patientHits = patientTokens.filter((t) => combined.includes(t));
+    const folderHits = patientTokens.filter((t) => folderLower.includes(t));
+    const channelHits = patientTokens.filter((t) => channelNameLower.includes(t));
+    if (patientHits.length >= 2 || folderHits.length >= 2) {
+      score += 95;
+      reasons.push(`Patient "${patientName}" matches case (${patientHits.length} tokens in text)`);
+    } else if (folderHits.length >= 1 && patientHits.length >= 1) {
+      score += 85;
+      reasons.push(`Patient "${patientName}" matches Dropbox folder name`);
+    } else if (channelHits.length >= 1 && patientHits.length >= 1) {
+      score += 75;
+      reasons.push(`Patient "${patientName}" matches channel/folder`);
+    }
   }
 
   const filenameLower = ctx.attachmentFilename.toLowerCase();
@@ -284,23 +382,26 @@ function extractAiSearchTerms(ctx: MatchContext): string[] {
       ctx.bodyExcerpt,
       ctx.attachmentFilename,
       ctx.documentExcerpt ?? '',
+      ...(ctx.emailPatientNames ?? []),
     ].join(' ')
   ).toLowerCase();
 
-  return [
-    ...new Set(
-      raw
-        .split(/[^a-z0-9]+/)
-        .map((w) => w.trim())
-        .filter(
-          (w) =>
-            w.length >= 4 &&
-            !SEARCH_STOPWORDS.has(w) &&
-            !isPhoneLikeNumber(w) &&
-            !/^\d+$/.test(w)
-        )
-    ),
-  ].slice(0, 10);
+  const fromWords = raw
+    .split(/[^a-z0-9]+/)
+    .map((w) => w.trim())
+    .filter(
+      (w) =>
+        w.length >= 4 &&
+        !SEARCH_STOPWORDS.has(w) &&
+        !isPhoneLikeNumber(w) &&
+        !/^\d+$/.test(w)
+    );
+
+  const fromPatient = allPatientNameTokens(patientNamesForContext(ctx)).filter(
+    (t) => t.length >= 4
+  );
+
+  return [...new Set([...fromPatient, ...fromWords])].slice(0, 12);
 }
 
 /** When rule matching is thin, search DB by document/name terms for OpenAI to evaluate. */
@@ -431,7 +532,6 @@ export async function findCaseCandidates(ctx: MatchContext): Promise<CaseCandida
   const allCases = await listAllCases();
   const knownCaseNumbers = new Set(allCases.map((c) => c.case_number));
   const senderCaseNumbers = await getSenderHistory(ctx.fromEmail);
-  const filenameCases = await findCasesFromFilename(ctx);
   const rawText = [
     ctx.subject,
     ctx.bodyExcerpt,
@@ -442,6 +542,15 @@ export async function findCaseCandidates(ctx: MatchContext): Promise<CaseCandida
     knownCaseNumbers.has(n)
   );
 
+  const patientCandidates = await findCandidatesByPatientNames(
+    ctx,
+    allCases,
+    senderCaseNumbers,
+    numericRefs,
+    knownCaseNumbers
+  );
+
+  const filenameCases = await findCasesFromFilename(ctx);
   let candidates = await buildCandidates(
     allCases,
     ctx,
@@ -449,6 +558,29 @@ export async function findCaseCandidates(ctx: MatchContext): Promise<CaseCandida
     numericRefs,
     knownCaseNumbers
   );
+
+  if (patientCandidates.length) {
+    candidates = mergeCandidates(patientCandidates, candidates);
+  }
+
+  if (ctx.batchSharedCaseNumber) {
+    const shared = allCases.find((c) => c.case_number === ctx.batchSharedCaseNumber);
+    if (shared) {
+      const sharedCandidates = await buildCandidates(
+        [shared],
+        ctx,
+        senderCaseNumbers,
+        numericRefs,
+        knownCaseNumbers
+      );
+      const boosted = sharedCandidates.map((c) => ({
+        ...c,
+        matchScore: c.matchScore + 150,
+        matchReasons: [...c.matchReasons, 'Boosted: same email batch as prior attachment'],
+      }));
+      candidates = mergeCandidates(boosted, candidates);
+    }
+  }
 
   if (filenameCases.length) {
     const filenameCandidates = await buildCandidates(
@@ -498,6 +630,17 @@ export async function findCaseCandidates(ctx: MatchContext): Promise<CaseCandida
   if (candidates.length < 5) {
     const widened = await widenCandidatesForAi(ctx, candidates);
     candidates = mergeCandidates(candidates, widened);
+  }
+
+  if (!candidates.length) {
+    const retry = await findCandidatesByPatientNames(
+      ctx,
+      allCases,
+      senderCaseNumbers,
+      numericRefs,
+      knownCaseNumbers
+    );
+    candidates = retry;
   }
 
   return candidates;

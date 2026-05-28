@@ -85,7 +85,7 @@ export async function searchCases(query: {
   } else if (query.keywords?.length) {
     const term = query.keywords[0];
     q = q.or(
-      `case_number.ilike.%${term}%,slack_channel_name.ilike.%${term}%`
+      `case_number.ilike.%${term}%,slack_channel_name.ilike.%${term}%,dropbox_folder_name.ilike.%${term}%`
     );
   } else {
     const { data, error } = await supabase

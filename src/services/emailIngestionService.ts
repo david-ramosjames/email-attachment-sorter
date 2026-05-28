@@ -24,7 +24,15 @@ import type {
   InboundEmailPayload,
   MatchContext,
 } from '../types/index.js';
+import { extractPatientNamesFromText } from '../utils/patientNameExtract.js';
 import { logger } from '../utils/logger.js';
+
+/** Shared state while processing all attachments in one inbound email. */
+interface EmailBatchState {
+  patientNames: string[];
+  sharedCaseNumber: string | null;
+  sharedConfidence: number;
+}
 
 async function resolveAttachmentBuffer(
   itemId: string,
@@ -57,9 +65,18 @@ export async function processInboundEmail(
     return { processed: 0, skipped: 1 };
   }
 
+  const patientNames = extractPatientNamesFromText(
+    [payload.subject, payload.bodyExcerpt].join('\n')
+  );
+  const batch: EmailBatchState = {
+    patientNames,
+    sharedCaseNumber: null,
+    sharedConfidence: 0,
+  };
+
   let processed = 0;
   for (const attachment of payload.attachments) {
-    await processSingleAttachment(payload, attachment);
+    await processSingleAttachment(payload, attachment, batch);
     processed++;
   }
   return { processed, skipped: 0 };
@@ -67,7 +84,8 @@ export async function processInboundEmail(
 
 async function processSingleAttachment(
   payload: InboundEmailPayload,
-  attachment: InboundAttachment
+  attachment: InboundAttachment,
+  batch: EmailBatchState
 ): Promise<void> {
   const itemId = randomUUID();
   const buffer = await resolveAttachmentBuffer(itemId, attachment);
@@ -98,6 +116,9 @@ async function processSingleAttachment(
     bodyExcerpt: payload.bodyExcerpt,
     attachmentFilename: attachment.filename,
     senderPriorCaseNumbers,
+    emailPatientNames: batch.patientNames,
+    siblingAttachmentFilenames: payload.attachments.map((a) => a.filename),
+    batchSharedCaseNumber: batch.sharedCaseNumber ?? undefined,
   };
 
   let candidates = await findCaseCandidates(matchContext);
@@ -118,11 +139,17 @@ async function processSingleAttachment(
     classification.suggestedCaseNumber &&
     !topCandidateMatchesFilename(candidates, attachment.filename);
 
+  const genericAffidavitFilename =
+    /^(records|billings?)affidavit_/i.test(attachment.filename) &&
+    clientTokensFromFilename(attachment.filename).length === 0;
+
   const needsDocumentPass =
     isFilingDocument ||
     classification.confidence < docThreshold ||
     candidates.length === 0 ||
-    filenameMismatch;
+    filenameMismatch ||
+    genericAffidavitFilename ||
+    batch.patientNames.length > 0;
 
   if (needsDocumentPass) {
     const extracted = await extractDocumentExcerpt(
@@ -132,6 +159,15 @@ async function processSingleAttachment(
     );
     if (extracted?.excerpt) {
       matchContext.documentExcerpt = extracted.excerpt;
+      const fromDoc = extractPatientNamesFromText(extracted.excerpt);
+      if (fromDoc.length) {
+        matchContext.emailPatientNames = [
+          ...new Set([...(matchContext.emailPatientNames ?? []), ...fromDoc]),
+        ];
+        batch.patientNames = [
+          ...new Set([...batch.patientNames, ...fromDoc]),
+        ];
+      }
       documentExtraction = {
         method: extracted.method,
         excerptLength: extracted.excerpt.length,
@@ -166,6 +202,15 @@ async function processSingleAttachment(
       candidateCount: candidates.length,
       confidence: classification.confidence,
     });
+  }
+
+  if (
+    classification.suggestedCaseNumber &&
+    !classification.needsAttention &&
+    classification.confidence >= 0.75
+  ) {
+    batch.sharedCaseNumber = classification.suggestedCaseNumber;
+    batch.sharedConfidence = classification.confidence;
   }
 
   const status = classification.needsAttention ? 'needs_attention' : 'pending_review';
