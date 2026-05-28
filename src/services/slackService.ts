@@ -198,7 +198,7 @@ function buildQueueBlocks(
       : status === 'ignored'
         ? 'Not sorted'
         : status === 'needs_attention'
-          ? 'Needs attention'
+          ? 'New File Sorter Item — Needs Human Review'
           : 'New File Sorter Item';
 
   const blocks: Record<string, unknown>[] = [
