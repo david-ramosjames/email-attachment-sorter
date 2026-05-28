@@ -35,6 +35,7 @@ export function mapSlackChannelToCase(row: CaseSlackChannel): Case {
     slack_channel_id: row.slack_channel_id,
     topic_stage: row.topic_stage,
     dropbox_root_path: dropboxRootForCase(row),
+    dropbox_folder_name: row.dropbox_folder_name,
   };
 }
 
@@ -51,7 +52,11 @@ export async function uploadTempAttachment(
   const { error } = await supabase.storage
     .from(TEMP_BUCKET)
     .upload(path, buffer, { contentType: mimeType, upsert: true });
-  if (error) throw new Error(`Temp upload failed: ${error.message}`);
+  if (error) {
+    throw new Error(
+      `Temp upload failed (bucket "${TEMP_BUCKET}"): ${error.message}. Create the bucket in Supabase Storage.`
+    );
+  }
 
   const { data } = supabase.storage.from(TEMP_BUCKET).getPublicUrl(path);
   return data.publicUrl;

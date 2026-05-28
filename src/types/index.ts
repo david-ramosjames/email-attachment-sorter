@@ -15,6 +15,7 @@ export interface Case {
   slack_channel_id: string | null;
   topic_stage: string | null;
   dropbox_root_path: string;
+  dropbox_folder_name: string | null;
 }
 
 export interface CaseSlackChannel {

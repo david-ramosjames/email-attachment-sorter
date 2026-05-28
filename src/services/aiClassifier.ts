@@ -62,12 +62,15 @@ export async function classifyDocument(
   options?: { usedDocumentContent?: boolean }
 ): Promise<ClassificationResult> {
   if (candidates.length === 0) {
+    const hint = ctx.documentExcerpt
+      ? 'No case candidates matched — check case_slack_channels for names/numbers in the document'
+      : 'No matching cases found — attachment text may not have been extracted';
     return {
       suggestedCaseNumber: null,
       suggestedFolderPath: null,
       documentType: 'needs_attention',
       confidence: 0,
-      reason: 'No matching cases found in index',
+      reason: hint,
       needsAttention: true,
     };
   }

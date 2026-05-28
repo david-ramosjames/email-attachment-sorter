@@ -76,8 +76,10 @@ async function processSingleAttachment(
       attachment.mimeType
     );
   } catch (err) {
-    logger.warn('Temp storage upload failed; continuing without URL', {
-      err: String(err),
+    logger.warn('Temp storage upload failed; Approve will fail until bucket exists', {
+      itemId,
+      filename: attachment.filename,
+      err: err instanceof Error ? err.message : String(err),
     });
   }
 
@@ -95,7 +97,10 @@ async function processSingleAttachment(
   let documentExtraction: { method: string; excerptLength: number } | null = null;
 
   const docThreshold = getEnv().DOCUMENT_ANALYSIS_CONFIDENCE_THRESHOLD;
-  if (classification.confidence < docThreshold) {
+  const needsDocumentPass =
+    classification.confidence < docThreshold || candidates.length === 0;
+
+  if (needsDocumentPass) {
     const extracted = await extractDocumentExcerpt(
       buffer,
       attachment.mimeType,
@@ -113,20 +118,30 @@ async function processSingleAttachment(
       });
       classification = {
         ...classification,
-        reason: `[Email confidence below ${docThreshold}; analyzed attachment via ${extracted.method}] ${classification.reason}`,
+        reason: `[Analyzed attachment via ${extracted.method}] ${classification.reason}`,
       };
       logger.info('Second-pass classification with document content', {
         itemId,
         method: extracted.method,
+        candidateCount: candidates.length,
+        candidateCases: candidates.map((c) => c.case.case_number),
         confidence: classification.confidence,
+        excerptPreview: extracted.excerpt.slice(0, 200),
       });
     } else {
-      logger.info('Document extraction skipped or empty', {
+      logger.warn('Document extraction empty — cannot match from PDF', {
         itemId,
         filename: attachment.filename,
+        candidateCount: candidates.length,
         emailConfidence: classification.confidence,
       });
     }
+  } else {
+    logger.info('Email-only classification', {
+      itemId,
+      candidateCount: candidates.length,
+      confidence: classification.confidence,
+    });
   }
 
   const status = classification.needsAttention ? 'needs_attention' : 'pending_review';
