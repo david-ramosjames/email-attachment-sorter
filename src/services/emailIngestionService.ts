@@ -11,6 +11,10 @@ import { getEnv } from '../config/env.js';
 import { findCaseCandidates } from './caseMatcher.js';
 import { classifyDocument } from './aiClassifier.js';
 import { extractDocumentExcerpt } from './documentExtractor.js';
+import {
+  clientTokensFromFilename,
+  topCandidateMatchesFilename,
+} from '../utils/filenameCaseMatch.js';
 import { slackService } from './slackService.js';
 import { auditService } from './auditService.js';
 import { parseInboundEmail } from './emailIngestion/index.js';
@@ -101,8 +105,24 @@ async function processSingleAttachment(
   let documentExtraction: { method: string; excerptLength: number } | null = null;
 
   const docThreshold = getEnv().DOCUMENT_ANALYSIS_CONFIDENCE_THRESHOLD;
+  const isFilingDocument =
+    /\.(pdf|docx?)$/i.test(attachment.filename) ||
+    attachment.mimeType.includes('pdf') ||
+    attachment.mimeType.includes('word') ||
+    attachment.mimeType.includes('msword') ||
+    attachment.mimeType.startsWith('image/');
+
+  const filenameTokens = clientTokensFromFilename(attachment.filename);
+  const filenameMismatch =
+    filenameTokens.length > 0 &&
+    classification.suggestedCaseNumber &&
+    !topCandidateMatchesFilename(candidates, attachment.filename);
+
   const needsDocumentPass =
-    classification.confidence < docThreshold || candidates.length === 0;
+    isFilingDocument ||
+    classification.confidence < docThreshold ||
+    candidates.length === 0 ||
+    filenameMismatch;
 
   if (needsDocumentPass) {
     const extracted = await extractDocumentExcerpt(
@@ -141,7 +161,7 @@ async function processSingleAttachment(
       });
     }
   } else {
-    logger.info('Email-only classification', {
+    logger.info('Email-only classification (non-document attachment)', {
       itemId,
       candidateCount: candidates.length,
       confidence: classification.confidence,

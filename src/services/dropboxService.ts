@@ -91,7 +91,7 @@ async function listFolderEntriesInternal(
       logger.info('Dropbox token expired — refreshing and retrying', { path: normalized });
       return listFolderEntriesInternal(path, namespaceId, true);
     }
-    logger.debug('listFolderEntries failed', { path: normalized, namespaceId, error: message });
+    logger.warn('listFolderEntries failed', { path: normalized, namespaceId, error: message });
     return { entries: [], error: message };
   }
 }

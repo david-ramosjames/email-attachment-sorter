@@ -6,6 +6,10 @@ import {
 } from '../db/supabase.js';
 import { MAX_AI_CANDIDATES } from '../constants/classification.js';
 import type { Case, CaseCandidate, MatchContext } from '../types/index.js';
+import {
+  clientTokensFromFilename,
+  isGenericFilingSender,
+} from '../utils/filenameCaseMatch.js';
 import { logger } from '../utils/logger.js';
 import { isPhoneLikeNumber, maskPhoneAndFaxNumbers } from '../utils/phoneMask.js';
 
@@ -209,9 +213,27 @@ function scoreCase(
     reasons.push(`Case number ${caseRow.case_number} matched in text`);
   }
 
-  if (senderCaseNumbers.includes(caseRow.case_number)) {
+  if (
+    senderCaseNumbers.includes(caseRow.case_number) &&
+    !isGenericFilingSender(ctx.fromEmail)
+  ) {
     score += 20;
     reasons.push('Sender has previously filed to this case');
+  }
+
+  const clientFilenameTokens = clientTokensFromFilename(ctx.attachmentFilename);
+  const filenameHits = clientFilenameTokens.filter(
+    (t) =>
+      channelNameLower.includes(t) ||
+      folderLower.includes(t) ||
+      filenameLower.includes(t)
+  );
+  if (clientFilenameTokens.length >= 2 && filenameHits.length >= 2) {
+    score += 90;
+    reasons.push(`Filename client name matched: ${filenameHits.join(', ')}`);
+  } else if (clientFilenameTokens.length >= 1 && filenameHits.length >= 1) {
+    score += 70;
+    reasons.push(`Filename token matched: ${filenameHits.join(', ')}`);
   }
 
   const labeled = extractLabeledCaseNumber(combined);
@@ -379,10 +401,37 @@ async function keywordFallbackCandidates(
   return buildCandidates(matched, ctx, senderCaseNumbers, numericRefs, known);
 }
 
+async function findCasesFromFilename(ctx: MatchContext): Promise<Case[]> {
+  const tokens = clientTokensFromFilename(ctx.attachmentFilename);
+  const seen = new Set<string>();
+  const matched: Case[] = [];
+
+  for (const token of tokens) {
+    const rows = await searchCases({ keywords: [token] });
+    for (const row of rows) {
+      if (!seen.has(row.case_number)) {
+        seen.add(row.case_number);
+        matched.push(row);
+      }
+    }
+  }
+
+  if (matched.length) {
+    logger.info('Cases found from attachment filename', {
+      filename: ctx.attachmentFilename,
+      tokens,
+      cases: matched.map((c) => c.case_number),
+    });
+  }
+
+  return matched;
+}
+
 export async function findCaseCandidates(ctx: MatchContext): Promise<CaseCandidate[]> {
   const allCases = await listAllCases();
   const knownCaseNumbers = new Set(allCases.map((c) => c.case_number));
   const senderCaseNumbers = await getSenderHistory(ctx.fromEmail);
+  const filenameCases = await findCasesFromFilename(ctx);
   const rawText = [
     ctx.subject,
     ctx.bodyExcerpt,
@@ -400,6 +449,33 @@ export async function findCaseCandidates(ctx: MatchContext): Promise<CaseCandida
     numericRefs,
     knownCaseNumbers
   );
+
+  if (filenameCases.length) {
+    const filenameCandidates = await buildCandidates(
+      filenameCases,
+      ctx,
+      senderCaseNumbers,
+      numericRefs,
+      knownCaseNumbers
+    );
+    for (const fc of filenameCandidates) {
+      const boosted = {
+        ...fc,
+        matchScore: fc.matchScore + 100,
+        matchReasons: [...fc.matchReasons, 'Boosted: filename client-name search'],
+      };
+      const existing = candidates.find((c) => c.case.case_number === fc.case.case_number);
+      if (existing) {
+        existing.matchScore = Math.max(existing.matchScore, boosted.matchScore);
+        existing.matchReasons = [...new Set([...existing.matchReasons, ...boosted.matchReasons])];
+      } else {
+        candidates.push(boosted);
+      }
+    }
+    candidates = candidates
+      .sort((a, b) => b.matchScore - a.matchScore)
+      .slice(0, MAX_AI_CANDIDATES);
+  }
 
   if (!candidates.length) {
     candidates = await keywordFallbackCandidates(ctx, knownCaseNumbers);

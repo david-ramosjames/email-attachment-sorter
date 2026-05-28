@@ -97,7 +97,9 @@ Rules:
 - rule_match_score and rule_signals are automated hints — they can be WRONG (e.g. phone area codes mistaken for case numbers). Always verify against document content.
 - NEVER match a case based only on a short number inside a phone number, fax header, date, or page number.
 - Fax/scan emails (HelloFax, "Incoming fax", filenames with 10+ digit ids) usually need client/name matching from the document body, not fax metadata.
+- The attachment FILENAME often contains the client name (e.g. "Galeas Montoya Lourdes 89195.pdf") — treat filename tokens as primary evidence, stronger than vendor senders like settlement@ or adobesign@.
 - Prefer client name tokens, Dropbox folder names (e.g. "1321. CLIENT NAME"), and labeled "Case/Cause/File No." over bare 3-digit numbers.
+- Do NOT match a case when the filename names a different client than the candidate's slack_channel / dropbox_folder.
 - If no candidate fits well, set suggested_case_number to null, document_type to "needs_attention", and confidence below 0.5.
 - Folder paths must be from the candidate's indexed folders only.
 - Calibrate confidence honestly: 0.9+ only when name/case evidence is clear; 0.5–0.75 when plausible but ambiguous.
@@ -119,7 +121,8 @@ From: ${ctx.fromEmail}
 To: ${ctx.toEmails.join(', ')}
 Subject: ${ctx.subject}
 Body excerpt: ${ctx.bodyExcerpt.slice(0, 2000)}
-Attachment filename: ${ctx.attachmentFilename}${senderSection}${documentSection}
+Attachment filename (PRIMARY for client identity): ${ctx.attachmentFilename}
+Filename name tokens to match: ${ctx.attachmentFilename.replace(/\.[a-z0-9]+$/i, '').split(/[^a-zA-Z]+/).filter((t) => t.length >= 4).join(', ') || '(none)'}${senderSection}${documentSection}
 
 Candidate cases (${candidates.length} — choose ONLY from this list):
 ${buildCandidatePrompt(candidates)}`;
