@@ -8,7 +8,11 @@ import {
   handleDoNotSort,
   handleNeedsAttention,
 } from '../services/fileSorterWorkflow.js';
-import { extractItemIdFromAction, slackService } from '../services/slackService.js';
+import {
+  extractItemIdFromAction,
+  slackActionType,
+  slackService,
+} from '../services/slackService.js';
 import { logger } from '../utils/logger.js';
 
 export const webhooksRouter = Router();
@@ -76,7 +80,7 @@ webhooksRouter.post('/webhooks/slack/interactions', async (req, res) => {
   }
 
   const action = payload.actions[0];
-  const itemId = extractItemIdFromAction(action.action_id) ?? action.value;
+  const itemId = extractItemIdFromAction(action.action_id, action.value);
   const userId = payload.user.id;
 
   if (!itemId) {
@@ -84,14 +88,11 @@ webhooksRouter.post('/webhooks/slack/interactions', async (req, res) => {
     return;
   }
 
-  res.status(200).send();
+  res.status(200).setHeader('Content-Type', 'text/plain').send('');
 
   (async () => {
     try {
-      const actionMatch = action.action_id.match(
-        /^file_sorter_(approve|change|needs_attention|do_not_sort)_/
-      );
-      const actionType = actionMatch?.[1];
+      const actionType = slackActionType(action.action_id);
       switch (actionType) {
         case 'approve':
           await handleApprove(itemId, userId);

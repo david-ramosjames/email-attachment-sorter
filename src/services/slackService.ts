@@ -2,6 +2,7 @@ import { getEnv } from '../config/env.js';
 import { getSlackChannelForCase } from '../db/supabase.js';
 import type { Case, FileSorterItem } from '../types/index.js';
 import { logger } from '../utils/logger.js';
+import { slackFieldText } from '../utils/slackText.js';
 
 const SLACK_API = 'https://slack.com/api';
 
@@ -21,17 +22,32 @@ async function slackApi<T>(method: string, body: Record<string, unknown>): Promi
   return data;
 }
 
-function actionId(suffix: string, itemId: string): string {
-  return `file_sorter_${suffix}_${itemId}`;
+/** Fixed per button type; item id is carried in `value` (Slack limit-friendly). */
+const ACTION_IDS = {
+  approve: 'file_sorter_approve',
+  change: 'file_sorter_change',
+  needs_attention: 'file_sorter_needs_attention',
+  do_not_sort: 'file_sorter_do_not_sort',
+} as const;
+
+export function extractItemIdFromAction(
+  actionId: string,
+  value?: string
+): string | null {
+  if (value?.trim()) return value.trim();
+  const legacy = actionId.match(/^file_sorter_\w+_(.+)$/);
+  return legacy?.[1] ?? null;
 }
 
-function parseActionItemId(actionId: string): string | null {
-  const match = actionId.match(/^file_sorter_\w+_(.+)$/);
-  return match?.[1] ?? null;
-}
-
-export function extractItemIdFromAction(actionIdValue: string): string | null {
-  return parseActionItemId(actionIdValue);
+export function slackActionType(
+  actionId: string
+): keyof typeof ACTION_IDS | null {
+  const entry = Object.entries(ACTION_IDS).find(([, id]) => id === actionId);
+  if (entry) return entry[0] as keyof typeof ACTION_IDS;
+  const legacy = actionId.match(
+    /^file_sorter_(approve|change|needs_attention|do_not_sort)_/
+  );
+  return legacy ? (legacy[1] as keyof typeof ACTION_IDS) : null;
 }
 
 function statusLabel(status: string): string {
@@ -65,31 +81,43 @@ function buildQueueBlocks(
   const blocks: Record<string, unknown>[] = [
     {
       type: 'header',
-      text: { type: 'plain_text', text: 'New File Sorter Item', emoji: true },
+      text: { type: 'plain_text', text: 'New File Sorter Item', emoji: false },
     },
     {
       type: 'section',
       fields: [
-        { type: 'mrkdwn', text: `*Status:*\n${statusLabel(status)}` },
-        { type: 'mrkdwn', text: `*From:*\n${item.from_email}` },
-        { type: 'mrkdwn', text: `*To:*\n${item.to_emails.join(', ') || '—'}` },
-        { type: 'mrkdwn', text: `*Subject:*\n${item.subject ?? '—'}` },
-        { type: 'mrkdwn', text: `*Attachment:*\n${item.attachment_filename}` },
-        { type: 'mrkdwn', text: `*AI Suggested Case:*\n${caseLabel}` },
+        { type: 'mrkdwn', text: `*Status:*\n${slackFieldText(statusLabel(status))}` },
+        { type: 'mrkdwn', text: `*From:*\n${slackFieldText(item.from_email)}` },
         {
           type: 'mrkdwn',
-          text: `*AI Suggested Folder:*\n${item.suggested_folder_path ?? '—'}`,
+          text: `*To:*\n${slackFieldText(item.to_emails.join(', ') || '—')}`,
+        },
+        { type: 'mrkdwn', text: `*Subject:*\n${slackFieldText(item.subject ?? '—')}` },
+        {
+          type: 'mrkdwn',
+          text: `*Attachment:*\n${slackFieldText(item.attachment_filename)}`,
+        },
+        { type: 'mrkdwn', text: `*AI Suggested Case:*\n${slackFieldText(caseLabel)}` },
+        {
+          type: 'mrkdwn',
+          text: `*AI Suggested Folder:*\n${slackFieldText(item.suggested_folder_path ?? '—')}`,
         },
         {
           type: 'mrkdwn',
-          text: `*Document Type:*\n${item.suggested_document_type ?? '—'}`,
+          text: `*Document Type:*\n${slackFieldText(item.suggested_document_type ?? '—')}`,
         },
         {
           type: 'mrkdwn',
           text: `*Confidence:*\n${item.ai_confidence != null ? `${(item.ai_confidence * 100).toFixed(0)}%` : '—'}`,
         },
-        { type: 'mrkdwn', text: `*Reason:*\n${item.ai_reason ?? '—'}` },
       ],
+    },
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `*Reason:*\n${slackFieldText(item.ai_reason ?? '—')}`,
+      },
     },
   ];
 
@@ -133,26 +161,26 @@ function buildQueueBlocks(
           type: 'button',
           text: { type: 'plain_text', text: 'Approve' },
           style: 'primary',
-          action_id: actionId('approve', item.id),
+          action_id: ACTION_IDS.approve,
           value: item.id,
         },
         {
           type: 'button',
           text: { type: 'plain_text', text: 'Change' },
-          action_id: actionId('change', item.id),
+          action_id: ACTION_IDS.change,
           value: item.id,
         },
         {
           type: 'button',
           text: { type: 'plain_text', text: 'Needs Attention' },
-          action_id: actionId('needs_attention', item.id),
+          action_id: ACTION_IDS.needs_attention,
           value: item.id,
         },
         {
           type: 'button',
           text: { type: 'plain_text', text: 'Do Not Sort' },
           style: 'danger',
-          action_id: actionId('do_not_sort', item.id),
+          action_id: ACTION_IDS.do_not_sort,
           value: item.id,
         },
       ],
