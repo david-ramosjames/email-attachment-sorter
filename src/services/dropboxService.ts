@@ -1,10 +1,12 @@
 import { Dropbox } from 'dropbox';
 import { getEnv } from '../config/env.js';
 import {
-  clearDropboxTokenCache,
   dropboxAuthMode,
   getDropboxAccessToken,
   isExpiredDropboxTokenError,
+  refreshDropboxAccessToken,
+  staticTokenRetryHelp,
+  usesDropboxRefreshToken,
 } from './dropboxAuth.js';
 import { logger } from '../utils/logger.js';
 
@@ -27,6 +29,25 @@ async function getDropboxClient(namespaceId?: string | null): Promise<Dropbox> {
     });
   }
   return new Dropbox({ accessToken: token });
+}
+
+/** Run a Dropbox API call; on expired_access_token refresh once and retry (refresh-token mode only). */
+async function withDropboxApi<T>(
+  namespaceId: string | null | undefined,
+  fn: (client: Dropbox) => Promise<T>
+): Promise<T> {
+  try {
+    return await fn(await getDropboxClient(namespaceId));
+  } catch (err) {
+    const message = extractDropboxError(err);
+    if (!isExpiredDropboxTokenError(message)) throw err;
+    if (!usesDropboxRefreshToken()) {
+      throw new Error(staticTokenRetryHelp());
+    }
+    logger.info('Dropbox API returned expired token — refreshing and retrying');
+    await refreshDropboxAccessToken();
+    return await fn(await getDropboxClient(namespaceId));
+  }
 }
 
 export function getCasesRootPath(): string {
@@ -62,35 +83,30 @@ export interface DropboxFolderEntry {
 
 async function listFolderEntriesInternal(
   path: string,
-  namespaceId?: string | null,
-  isRetry = false
+  namespaceId?: string | null
 ): Promise<{ entries: DropboxFolderEntry[]; error?: string }> {
   const normalized = path === '' ? '' : normalizePath(path);
   const entries: DropboxFolderEntry[] = [];
-  const client = await getDropboxClient(namespaceId);
 
   try {
-    let result = await client.filesListFolder({ path: normalized });
-    for (;;) {
-      for (const e of result.result.entries) {
-        if (e['.tag'] === 'folder') {
-          entries.push({
-            name: e.name,
-            path: (e as { path_display: string }).path_display,
-          });
+    await withDropboxApi(namespaceId, async (client) => {
+      let result = await client.filesListFolder({ path: normalized });
+      for (;;) {
+        for (const e of result.result.entries) {
+          if (e['.tag'] === 'folder') {
+            entries.push({
+              name: e.name,
+              path: (e as { path_display: string }).path_display,
+            });
+          }
         }
+        if (!result.result.has_more) break;
+        result = await client.filesListFolderContinue({ cursor: result.result.cursor });
       }
-      if (!result.result.has_more) break;
-      result = await client.filesListFolderContinue({ cursor: result.result.cursor });
-    }
+    });
     return { entries };
   } catch (err) {
     const message = extractDropboxError(err);
-    if (!isRetry && isExpiredDropboxTokenError(message)) {
-      clearDropboxTokenCache();
-      logger.info('Dropbox token expired — refreshing and retrying', { path: normalized });
-      return listFolderEntriesInternal(path, namespaceId, true);
-    }
     logger.warn('listFolderEntries failed', { path: normalized, namespaceId, error: message });
     return { entries: [], error: message };
   }
@@ -110,7 +126,7 @@ function extractDropboxError(err: unknown): string {
 
 export interface DropboxConnectionStatus {
   ok: boolean;
-  authMode?: 'refresh_token' | 'static_access_token';
+  authMode?: 'refresh_token' | 'static_access_token' | 'misconfigured';
   accountEmail?: string;
   accountName?: string;
   homePath?: string;
@@ -122,7 +138,9 @@ export interface DropboxConnectionStatus {
 /** Verifies Dropbox credentials (refresh token or static access token). */
 export async function verifyDropboxConnection(): Promise<DropboxConnectionStatus> {
   try {
-    const account = await (await getDropboxClient()).usersGetCurrentAccount();
+    const account = await withDropboxApi(undefined, (client) =>
+      client.usersGetCurrentAccount()
+    );
     const root = account.result.root_info;
     const status: DropboxConnectionStatus = {
       ok: true,
@@ -284,7 +302,9 @@ export async function discoverCasesRoot(): Promise<DiscoverCasesRootResult> {
 
   // Shared folders available to mount (and often already visible in /)
   try {
-    const mountable = await (await getDropboxClient()).sharingListMountableFolders({});
+    const mountable = await withDropboxApi(undefined, (client) =>
+      client.sharingListMountableFolders({})
+    );
     for (const folder of mountable.result.entries) {
       if (!matchesCasesRootHint(folder.name)) continue;
       const folderPath = folder.path_lower
@@ -301,7 +321,7 @@ export async function discoverCasesRoot(): Promise<DiscoverCasesRootResult> {
 
   // Team / shared folders the user is a member of
   try {
-    const shared = await (await getDropboxClient()).sharingListFolders({});
+    const shared = await withDropboxApi(undefined, (client) => client.sharingListFolders({}));
     for (const folder of shared.result.entries) {
       if (!matchesCasesRootHint(folder.name)) continue;
       const folderPath = folder.path_lower
@@ -346,6 +366,15 @@ export async function resolveCasesRootFromEnv(): Promise<{
   const ns = getEnv().DROPBOX_NAMESPACE_ID;
   if (!ns) return null;
 
+  if (usesDropboxRefreshToken()) {
+    try {
+      await refreshDropboxAccessToken();
+    } catch (err) {
+      logger.error('Dropbox token refresh failed before sync', { err: String(err) });
+      return null;
+    }
+  }
+
   resolvedNamespaceId = ns;
   const { entries, error } = await listFolderEntriesInternal(root, ns);
   if (error) {
@@ -366,11 +395,12 @@ export async function resolveCasesRootFromEnv(): Promise<{
 export async function ensureFolderExists(folderPath: string): Promise<boolean> {
   const normalized = folderPath.startsWith('/') ? folderPath : `/${folderPath}`;
   try {
-    await (await getDropboxClient()).filesCreateFolderV2({ path: normalized, autorename: false });
+    await withDropboxApi(undefined, (client) =>
+      client.filesCreateFolderV2({ path: normalized, autorename: false })
+    );
     return true;
   } catch (err: unknown) {
-    const e = err as { error?: { error_summary?: string } };
-    const summary = e.error?.error_summary ?? '';
+    const summary = extractDropboxError(err);
     if (summary.includes('path/conflict/folder')) return false;
     throw err;
   }
@@ -383,7 +413,7 @@ export async function fileExistsInDropbox(
   const normalized = folderPath.startsWith('/') ? folderPath : `/${folderPath}`;
   const fullPath = `${normalized}/${filename}`.replace(/\/+/g, '/');
   try {
-    await (await getDropboxClient()).filesGetMetadata({ path: fullPath });
+    await withDropboxApi(undefined, (client) => client.filesGetMetadata({ path: fullPath }));
     return true;
   } catch {
     return false;
@@ -399,13 +429,15 @@ export async function uploadFileToDropbox(
   const folderCreated = await ensureFolderExists(normalized);
   const fullPath = `${normalized}/${filename}`.replace(/\/+/g, '/');
 
-  const response = await (await getDropboxClient()).filesUpload({
-    path: fullPath,
-    contents,
-    mode: { '.tag': 'add' },
-    autorename: false,
-    mute: true,
-  });
+  const response = await withDropboxApi(undefined, (client) =>
+    client.filesUpload({
+      path: fullPath,
+      contents,
+      mode: { '.tag': 'add' },
+      autorename: false,
+      mute: true,
+    })
+  );
 
   return {
     path: response.result.path_display ?? fullPath,
@@ -416,9 +448,11 @@ export async function uploadFileToDropbox(
 
 export async function generateDropboxPermalink(filePath: string): Promise<string> {
   const normalized = filePath.startsWith('/') ? filePath : `/${filePath}`;
-  const shared = await (await getDropboxClient()).sharingCreateSharedLinkWithSettings({
-    path: normalized,
-    settings: { requested_visibility: { '.tag': 'team_only' } },
-  });
+  const shared = await withDropboxApi(undefined, (client) =>
+    client.sharingCreateSharedLinkWithSettings({
+      path: normalized,
+      settings: { requested_visibility: { '.tag': 'team_only' } },
+    })
+  );
   return shared.result.url;
 }

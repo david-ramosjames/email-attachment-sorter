@@ -6,6 +6,7 @@ import {
   getLastDropboxSyncAt,
   syncDropboxStructure,
 } from '../services/dropboxSyncService.js';
+import { getDropboxAuthStatus } from '../services/dropboxAuth.js';
 import { discoverCasesRoot, getCasesRootPath, verifyDropboxConnection } from '../services/dropboxService.js';
 import { logger } from '../utils/logger.js';
 
@@ -94,9 +95,10 @@ adminRouter.post('/admin/discover-dropbox-root', async (_req, res) => {
 /** Check whether Dropbox credentials (refresh token or access token) work. */
 adminRouter.get('/admin/dropbox-connection', async (_req, res) => {
   try {
+    const auth = getDropboxAuthStatus();
     const status = await verifyDropboxConnection();
-    res.json(status);
+    res.json({ ...status, auth });
   } catch (err) {
-    res.status(500).json({ ok: false, error: String(err) });
+    res.status(500).json({ ok: false, error: String(err), auth: getDropboxAuthStatus() });
   }
 });

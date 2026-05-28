@@ -69,6 +69,13 @@ export async function syncDropboxStructure(): Promise<DropboxSyncResult> {
 
   syncInProgress = true;
   try {
+    const { usesDropboxRefreshToken, refreshDropboxAccessToken } = await import(
+      './dropboxAuth.js'
+    );
+    if (usesDropboxRefreshToken()) {
+      await refreshDropboxAccessToken();
+    }
+
     let casesRoot = '';
     let casesRootSource: string | null = null;
     let namespaceId: string | null = getEnv().DROPBOX_NAMESPACE_ID ?? null;

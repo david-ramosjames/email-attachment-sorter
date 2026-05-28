@@ -4,6 +4,7 @@ import { logger } from '../utils/logger.js';
 let cachedAccessToken: string | null = null;
 /** Unix ms — refresh 5 minutes before Dropbox expiry */
 let accessTokenExpiresAt = 0;
+let lastRefreshError: string | null = null;
 
 const EXPIRY_BUFFER_MS = 5 * 60 * 1000;
 
@@ -19,8 +20,37 @@ export function usesDropboxRefreshToken(): boolean {
   );
 }
 
-export function dropboxAuthMode(): 'refresh_token' | 'static_access_token' {
-  return usesDropboxRefreshToken() ? 'refresh_token' : 'static_access_token';
+export function dropboxAuthMode(): 'refresh_token' | 'static_access_token' | 'misconfigured' {
+  if (usesDropboxRefreshToken()) return 'refresh_token';
+  if (getEnv().DROPBOX_ACCESS_TOKEN) return 'static_access_token';
+  return 'misconfigured';
+}
+
+export function getDropboxAuthStatus(): {
+  mode: ReturnType<typeof dropboxAuthMode>;
+  tokenCached: boolean;
+  expiresAt: string | null;
+  lastRefreshError: string | null;
+  staticTokenWarning: string | null;
+} {
+  const mode = dropboxAuthMode();
+  let staticTokenWarning: string | null = null;
+  const staticToken = getEnv().DROPBOX_ACCESS_TOKEN;
+  if (staticToken?.startsWith('sl.') && !usesDropboxRefreshToken()) {
+    staticTokenWarning =
+      'DROPBOX_ACCESS_TOKEN is short-lived (~4 hours). Add DROPBOX_REFRESH_TOKEN + APP_KEY + APP_SECRET.';
+  }
+  if (usesDropboxRefreshToken() && staticToken) {
+    staticTokenWarning =
+      'DROPBOX_ACCESS_TOKEN is set but ignored — remove it from Railway to avoid confusion.';
+  }
+  return {
+    mode,
+    tokenCached: Boolean(cachedAccessToken),
+    expiresAt: accessTokenExpiresAt > 0 ? new Date(accessTokenExpiresAt).toISOString() : null,
+    lastRefreshError,
+    staticTokenWarning,
+  };
 }
 
 async function fetchAccessTokenFromRefresh(): Promise<{
@@ -49,15 +79,25 @@ async function fetchAccessTokenFromRefresh(): Promise<{
   };
 
   if (!res.ok || !data.access_token) {
-    throw new Error(
-      data.error_description ?? data.error ?? `Dropbox token refresh failed (${res.status})`
-    );
+    const msg =
+      data.error_description ?? data.error ?? `Dropbox token refresh failed (${res.status})`;
+    lastRefreshError = msg;
+    throw new Error(msg);
   }
 
+  lastRefreshError = null;
   return {
     access_token: data.access_token,
     expires_in: data.expires_in ?? 14_400,
   };
+}
+
+/**
+ * Force a new access token from the refresh token (bypasses cache).
+ */
+export async function refreshDropboxAccessToken(): Promise<string> {
+  clearDropboxTokenCache();
+  return getDropboxAccessToken();
 }
 
 /**
@@ -75,22 +115,32 @@ export async function getDropboxAccessToken(): Promise<string> {
     accessTokenExpiresAt = now + expires_in * 1000 - EXPIRY_BUFFER_MS;
     logger.info('Dropbox access token refreshed', {
       expiresInSeconds: expires_in,
+      expiresAt: new Date(accessTokenExpiresAt).toISOString(),
     });
     return access_token;
   }
 
   const staticToken = getEnv().DROPBOX_ACCESS_TOKEN;
   if (staticToken) {
+    if (staticToken.startsWith('sl.')) {
+      logger.warn(
+        'Using short-lived DROPBOX_ACCESS_TOKEN without refresh — will expire in ~4 hours'
+      );
+    }
     return staticToken;
   }
 
   throw new Error(
-    'Dropbox not configured: set DROPBOX_REFRESH_TOKEN + DROPBOX_APP_KEY + DROPBOX_APP_SECRET, or DROPBOX_ACCESS_TOKEN'
+    'Dropbox not configured: set DROPBOX_REFRESH_TOKEN + DROPBOX_APP_KEY + DROPBOX_APP_SECRET on Railway'
   );
 }
 
 /** Warm token on boot so misconfiguration fails early in logs. */
 export async function ensureDropboxAccessToken(): Promise<void> {
+  if (usesDropboxRefreshToken()) {
+    await refreshDropboxAccessToken();
+    return;
+  }
   await getDropboxAccessToken();
 }
 
@@ -100,5 +150,13 @@ export function isExpiredDropboxTokenError(message: string): boolean {
     lower.includes('expired_access_token') ||
     lower.includes('invalid_access_token') ||
     lower.includes('expired access token')
+  );
+}
+
+export function staticTokenRetryHelp(): string {
+  return (
+    'DROPBOX_ACCESS_TOKEN is expired (sl. tokens last ~4 hours). ' +
+    'On Railway set DROPBOX_APP_KEY, DROPBOX_APP_SECRET, and DROPBOX_REFRESH_TOKEN, ' +
+    'then remove DROPBOX_ACCESS_TOKEN.'
   );
 }
