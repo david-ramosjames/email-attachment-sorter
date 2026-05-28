@@ -156,6 +156,20 @@ function folderLabelFromPath(path: string | null): string {
   return parts[parts.length - 1] ?? path;
 }
 
+/** Slack renders this in each viewer's local timezone. */
+function slackReceivedAt(iso: string | null | undefined): string {
+  if (!iso) return '—';
+  const ms = Date.parse(iso);
+  if (Number.isNaN(ms)) return '—';
+  const unix = Math.floor(ms / 1000);
+  const fallback = new Date(ms).toLocaleString('en-US', {
+    timeZone: 'America/Chicago',
+    dateStyle: 'medium',
+    timeStyle: 'short',
+  });
+  return `<!date^${unix}^{date_short_pretty} at {time}|${fallback}>`;
+}
+
 function buildQueueBlocks(
   item: FileSorterItem,
   caseRow: Case | null,
@@ -198,6 +212,10 @@ function buildQueueBlocks(
         { type: 'mrkdwn', text: `*Status:*\n${slackFieldText(statusLabel(status))}` },
         { type: 'mrkdwn', text: `*From:*\n${slackFieldText(item.from_email)}` },
         { type: 'mrkdwn', text: `*To:*\n${slackFieldText(toLine)}` },
+        {
+          type: 'mrkdwn',
+          text: `*Received:*\n${slackReceivedAt(item.email_received_at ?? item.created_at)}`,
+        },
         { type: 'mrkdwn', text: `*Subject:*\n${slackFieldText(item.subject ?? '—')}` },
         {
           type: 'mrkdwn',
@@ -265,11 +283,6 @@ function buildQueueBlocks(
           `Flagged by: ${slackUserMention(reviewedBy)}`,
         ]),
       },
-    });
-  } else if (status === 'needs_attention') {
-    blocks.unshift({
-      type: 'context',
-      elements: [{ type: 'mrkdwn', text: ':warning: *Needs attention*' }],
     });
   }
 

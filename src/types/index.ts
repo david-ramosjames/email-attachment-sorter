@@ -61,6 +61,8 @@ export interface FileSorterItem {
   slack_queue_channel_id: string | null;
   reviewed_by_slack_user_id: string | null;
   reviewed_at: string | null;
+  /** When the email arrived in Gmail (inbound payload), if provided */
+  email_received_at: string | null;
   created_at: string;
   updated_at: string;
 }

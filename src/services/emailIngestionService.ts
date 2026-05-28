@@ -239,6 +239,7 @@ async function processSingleAttachment(
     slack_queue_channel_id: null,
     reviewed_by_slack_user_id: null,
     reviewed_at: null,
+    email_received_at: payload.receivedAt,
   });
 
   if (!created) {
