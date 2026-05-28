@@ -25,11 +25,53 @@ export function countTokenHitsInCase(caseRow: Case, tokens: string[]): number {
   }).length;
 }
 
+/**
+ * True when the case channel clearly belongs to a different person
+ * (e.g. Israel Mejia vs javiermejias-etal-625 — only partial "mejia" in "mejias").
+ */
+export function identityConflictsWithCase(caseRow: Case, identity: ClientIdentity): boolean {
+  const tokens = identity.nameTokens.filter((t) => t.length >= 3);
+  if (tokens.length < 2 || !identity.clientFullName) return false;
+
+  const haystack = [
+    caseRow.slack_channel_name,
+    caseRow.dropbox_folder_name ?? '',
+  ]
+    .join(' ')
+    .toLowerCase();
+  const haystackCompact = compactAlpha(haystack);
+
+  const first = tokens[0];
+  const last = tokens[tokens.length - 1];
+
+  const firstHit =
+    haystack.includes(first) ||
+    haystackCompact.includes(first) ||
+    (first.length >= 5 && haystackCompact.includes(compactAlpha(first).slice(0, 5)));
+  const lastHit = haystack.includes(last) || haystackCompact.includes(last);
+
+  if (lastHit && !firstHit && first.length >= 4) {
+    return true;
+  }
+
+  if (!lastHit && !firstHit) {
+    return true;
+  }
+
+  const nameCompact = compactAlpha(identity.clientFullName);
+  if (nameCompact.length >= 8 && !haystackCompact.includes(nameCompact.slice(0, 8))) {
+    const hits = countTokenHitsInCase(caseRow, tokens);
+    if (hits < 2) return true;
+  }
+
+  return false;
+}
+
 export function caseMatchesClientIdentity(caseRow: Case, identity: ClientIdentity): boolean {
+  if (identityConflictsWithCase(caseRow, identity)) return false;
   if (!identity.nameTokens.length && !identity.slackChannelHint) return false;
 
   const channel = caseRow.slack_channel_name.toLowerCase();
-  const channelCompact = compactAlpha(channel);
 
   if (identity.slackChannelHint) {
     const hint = identity.slackChannelHint.toLowerCase();
@@ -40,12 +82,13 @@ export function caseMatchesClientIdentity(caseRow: Case, identity: ClientIdentit
 
   if (identity.caseNumberHint && caseRow.case_number === identity.caseNumberHint) {
     const hits = countTokenHitsInCase(caseRow, identity.nameTokens);
-    if (hits >= 1 || identity.nameTokens.length === 0) return true;
+    if (hits >= 2 || identity.nameTokens.length === 0) return true;
   }
 
   if (identity.clientFullName) {
     const nameCompact = compactAlpha(identity.clientFullName);
-    if (nameCompact.length >= 6 && channelCompact.includes(nameCompact.slice(0, 10))) {
+    const channelCompact = compactAlpha(channel);
+    if (nameCompact.length >= 8 && channelCompact.includes(nameCompact.slice(0, 10))) {
       return true;
     }
     if (channelCompact.includes(nameCompact)) return true;
@@ -53,12 +96,13 @@ export function caseMatchesClientIdentity(caseRow: Case, identity: ClientIdentit
 
   const hits = countTokenHitsInCase(caseRow, identity.nameTokens);
   if (identity.nameTokens.length >= 2 && hits >= 2) return true;
-  if (identity.nameTokens.length === 1 && hits >= 1) return true;
 
   return false;
 }
 
 export function scoreCaseForClientIdentity(caseRow: Case, identity: ClientIdentity): number {
+  if (identityConflictsWithCase(caseRow, identity)) return 0;
+
   let score = 0;
   const channel = caseRow.slack_channel_name.toLowerCase();
   const channelCompact = compactAlpha(channel);

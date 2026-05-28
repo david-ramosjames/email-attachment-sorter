@@ -17,6 +17,7 @@ import {
 } from '../utils/patientNameExtract.js';
 import {
   caseMatchesClientIdentity,
+  identityConflictsWithCase,
   scoreCaseForClientIdentity,
 } from '../utils/caseNameMatch.js';
 import { logger } from '../utils/logger.js';
@@ -741,6 +742,19 @@ export async function findCaseCandidates(ctx: MatchContext): Promise<CaseCandida
       );
       logger.info('Identity fallback matched cases', {
         cases: fallbackCases.map((c) => c.slack_channel_name),
+      });
+    }
+  }
+
+  if (ctx.aiClientIdentity && candidates.length) {
+    const before = candidates.length;
+    candidates = candidates.filter(
+      (c) => !identityConflictsWithCase(c.case, ctx.aiClientIdentity!)
+    );
+    if (candidates.length < before) {
+      logger.info('Removed conflicting case candidates', {
+        client: ctx.aiClientIdentity.clientFullName,
+        removed: before - candidates.length,
       });
     }
   }

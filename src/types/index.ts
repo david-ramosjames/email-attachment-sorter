@@ -101,6 +101,10 @@ export interface ClientIdentity {
   nameTokens: string[];
   caseNumberHint: string | null;
   slackChannelHint: string | null;
+  /** e.g. client_contract, medical_records, court_filing */
+  documentKind: string | null;
+  /** Signed engagement/retainer — client may not have a case folder yet */
+  isNewClientIntake: boolean;
   confidence: number;
   reason: string;
 }
@@ -141,6 +145,7 @@ export type DocumentType =
   | 'Photos'
   | 'Settlement'
   | 'Insurance'
+  | 'Intake'
   | 'Misc';
 
 export interface ClassificationResult {
@@ -162,6 +167,7 @@ export const DOCUMENT_TYPES: DocumentType[] = [
   'Photos',
   'Settlement',
   'Insurance',
+  'Intake',
   'Misc',
 ];
 

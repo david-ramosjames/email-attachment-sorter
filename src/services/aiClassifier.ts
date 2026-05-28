@@ -21,7 +21,8 @@ import {
   allPatientNameTokens,
   extractPatientNamesFromText,
 } from '../utils/patientNameExtract.js';
-import { caseMatchesClientIdentity } from '../utils/caseNameMatch.js';
+import { caseMatchesClientIdentity, identityConflictsWithCase } from '../utils/caseNameMatch.js';
+import { isLikelyNewClientContract } from '../utils/intakeDetect.js';
 import type { CaseFolder } from '../types/index.js';
 
 let openai: OpenAI | null = null;
@@ -77,6 +78,35 @@ export async function classifyDocument(
   candidates: CaseCandidate[],
   options?: { usedDocumentContent?: boolean }
 ): Promise<ClassificationResult> {
+  const likelyNewClientContract = isLikelyNewClientContract({
+    fromEmail: ctx.fromEmail,
+    subject: ctx.subject,
+    bodyExcerpt: ctx.bodyExcerpt,
+    attachmentFilename: ctx.attachmentFilename,
+  });
+
+  if (ctx.aiClientIdentity) {
+    candidates = candidates.filter(
+      (c) => !identityConflictsWithCase(c.case, ctx.aiClientIdentity!)
+    );
+  }
+
+  if (
+    ctx.aiClientIdentity?.isNewClientIntake ||
+    likelyNewClientContract ||
+    ctx.aiClientIdentity?.documentKind === 'client_contract'
+  ) {
+    const client = ctx.aiClientIdentity?.clientFullName ?? 'unknown client';
+    return {
+      suggestedCaseNumber: null,
+      suggestedFolderPath: null,
+      documentType: 'needs_attention',
+      confidence: 0.25,
+      reason: `New client contract (${client}) — no existing case folder; create case in Slack/Dropbox first, then re-file`,
+      needsAttention: true,
+    };
+  }
+
   if (candidates.length === 0) {
     const hint = ctx.documentExcerpt
       ? 'No case candidates matched — check case_slack_channels for names/numbers in the document'
@@ -112,8 +142,11 @@ Rules:
 - Folder must match document content — do NOT default to Correspondence.
 - Medical provider records/affidavits (e.g. RecordsAffidavit, BillingsAffidavit, records@…injury.com, procare) → document_type "Medical Records", folder_label "Medical".
 - Attorney pleadings/motions/complaints → "Pleadings". Generic letters → "Correspondence".
+- Adobe Sign / DocuSign **engagement contracts** with a named client → document_type "Intake", suggested_case_number **null**, confidence **below 0.5** (new client — no case folder yet).
+- NEVER assign 0.9+ confidence when the client name does not match the candidate slack_channel (e.g. Israel Mejia ≠ javiermejias-etal).
+- Partial surname matches are NOT enough (Mejia ≠ Mejias/Javier).
 - If unsure of folder, set suggested_folder_label to null (system maps from document_type).
-- Calibrate confidence honestly: 0.9+ only when name/case evidence is clear; 0.5–0.75 when plausible but ambiguous.
+- Calibrate confidence honestly: 0.9+ only when client name clearly matches slack_channel/dropbox_folder.
 
 Document types: ${DOCUMENT_TYPES.join(', ')}.
 Return strict JSON only.`;
@@ -223,14 +256,23 @@ ${buildCandidatePrompt(candidates)}`;
 
   if (ctx.aiClientIdentity && suggestedCaseNumber) {
     const picked = candidates.find((c) => c.case.case_number === suggestedCaseNumber);
-    if (picked && !caseMatchesClientIdentity(picked.case, ctx.aiClientIdentity)) {
+    if (
+      picked &&
+      (identityConflictsWithCase(picked.case, ctx.aiClientIdentity) ||
+        !caseMatchesClientIdentity(picked.case, ctx.aiClientIdentity))
+    ) {
       const better = candidates.find((c) =>
         caseMatchesClientIdentity(c.case, ctx.aiClientIdentity!)
       );
       if (better) {
         suggestedCaseNumber = better.case.case_number;
-        confidence = Math.max(confidence, 0.92);
+        confidence = Math.max(confidence, 0.88);
         reason += ` (corrected to ${better.case.slack_channel_name} — AI client identity)`;
+      } else {
+        suggestedCaseNumber = null;
+        documentType = 'needs_attention';
+        confidence = 0.3;
+        reason += ` (rejected ${picked.case.slack_channel_name} — client "${ctx.aiClientIdentity.clientFullName}" does not match that case)`;
       }
     } else if (!picked) {
       const better = candidates.find((c) =>
@@ -238,7 +280,7 @@ ${buildCandidatePrompt(candidates)}`;
       );
       if (better) {
         suggestedCaseNumber = better.case.case_number;
-        confidence = Math.max(confidence, 0.9);
+        confidence = Math.max(confidence, 0.88);
         reason += ` (picked ${better.case.slack_channel_name} from AI identity)`;
       }
     }
@@ -306,14 +348,17 @@ function caseMatchesPatientNames(
 ): boolean {
   const tokens = allPatientNameTokens(patientNames);
   if (tokens.length < 2) return true;
-  const haystack = [
-    caseRow.slack_channel_name,
-    caseRow.dropbox_folder_name ?? '',
-  ]
-    .join(' ')
-    .toLowerCase();
-  const hits = tokens.filter((t) => haystack.includes(t));
-  return hits.length >= 2;
+  const identity = {
+    clientFullName: patientNames[0] ?? null,
+    nameTokens: tokens,
+    caseNumberHint: null,
+    slackChannelHint: null,
+    documentKind: null,
+    isNewClientIntake: false,
+    confidence: 1,
+    reason: '',
+  };
+  return caseMatchesClientIdentity(caseRow, identity);
 }
 
 function findFolderByLabel(

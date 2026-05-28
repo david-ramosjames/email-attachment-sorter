@@ -27,6 +27,7 @@ export const DOCUMENT_TYPE_TO_SUBFOLDER: Record<string, RjlSubfolder> = {
   Photos: 'Photos',
   Settlement: 'Settlement',
   Insurance: 'Subrogation',
+  Intake: 'Intake',
   Misc: 'Correspondence',
 };
 

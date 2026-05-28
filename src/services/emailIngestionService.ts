@@ -22,6 +22,7 @@ import type {
   MatchContext,
 } from '../types/index.js';
 import { extractPatientNamesFromText } from '../utils/patientNameExtract.js';
+import { isLikelyNewClientContract } from '../utils/intakeDetect.js';
 import { logger } from '../utils/logger.js';
 
 /** Shared state while processing all attachments in one inbound email. */
@@ -131,7 +132,19 @@ async function processSingleAttachment(
     /^(records|billings?)affidavit_/i.test(attachment.filename) &&
     clientTokensFromFilename(attachment.filename).length === 0;
 
-  if (isFilingDocument || genericAffidavitFilename || batch.patientNames.length > 0) {
+  const likelyContract = isLikelyNewClientContract({
+    fromEmail: payload.fromEmail,
+    subject: payload.subject,
+    bodyExcerpt: payload.bodyExcerpt,
+    attachmentFilename: attachment.filename,
+  });
+
+  if (
+    isFilingDocument ||
+    genericAffidavitFilename ||
+    batch.patientNames.length > 0 ||
+    likelyContract
+  ) {
     const extracted = await extractDocumentExcerpt(
       buffer,
       attachment.mimeType,
@@ -154,6 +167,13 @@ async function processSingleAttachment(
   }
 
   matchContext.aiClientIdentity = await extractClientIdentity(matchContext);
+  if (likelyContract) {
+    matchContext.aiClientIdentity = {
+      ...matchContext.aiClientIdentity,
+      isNewClientIntake: true,
+      documentKind: 'client_contract',
+    };
+  }
   if (matchContext.aiClientIdentity.clientFullName) {
     const names = [
       matchContext.aiClientIdentity.clientFullName,

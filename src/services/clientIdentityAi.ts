@@ -34,7 +34,17 @@ const identitySchema = {
     slack_channel_hint: {
       type: ['string', 'null'] as const,
       description:
-        'Likely Slack/case channel slug if inferable (e.g. lourdesgaleas-940), lowercase',
+        'Likely Slack/case channel slug if inferable (e.g. lourdesgaleas-940), lowercase. Null for new clients.',
+    },
+    document_kind: {
+      type: ['string', 'null'] as const,
+      description:
+        'client_contract | medical_records | court_filing | correspondence | other',
+    },
+    is_new_client_intake: {
+      type: 'boolean' as const,
+      description:
+        'True for signed engagement/retainer contracts (Adobe Sign) when no existing case is referenced',
     },
     confidence: { type: 'number' as const, minimum: 0, maximum: 1 },
     reason: { type: 'string' as const },
@@ -44,6 +54,8 @@ const identitySchema = {
     'name_tokens',
     'case_number_hint',
     'slack_channel_hint',
+    'document_kind',
+    'is_new_client_intake',
     'confidence',
     'reason',
   ],
@@ -75,6 +87,11 @@ Output:
 
 Medical records from records@procareinjury.com: the email body often says "Attached are [Name] records and billing" — that name is the client.
 Affidavit filenames (RecordsAffidavit_*.pdf) usually do NOT contain the client name — rely on email body and PDF body (Patient: line).
+
+Adobe Sign / DocuSign contracts (adobesign@): the email names the client party (e.g. "between Ramos James Law and Israel Mejia"). That person is the client.
+- document_kind = client_contract for retainer/engagement contracts
+- is_new_client_intake = true when this is a new engagement contract and NO existing RJL case number is in the document
+- Do NOT guess slack_channel_hint from a similar surname (Mejia ≠ Mejias / javiermejias)
 
 Return strict JSON only.`;
 
@@ -112,6 +129,8 @@ Attachment filename: ${ctx.attachmentFilename}${siblings}${attachmentSection}`;
       name_tokens: string[];
       case_number_hint: string | null;
       slack_channel_hint: string | null;
+      document_kind: string | null;
+      is_new_client_intake: boolean;
       confidence: number;
       reason: string;
     };
@@ -138,6 +157,8 @@ Attachment filename: ${ctx.attachmentFilename}${siblings}${attachmentSection}`;
       nameTokens: tokens,
       caseNumberHint: parsed.case_number_hint?.replace(/\D/g, '') || null,
       slackChannelHint: parsed.slack_channel_hint?.toLowerCase().trim() || null,
+      documentKind: parsed.document_kind,
+      isNewClientIntake: parsed.is_new_client_intake,
       confidence: parsed.confidence,
       reason: parsed.reason,
     };
@@ -163,6 +184,8 @@ function emptyIdentity(reason: string): ClientIdentity {
     nameTokens: [],
     caseNumberHint: null,
     slackChannelHint: null,
+    documentKind: null,
+    isNewClientIntake: false,
     confidence: 0,
     reason,
   };

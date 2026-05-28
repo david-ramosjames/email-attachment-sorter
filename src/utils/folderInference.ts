@@ -47,6 +47,14 @@ export function inferFolderLabelFromContent(parts: {
     return 'Correspondence';
   }
 
+  if (
+    /\b(contract|retainer|engagement letter|fee agreement)\b/.test(text) &&
+    (/\b(adobesign|docusign|signed and filed|is signed)\b/.test(text) ||
+      /\bramos james law\b/.test(text))
+  ) {
+    return 'Intake';
+  }
+
   // Medical records / provider billing (affidavits from records@, procare, etc.)
   if (
     /\b(affidavit|hipaa|medical records?|records affidavit|billing affidavit|billings? affidavit)\b/.test(
@@ -96,6 +104,13 @@ export function inferDocumentTypeFromContent(parts: {
 
   if (/\b(complaint|petition|motion|pleading|summons)\b/.test(text)) {
     return 'Pleadings';
+  }
+
+  if (
+    /\b(contract|retainer|engagement)\b/.test(text) &&
+    /\b(signed|adobesign|docusign)\b/.test(text)
+  ) {
+    return 'Intake';
   }
 
   return null;
