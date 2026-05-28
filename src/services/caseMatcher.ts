@@ -6,9 +6,10 @@ import {
 } from '../db/supabase.js';
 import type { Case, CaseCandidate, MatchContext } from '../types/index.js';
 import { logger } from '../utils/logger.js';
+import { isPhoneLikeNumber, maskPhoneAndFaxNumbers } from '../utils/phoneMask.js';
 
-const CASE_NUMBER_PATTERN = /\b(?:case|cause|docket|file\s*#?)\s*#?\s*([A-Z0-9-]+)/i;
-const RJL_NUMERIC_CASE_PATTERN = /\b(\d{3,5})\b/g;
+const CASE_NUMBER_PATTERN =
+  /\b(?:case|cause|docket|file\s*#?|file\s+no\.?)\s*#?\s*([A-Z0-9-]+)/i;
 const DROPBOX_FOLDER_LEAD_PATTERN = /\b(\d{3,5})\.\s+[A-Za-z]/g;
 
 /** Meaningful tokens from slack_channel_name or Dropbox folder name */
@@ -44,15 +45,41 @@ function extractLabeledCaseNumber(text: string): string | null {
   return match?.[1] ?? null;
 }
 
-/** RJL case numbers are typically 3–5 digits (e.g. 1321, 276). */
-function extractNumericCaseRefs(text: string): string[] {
+/**
+ * Extract RJL case number references — never from phone/fax digit strings.
+ * 3-digit case IDs (e.g. 512) only from folder-style "512. Client Name" or labeled refs.
+ */
+function extractNumericCaseRefs(
+  text: string,
+  knownCaseNumbers?: Set<string>
+): string[] {
   const refs = new Set<string>();
-  for (const m of text.matchAll(RJL_NUMERIC_CASE_PATTERN)) {
-    refs.add(m[1]);
-  }
+
   for (const m of text.matchAll(DROPBOX_FOLDER_LEAD_PATTERN)) {
     refs.add(m[1]);
   }
+
+  const labeled = extractLabeledCaseNumber(text);
+  if (labeled && /^\d{2,5}$/.test(labeled) && !isPhoneLikeNumber(labeled)) {
+    refs.add(labeled);
+  }
+
+  const masked = maskPhoneAndFaxNumbers(text);
+
+  // Bare 4–5 digit case numbers (e.g. 1321, 2760) after phones removed
+  for (const m of masked.matchAll(/\b(\d{4,5})\b/g)) {
+    refs.add(m[1]);
+  }
+
+  // 3-digit: only when already in Dropbox folder form (e.g. "512. NAME")
+  if (knownCaseNumbers) {
+    for (const caseNum of knownCaseNumbers) {
+      if (caseNum.length !== 3 || refs.has(caseNum)) continue;
+      const folderStyle = new RegExp(`\\b${caseNum}\\.\\s+[A-Za-z]`, 'i');
+      if (folderStyle.test(text)) refs.add(caseNum);
+    }
+  }
+
   return [...refs];
 }
 
@@ -64,20 +91,19 @@ function wordsFromFilename(filename: string): string[] {
         .toLowerCase()
         .split(/[^a-z0-9]+/)
         .map((w) => w.trim())
-        .filter((w) => w.length > 2)
+        .filter((w) => w.length > 2 && !isPhoneLikeNumber(w))
     ),
   ];
 }
 
 function combinedContext(ctx: MatchContext): string {
-  return [
+  const raw = [
     ctx.subject,
     ctx.bodyExcerpt,
     ctx.attachmentFilename,
     ctx.documentExcerpt ?? '',
-  ]
-    .join(' ')
-    .toLowerCase();
+  ].join(' ');
+  return maskPhoneAndFaxNumbers(raw).toLowerCase();
 }
 
 function scoreCase(
@@ -144,7 +170,12 @@ function scoreCase(
     }
   }
 
-  if (caseNumberLower.length > 0 && combined.includes(caseNumberLower)) {
+  if (
+    numericRefs.includes(caseRow.case_number) &&
+    new RegExp(`\\b${caseNumberLower.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`).test(
+      combined
+    )
+  ) {
     score += 25;
     reasons.push(`Case number ${caseRow.case_number} matched in text`);
   }
@@ -195,11 +226,23 @@ async function buildCandidates(
     .slice(0, 8);
 }
 
-async function keywordFallbackCandidates(ctx: MatchContext): Promise<CaseCandidate[]> {
+async function keywordFallbackCandidates(
+  ctx: MatchContext,
+  knownCaseNumbers: Set<string>
+): Promise<CaseCandidate[]> {
+  const rawText = [
+    ctx.subject,
+    ctx.bodyExcerpt,
+    ctx.attachmentFilename,
+    ctx.documentExcerpt ?? '',
+  ].join(' ');
+
   const keywords = [
     ...wordsFromFilename(ctx.attachmentFilename),
-    ...extractNumericCaseRefs(combinedContext(ctx)),
-  ].slice(0, 6);
+    ...extractNumericCaseRefs(rawText, knownCaseNumbers),
+  ]
+    .filter((k) => !isPhoneLikeNumber(k))
+    .slice(0, 6);
 
   const seen = new Set<string>();
   const matched: Case[] = [];
@@ -221,7 +264,7 @@ async function keywordFallbackCandidates(ctx: MatchContext): Promise<CaseCandida
     cases: matched.map((c) => c.case_number),
   });
 
-  const numericRefs = extractNumericCaseRefs(combinedContext(ctx));
+  const numericRefs = extractNumericCaseRefs(rawText, knownCaseNumbers);
   const known = new Set(matched.map((c) => c.case_number));
   const senderCaseNumbers = await getSenderHistory(ctx.fromEmail);
   return buildCandidates(matched, ctx, senderCaseNumbers, numericRefs, known);
@@ -231,8 +274,13 @@ export async function findCaseCandidates(ctx: MatchContext): Promise<CaseCandida
   const allCases = await listAllCases();
   const knownCaseNumbers = new Set(allCases.map((c) => c.case_number));
   const senderCaseNumbers = await getSenderHistory(ctx.fromEmail);
-  const combined = combinedContext(ctx);
-  const numericRefs = extractNumericCaseRefs(combined).filter((n) =>
+  const rawText = [
+    ctx.subject,
+    ctx.bodyExcerpt,
+    ctx.attachmentFilename,
+    ctx.documentExcerpt ?? '',
+  ].join(' ');
+  const numericRefs = extractNumericCaseRefs(rawText, knownCaseNumbers).filter((n) =>
     knownCaseNumbers.has(n)
   );
 
@@ -245,7 +293,7 @@ export async function findCaseCandidates(ctx: MatchContext): Promise<CaseCandida
   );
 
   if (!candidates.length) {
-    candidates = await keywordFallbackCandidates(ctx);
+    candidates = await keywordFallbackCandidates(ctx, knownCaseNumbers);
   }
 
   if (!candidates.length && numericRefs.length) {
