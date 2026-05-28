@@ -42,6 +42,7 @@ webhooksRouter.post('/webhooks/inbound-email', async (req, res) => {
 interface SlackInteractionPayload {
   type: string;
   user: { id: string; name?: string };
+  channel?: { id: string };
   actions?: Array<{ action_id: string; value?: string }>;
   response_url?: string;
 }
@@ -75,20 +76,29 @@ webhooksRouter.post('/webhooks/slack/interactions', async (req, res) => {
   }
 
   if (payload.type !== 'block_actions' || !payload.actions?.length) {
-    res.status(200).send();
+    res.status(200).json({});
     return;
   }
 
   const action = payload.actions[0];
   const itemId = extractItemIdFromAction(action.action_id, action.value);
   const userId = payload.user.id;
+  const channelId = payload.channel?.id;
+
+  logger.info('Slack interaction received', {
+    actionId: action.action_id,
+    itemId,
+    userId,
+  });
 
   if (!itemId) {
-    res.status(400).send('Unknown action');
+    logger.warn('Slack interaction missing item id', { actionId: action.action_id });
+    res.status(200).json({});
     return;
   }
 
-  res.status(200).setHeader('Content-Type', 'text/plain').send('');
+  // Acknowledge immediately (Slack requires 200 within 3s)
+  res.status(200).json({});
 
   (async () => {
     try {
@@ -110,10 +120,11 @@ webhooksRouter.post('/webhooks/slack/interactions', async (req, res) => {
           logger.warn('Unknown Slack action', { actionId: action.action_id });
       }
     } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
       logger.error('Slack action handler failed', {
         itemId,
         action: action.action_id,
-        err: String(err),
+        err: message,
       });
       const item = await import('../db/supabase.js').then((m) => m.getFileSorterItem(itemId));
       if (item) {
@@ -127,6 +138,17 @@ webhooksRouter.post('/webhooks/slack/interactions', async (req, res) => {
           { ...item, status: 'failed' },
           caseRow
         );
+      }
+      if (channelId) {
+        try {
+          await slackService.postEphemeral(
+            channelId,
+            userId,
+            `File Sorter error: ${message}`
+          );
+        } catch {
+          /* ignore */
+        }
       }
     }
   })();

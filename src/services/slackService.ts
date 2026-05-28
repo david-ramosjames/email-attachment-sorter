@@ -2,9 +2,53 @@ import { getEnv } from '../config/env.js';
 import { getSlackChannelForCase } from '../db/supabase.js';
 import type { Case, FileSorterItem } from '../types/index.js';
 import { logger } from '../utils/logger.js';
-import { slackFieldText } from '../utils/slackText.js';
+import { slackFieldText, slackSectionText } from '../utils/slackText.js';
 
 const SLACK_API = 'https://slack.com/api';
+
+/** action_id must be unique per message; value carries item UUID for the handler. */
+const ACTION_PREFIX = {
+  approve: 'fs_appr_',
+  change: 'fs_chg_',
+  needs_attention: 'fs_attn_',
+  do_not_sort: 'fs_skip_',
+} as const;
+
+type SlackActionType = keyof typeof ACTION_PREFIX;
+
+function actionIdFor(type: SlackActionType, itemId: string): string {
+  return `${ACTION_PREFIX[type]}${itemId}`;
+}
+
+export function extractItemIdFromAction(
+  actionId: string,
+  value?: string
+): string | null {
+  if (value?.trim()) return value.trim();
+  for (const prefix of Object.values(ACTION_PREFIX)) {
+    if (actionId.startsWith(prefix)) {
+      const id = actionId.slice(prefix.length);
+      return id.length > 0 ? id : null;
+    }
+  }
+  const legacy = actionId.match(/^file_sorter_(?:approve|change|needs_attention|do_not_sort)_(.+)$/);
+  return legacy?.[1] ?? null;
+}
+
+export function slackActionType(actionId: string): SlackActionType | null {
+  for (const [type, prefix] of Object.entries(ACTION_PREFIX) as [SlackActionType, string][]) {
+    if (actionId.startsWith(prefix)) return type;
+  }
+  const legacy = actionId.match(
+    /^file_sorter_(approve|change|needs_attention|do_not_sort)(?:_|$)/
+  );
+  if (legacy) return legacy[1] as SlackActionType;
+  if (actionId === 'file_sorter_approve') return 'approve';
+  if (actionId === 'file_sorter_change') return 'change';
+  if (actionId === 'file_sorter_needs_attention') return 'needs_attention';
+  if (actionId === 'file_sorter_do_not_sort') return 'do_not_sort';
+  return null;
+}
 
 async function slackApi<T>(method: string, body: Record<string, unknown>): Promise<T> {
   const res = await fetch(`${SLACK_API}/${method}`, {
@@ -22,46 +66,27 @@ async function slackApi<T>(method: string, body: Record<string, unknown>): Promi
   return data;
 }
 
-/** Fixed per button type; item id is carried in `value` (Slack limit-friendly). */
-const ACTION_IDS = {
-  approve: 'file_sorter_approve',
-  change: 'file_sorter_change',
-  needs_attention: 'file_sorter_needs_attention',
-  do_not_sort: 'file_sorter_do_not_sort',
-} as const;
-
-export function extractItemIdFromAction(
-  actionId: string,
-  value?: string
-): string | null {
-  if (value?.trim()) return value.trim();
-  const legacy = actionId.match(/^file_sorter_\w+_(.+)$/);
-  return legacy?.[1] ?? null;
-}
-
-export function slackActionType(
-  actionId: string
-): keyof typeof ACTION_IDS | null {
-  const entry = Object.entries(ACTION_IDS).find(([, id]) => id === actionId);
-  if (entry) return entry[0] as keyof typeof ACTION_IDS;
-  const legacy = actionId.match(
-    /^file_sorter_(approve|change|needs_attention|do_not_sort)_/
-  );
-  return legacy ? (legacy[1] as keyof typeof ACTION_IDS) : null;
-}
-
 function statusLabel(status: string): string {
   const map: Record<string, string> = {
-    pending_review: 'PENDING REVIEW',
-    approved: 'APPROVED',
-    saved: 'SAVED',
-    needs_attention: 'NEEDS ATTENTION',
-    ignored: 'IGNORED',
-    failed: 'FAILED',
+    pending_review: 'Pending review',
+    approved: 'Approved',
+    saved: 'Saved',
+    needs_attention: 'Needs attention',
+    ignored: 'Ignored',
+    failed: 'Failed',
   };
-  return map[status] ?? status.toUpperCase();
+  return map[status] ?? status;
 }
 
+function folderLabelFromPath(path: string | null): string {
+  if (!path) return '—';
+  const parts = path.split('/').filter(Boolean);
+  return parts[parts.length - 1] ?? path;
+}
+
+/**
+ * Compact review card — details live in Supabase; buttons only send item id in `value`.
+ */
 function buildQueueBlocks(
   item: FileSorterItem,
   caseRow: Case | null,
@@ -77,111 +102,80 @@ function buildQueueBlocks(
   const caseLabel = caseRow
     ? `${caseRow.slack_channel_name} (${caseRow.case_number})`
     : item.suggested_case_number ?? '—';
+  const folderLabel = folderLabelFromPath(item.suggested_folder_path);
+
+  const lines = [
+    `*${slackFieldText(item.attachment_filename, 200)}*`,
+    `Status: ${statusLabel(status)}`,
+    `Case: ${slackFieldText(caseLabel, 200)}`,
+    `Folder: ${slackFieldText(folderLabel, 120)}`,
+    item.suggested_document_type
+      ? `Type: ${slackFieldText(item.suggested_document_type, 80)}`
+      : null,
+    item.ai_confidence != null
+      ? `Confidence: ${(item.ai_confidence * 100).toFixed(0)}%`
+      : null,
+    `From: ${slackFieldText(item.from_email, 120)}`,
+  ].filter(Boolean);
 
   const blocks: Record<string, unknown>[] = [
-    {
-      type: 'header',
-      text: { type: 'plain_text', text: 'New File Sorter Item', emoji: false },
-    },
-    {
-      type: 'section',
-      fields: [
-        { type: 'mrkdwn', text: `*Status:*\n${slackFieldText(statusLabel(status))}` },
-        { type: 'mrkdwn', text: `*From:*\n${slackFieldText(item.from_email)}` },
-        {
-          type: 'mrkdwn',
-          text: `*To:*\n${slackFieldText(item.to_emails.join(', ') || '—')}`,
-        },
-        { type: 'mrkdwn', text: `*Subject:*\n${slackFieldText(item.subject ?? '—')}` },
-        {
-          type: 'mrkdwn',
-          text: `*Attachment:*\n${slackFieldText(item.attachment_filename)}`,
-        },
-        { type: 'mrkdwn', text: `*AI Suggested Case:*\n${slackFieldText(caseLabel)}` },
-        {
-          type: 'mrkdwn',
-          text: `*AI Suggested Folder:*\n${slackFieldText(item.suggested_folder_path ?? '—')}`,
-        },
-        {
-          type: 'mrkdwn',
-          text: `*Document Type:*\n${slackFieldText(item.suggested_document_type ?? '—')}`,
-        },
-        {
-          type: 'mrkdwn',
-          text: `*Confidence:*\n${item.ai_confidence != null ? `${(item.ai_confidence * 100).toFixed(0)}%` : '—'}`,
-        },
-      ],
-    },
     {
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: `*Reason:*\n${slackFieldText(item.ai_reason ?? '—')}`,
+        text: lines.join('\n'),
       },
     },
   ];
 
   if (options?.approvedBy) {
     blocks.push({
-      type: 'section',
-      text: {
-        type: 'mrkdwn',
-        text: `*Approved by:* ${options.approvedBy}`,
-      },
+      type: 'context',
+      elements: [{ type: 'mrkdwn', text: `Approved by ${slackFieldText(options.approvedBy, 80)}` }],
     });
   }
   if (options?.dropboxLink) {
     blocks.push({
-      type: 'section',
-      text: {
-        type: 'mrkdwn',
-        text: `*Saved to:*\n<${options.dropboxLink}|Open in Dropbox>`,
-      },
-    });
-  }
-
-  if (status === 'needs_attention') {
-    blocks.unshift({
       type: 'context',
       elements: [
         {
           type: 'mrkdwn',
-          text: ':warning: *NEEDS ATTENTION*',
+          text: `<${options.dropboxLink}|Open in Dropbox>`,
         },
       ],
     });
   }
 
   if (!disabled) {
+    const itemId = item.id;
     blocks.push({
       type: 'actions',
-      block_id: `actions_${item.id}`,
+      block_id: `fs_actions_${itemId}`,
       elements: [
         {
           type: 'button',
-          text: { type: 'plain_text', text: 'Approve' },
+          text: { type: 'plain_text', text: 'Approve', emoji: true },
           style: 'primary',
-          action_id: ACTION_IDS.approve,
-          value: item.id,
+          action_id: actionIdFor('approve', itemId),
+          value: itemId,
         },
         {
           type: 'button',
-          text: { type: 'plain_text', text: 'Change' },
-          action_id: ACTION_IDS.change,
-          value: item.id,
+          text: { type: 'plain_text', text: 'Change', emoji: true },
+          action_id: actionIdFor('change', itemId),
+          value: itemId,
         },
         {
           type: 'button',
-          text: { type: 'plain_text', text: 'Needs Attention' },
-          action_id: ACTION_IDS.needs_attention,
-          value: item.id,
+          text: { type: 'plain_text', text: 'Needs Attention', emoji: true },
+          action_id: actionIdFor('needs_attention', itemId),
+          value: itemId,
         },
         {
           type: 'button',
-          text: { type: 'plain_text', text: 'Do Not Sort' },
-          style: 'danger',
-          action_id: ACTION_IDS.do_not_sort,
-          value: item.id,
+          text: { type: 'plain_text', text: 'Do Not Sort', emoji: true },
+          action_id: actionIdFor('do_not_sort', itemId),
+          value: itemId,
         },
       ],
     });
@@ -190,7 +184,7 @@ function buildQueueBlocks(
       elements: [
         {
           type: 'mrkdwn',
-          text: '_To change case/folder, reply in thread: `case: Name` and `folder: Label`_',
+          text: 'Thread override: `case: Name` · `folder: Pleadings`',
         },
       ],
     });
@@ -208,7 +202,7 @@ export const slackService = {
     const blocks = buildQueueBlocks(item, caseRow);
     const result = await slackApi<{ channel: string; ts: string }>('chat.postMessage', {
       channel,
-      text: `New File Sorter Item: ${item.attachment_filename}`,
+      text: `File Sorter: ${item.attachment_filename} → ${caseRow?.case_number ?? item.suggested_case_number ?? '?'}`,
       blocks,
     });
     return { channel: result.channel, ts: result.ts };
@@ -229,7 +223,7 @@ export const slackService = {
     await slackApi('chat.update', {
       channel: item.slack_queue_channel_id,
       ts: item.slack_queue_message_ts,
-      text: `File Sorter Item: ${item.attachment_filename} — ${statusLabel(item.status)}`,
+      text: `File Sorter: ${item.attachment_filename} — ${statusLabel(item.status)}`,
       blocks,
     });
   },
@@ -265,6 +259,10 @@ export const slackService = {
     }
   },
 
+  async postEphemeral(channel: string, userId: string, text: string): Promise<void> {
+    await slackApi('chat.postEphemeral', { channel, user: userId, text });
+  },
+
   async postCaseChannelConfirmation(opts: {
     caseRow: Case;
     item: FileSorterItem;
@@ -284,32 +282,19 @@ export const slackService = {
     }
     await slackApi('chat.postMessage', {
       channel: channelId,
-      text: `New document saved to Dropbox: ${opts.item.attachment_filename}`,
+      text: `Saved to Dropbox: ${opts.item.attachment_filename}`,
       blocks: [
         {
-          type: 'header',
-          text: { type: 'plain_text', text: 'New document saved to Dropbox', emoji: true },
-        },
-        {
           type: 'section',
-          fields: [
-            { type: 'mrkdwn', text: `*Document:*\n${opts.item.attachment_filename}` },
-            {
-              type: 'mrkdwn',
-              text: `*Dropbox folder:*\n${opts.item.final_dropbox_path ?? '—'}`,
-            },
-            {
-              type: 'mrkdwn',
-              text: `*Document type:*\n${opts.item.suggested_document_type ?? '—'}`,
-            },
-            { type: 'mrkdwn', text: `*Original sender:*\n${opts.item.from_email}` },
-            { type: 'mrkdwn', text: `*Original subject:*\n${opts.item.subject ?? '—'}` },
-            { type: 'mrkdwn', text: `*Approved by:*\n${opts.approvedBy}` },
-            {
-              type: 'mrkdwn',
-              text: `*Dropbox:*\n<${opts.dropboxLink}|Open file>`,
-            },
-          ],
+          text: {
+            type: 'mrkdwn',
+            text: slackSectionText(
+              `*${opts.item.attachment_filename}*\n` +
+                `Folder: ${opts.item.final_dropbox_path ?? '—'}\n` +
+                `Approved by: ${opts.approvedBy}\n` +
+                `<${opts.dropboxLink}|Open in Dropbox>`
+            ),
+          },
         },
       ],
     });
