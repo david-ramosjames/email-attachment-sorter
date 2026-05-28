@@ -289,45 +289,49 @@ function buildQueueBlocks(
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: slackSectionWithExtras(':warning: *Needs Attention*', [
-          `Flagged by: ${slackUserMention(reviewedBy)}`,
-        ]),
+        text: slackSectionWithExtras(
+          ':warning: *Needs Attention* — use Change Case/Folder, then Approve to file.',
+          [`Flagged by: ${slackUserMention(reviewedBy)}`]
+        ),
       },
     });
   }
 
   if (!disabled) {
     const itemId = item.id;
+    const actionElements: Record<string, unknown>[] = [
+      {
+        type: 'button',
+        text: { type: 'plain_text', text: 'Approve', emoji: true },
+        style: 'primary',
+        action_id: actionIdFor('approve', itemId),
+        value: itemId,
+      },
+      {
+        type: 'button',
+        text: { type: 'plain_text', text: 'Change Case/Folder', emoji: true },
+        action_id: actionIdFor('change', itemId),
+        value: itemId,
+      },
+    ];
+    if (status !== 'needs_attention') {
+      actionElements.push({
+        type: 'button',
+        text: { type: 'plain_text', text: 'Needs Attention', emoji: true },
+        action_id: actionIdFor('needs_attention', itemId),
+        value: itemId,
+      });
+    }
+    actionElements.push({
+      type: 'button',
+      text: { type: 'plain_text', text: 'Do Not Sort', emoji: true },
+      action_id: actionIdFor('do_not_sort', itemId),
+      value: itemId,
+    });
     blocks.push({
       type: 'actions',
       block_id: `fs_actions_${itemId}`,
-      elements: [
-        {
-          type: 'button',
-          text: { type: 'plain_text', text: 'Approve', emoji: true },
-          style: 'primary',
-          action_id: actionIdFor('approve', itemId),
-          value: itemId,
-        },
-        {
-          type: 'button',
-          text: { type: 'plain_text', text: 'Change Case/Folder', emoji: true },
-          action_id: actionIdFor('change', itemId),
-          value: itemId,
-        },
-        {
-          type: 'button',
-          text: { type: 'plain_text', text: 'Needs Attention', emoji: true },
-          action_id: actionIdFor('needs_attention', itemId),
-          value: itemId,
-        },
-        {
-          type: 'button',
-          text: { type: 'plain_text', text: 'Do Not Sort', emoji: true },
-          action_id: actionIdFor('do_not_sort', itemId),
-          value: itemId,
-        },
-      ],
+      elements: actionElements,
     });
   }
 

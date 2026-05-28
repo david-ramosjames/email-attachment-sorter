@@ -213,7 +213,6 @@ export async function handleNeedsAttention(
     : null;
   await slackService.updateQueueMessage(updated, caseRow, {
     reviewedByUserId: slackUserId,
-    disabled: true,
   });
 }
 
