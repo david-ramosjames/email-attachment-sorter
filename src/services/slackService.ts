@@ -1,3 +1,4 @@
+import { RJL_STANDARD_SUBFOLDERS } from '../constants/rjlFolders.js';
 import { getEnv } from '../config/env.js';
 import { getSlackChannelForCase, updateCaseSlackChannelId } from '../db/supabase.js';
 import type { Case, FileSorterItem } from '../types/index.js';
@@ -170,6 +171,15 @@ function slackReceivedAt(iso: string | null | undefined): string {
   return `<!date^${unix}^{date_short_pretty} at {time}|${fallback}>`;
 }
 
+function threadOverrideHelpText(): string {
+  const folderList = RJL_STANDARD_SUBFOLDERS.join(', ');
+  return (
+    '_Optional — reply in thread before Approve (use your own values):_\n' +
+    '• `case: 1277` (case number) or `case: First Last` (client name)\n' +
+    `• \`folder: <name>\` — ${folderList}`
+  );
+}
+
 function buildQueueBlocks(
   item: FileSorterItem,
   caseRow: Case | null,
@@ -324,11 +334,7 @@ function buildQueueBlocks(
       elements: [
         {
           type: 'mrkdwn',
-          text:
-            '_Optional — reply in thread before Approve (examples only; use your own values):_\n' +
-            '• `case: 1277` (case number)\n' +
-            '• `case: First Last` (client first and last name)\n' +
-            '• `folder: Medical`',
+          text: threadOverrideHelpText(),
         },
       ],
     });
@@ -438,8 +444,7 @@ export const slackService = {
       thread_ts: item.slack_queue_message_ts,
       text:
         'Reply in this thread with overrides, then click Approve.\n' +
-        'Examples (use your own values):\n' +
-        '```case: 1277\ncase: First Last\nfolder: Medical```',
+        threadOverrideHelpText(),
     });
   },
 
