@@ -143,8 +143,8 @@ Rules:
 - Medical provider records/affidavits (e.g. RecordsAffidavit, BillingsAffidavit, records@…injury.com, procare) → document_type "Medical Records", folder_label "Medical".
 - Attorney pleadings/motions/complaints → "Pleadings". Generic letters → "Correspondence".
 - Adobe Sign / DocuSign **engagement contracts** with a named client → document_type "Intake", suggested_case_number **null**, confidence **below 0.5** (new client — no case folder yet).
-- NEVER assign 0.9+ confidence when the client name does not match the candidate slack_channel (e.g. Israel Mejia ≠ javiermejias-etal).
-- Partial surname matches are NOT enough (Mejia ≠ Mejias/Javier).
+- NEVER assign 0.9+ when first OR last name does not match the candidate slack_channel (Israel Mejia ≠ javiermejias-etal — different first names Javier vs Israel).
+- Matching on last name only is forbidden; first name must appear in slack_channel or dropbox_folder.
 - If unsure of folder, set suggested_folder_label to null (system maps from document_type).
 - Calibrate confidence honestly: 0.9+ only when client name clearly matches slack_channel/dropbox_folder.
 
@@ -272,7 +272,7 @@ ${buildCandidatePrompt(candidates)}`;
         suggestedCaseNumber = null;
         documentType = 'needs_attention';
         confidence = 0.3;
-        reason += ` (rejected ${picked.case.slack_channel_name} — client "${ctx.aiClientIdentity.clientFullName}" does not match that case)`;
+        reason += ` (rejected ${picked.case.slack_channel_name} — "${ctx.aiClientIdentity.clientFullName}" is a different person; first name must match case channel)`;
       }
     } else if (!picked) {
       const better = candidates.find((c) =>

@@ -91,7 +91,8 @@ Affidavit filenames (RecordsAffidavit_*.pdf) usually do NOT contain the client n
 Adobe Sign / DocuSign contracts (adobesign@): the email names the client party (e.g. "between Ramos James Law and Israel Mejia"). That person is the client.
 - document_kind = client_contract for retainer/engagement contracts
 - is_new_client_intake = true when this is a new engagement contract and NO existing RJL case number is in the document
-- Do NOT guess slack_channel_hint from a similar surname (Mejia ≠ Mejias / javiermejias)
+- First AND last name must match the case — never match on surname alone (Israel Mejia ≠ Javier Mejias / javiermejias-etal-625)
+- Do NOT guess slack_channel_hint from a similar surname or different first name
 
 Return strict JSON only.`;
 

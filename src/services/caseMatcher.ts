@@ -17,6 +17,7 @@ import {
 } from '../utils/patientNameExtract.js';
 import {
   caseMatchesClientIdentity,
+  compactAlpha,
   identityConflictsWithCase,
   scoreCaseForClientIdentity,
 } from '../utils/caseNameMatch.js';
@@ -173,14 +174,28 @@ async function findCandidatesByPatientNames(
   if (tokens.length < 2) return [];
 
   const matched = allCases.filter((caseRow) => {
-    const haystack = [
-      caseRow.slack_channel_name,
-      caseRow.dropbox_folder_name ?? '',
-    ]
-      .join(' ')
-      .toLowerCase();
-    const hits = tokens.filter((t) => haystack.includes(t));
-    return hits.length >= 2;
+    if (identityConflictsWithCase(caseRow, {
+      clientFullName: patientNames[0] ?? null,
+      nameTokens: tokens,
+      caseNumberHint: null,
+      slackChannelHint: null,
+      documentKind: null,
+      isNewClientIntake: false,
+      confidence: 1,
+      reason: '',
+    })) {
+      return false;
+    }
+    return caseMatchesClientIdentity(caseRow, {
+      clientFullName: patientNames[0] ?? null,
+      nameTokens: tokens,
+      caseNumberHint: null,
+      slackChannelHint: null,
+      documentKind: null,
+      isNewClientIntake: false,
+      confidence: 1,
+      reason: '',
+    });
   });
 
   if (!matched.length) {
@@ -270,18 +285,21 @@ function scoreCase(
 
   for (const patientName of patientNamesForContext(ctx)) {
     const patientTokens = tokensFromPersonName(patientName);
-    const patientHits = patientTokens.filter((t) => combined.includes(t));
-    const folderHits = patientTokens.filter((t) => folderLower.includes(t));
-    const channelHits = patientTokens.filter((t) => channelNameLower.includes(t));
-    if (patientHits.length >= 2 || folderHits.length >= 2) {
+    if (patientTokens.length < 2) continue;
+    const first = patientTokens[0];
+    const last = patientTokens[patientTokens.length - 1];
+    const firstInChannel =
+      channelNameLower.includes(first) ||
+      folderLower.includes(first) ||
+      compactAlpha(channelNameLower).includes(compactAlpha(first));
+    const lastInChannel =
+      channelNameLower.includes(last) ||
+      folderLower.includes(last) ||
+      compactAlpha(channelNameLower).includes(compactAlpha(last));
+    if (!firstInChannel) continue;
+    if (firstInChannel && lastInChannel) {
       score += 95;
-      reasons.push(`Patient "${patientName}" matches case (${patientHits.length} tokens in text)`);
-    } else if (folderHits.length >= 1 && patientHits.length >= 1) {
-      score += 85;
-      reasons.push(`Patient "${patientName}" matches Dropbox folder name`);
-    } else if (channelHits.length >= 1 && patientHits.length >= 1) {
-      score += 75;
-      reasons.push(`Patient "${patientName}" matches channel/folder`);
+      reasons.push(`Patient "${patientName}" matches case (first + last name in channel/folder)`);
     }
   }
 

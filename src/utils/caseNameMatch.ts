@@ -5,61 +5,93 @@ export function compactAlpha(s: string): string {
   return s.toLowerCase().replace(/[^a-z0-9]/g, '');
 }
 
-/** How many name tokens appear in channel, folder, or case number fields */
-export function countTokenHitsInCase(caseRow: Case, tokens: string[]): number {
-  const channel = caseRow.slack_channel_name.toLowerCase();
-  const folder = (caseRow.dropbox_folder_name ?? '').toLowerCase();
-  const caseNum = caseRow.case_number.toLowerCase();
-  const channelCompact = compactAlpha(channel);
-  const folderCompact = compactAlpha(folder);
+function caseHaystack(caseRow: Case): { text: string; compact: string } {
+  const text = [caseRow.slack_channel_name, caseRow.dropbox_folder_name ?? '']
+    .join(' ')
+    .toLowerCase();
+  return { text, compact: compactAlpha(text) };
+}
 
-  return tokens.filter((t) => {
-    if (t.length < 3) return false;
-    return (
-      channel.includes(t) ||
-      folder.includes(t) ||
-      caseNum.includes(t) ||
-      channelCompact.includes(t) ||
-      folderCompact.includes(t)
-    );
-  }).length;
+function tokenAppearsInHaystack(token: string, haystack: { text: string; compact: string }): boolean {
+  if (token.length < 3) return false;
+  const t = token.toLowerCase();
+  return (
+    haystack.text.includes(t) ||
+    haystack.compact.includes(compactAlpha(t)) ||
+    (t.length >= 5 && haystack.compact.includes(compactAlpha(t).slice(0, 5)))
+  );
+}
+
+/** First segment of slack slug (e.g. javiermejias from javiermejias-etal-625). */
+function channelNameSegment(caseRow: Case): string {
+  return (caseRow.slack_channel_name.split('-')[0] ?? '').toLowerCase();
 }
 
 /**
- * True when the case channel clearly belongs to a different person
- * (e.g. Israel Mejia vs javiermejias-etal-625 — only partial "mejia" in "mejias").
+ * Client's first name is absent but the channel slug clearly names someone else
+ * (Israel Mejia vs javiermejias-etal-625 → "javier" at start, not "israel").
+ */
+function channelNamesDifferentFirstPerson(
+  caseRow: Case,
+  clientFirstName: string,
+  haystack: { text: string; compact: string }
+): boolean {
+  if (tokenAppearsInHaystack(clientFirstName, haystack)) {
+    return false;
+  }
+
+  const segment = compactAlpha(channelNameSegment(caseRow));
+  const clientFirst = compactAlpha(clientFirstName);
+  if (segment.length < 5 || clientFirst.length < 3) return false;
+
+  // Slug is one glued token (javiermejias) — client's first name must appear inside it
+  if (segment.includes(clientFirst)) return false;
+
+  // Channel segment starts with a different given name (≥4 chars) than the client's
+  const prefix = segment.slice(0, Math.min(segment.length, 12));
+  if (prefix.length >= 4 && !clientFirst.startsWith(prefix.slice(0, 4)) && !prefix.startsWith(clientFirst.slice(0, 4))) {
+    return true;
+  }
+
+  return false;
+}
+
+/** How many name tokens appear in channel, folder, or case number fields */
+export function countTokenHitsInCase(caseRow: Case, tokens: string[]): number {
+  const haystack = caseHaystack(caseRow);
+  return tokens.filter((t) => tokenAppearsInHaystack(t, haystack)).length;
+}
+
+/**
+ * True when the case belongs to a different person than the document client.
+ * Requires the client's FIRST name to appear in the case — a shared last name alone is not enough.
  */
 export function identityConflictsWithCase(caseRow: Case, identity: ClientIdentity): boolean {
   const tokens = identity.nameTokens.filter((t) => t.length >= 3);
   if (tokens.length < 2 || !identity.clientFullName) return false;
 
-  const haystack = [
-    caseRow.slack_channel_name,
-    caseRow.dropbox_folder_name ?? '',
-  ]
-    .join(' ')
-    .toLowerCase();
-  const haystackCompact = compactAlpha(haystack);
-
+  const haystack = caseHaystack(caseRow);
   const first = tokens[0];
   const last = tokens[tokens.length - 1];
 
-  const firstHit =
-    haystack.includes(first) ||
-    haystackCompact.includes(first) ||
-    (first.length >= 5 && haystackCompact.includes(compactAlpha(first).slice(0, 5)));
-  const lastHit = haystack.includes(last) || haystackCompact.includes(last);
+  const firstInCase = tokenAppearsInHaystack(first, haystack);
+  const lastInCase = tokenAppearsInHaystack(last, haystack);
 
-  if (lastHit && !firstHit && first.length >= 4) {
+  // Different first names: Israel Mejia ≠ Javier Mejias — never match on surname only
+  if (!firstInCase) {
     return true;
   }
 
-  if (!lastHit && !firstHit) {
+  if (channelNamesDifferentFirstPerson(caseRow, first, haystack)) {
+    return true;
+  }
+
+  if (!lastInCase && !firstInCase) {
     return true;
   }
 
   const nameCompact = compactAlpha(identity.clientFullName);
-  if (nameCompact.length >= 8 && !haystackCompact.includes(nameCompact.slice(0, 8))) {
+  if (nameCompact.length >= 8 && !haystack.compact.includes(nameCompact.slice(0, 8))) {
     const hits = countTokenHitsInCase(caseRow, tokens);
     if (hits < 2) return true;
   }
@@ -71,6 +103,7 @@ export function caseMatchesClientIdentity(caseRow: Case, identity: ClientIdentit
   if (identityConflictsWithCase(caseRow, identity)) return false;
   if (!identity.nameTokens.length && !identity.slackChannelHint) return false;
 
+  const haystack = caseHaystack(caseRow);
   const channel = caseRow.slack_channel_name.toLowerCase();
 
   if (identity.slackChannelHint) {
@@ -87,26 +120,32 @@ export function caseMatchesClientIdentity(caseRow: Case, identity: ClientIdentit
 
   if (identity.clientFullName) {
     const nameCompact = compactAlpha(identity.clientFullName);
-    const channelCompact = compactAlpha(channel);
-    if (nameCompact.length >= 8 && channelCompact.includes(nameCompact.slice(0, 10))) {
+    if (nameCompact.length >= 8 && haystack.compact.includes(nameCompact.slice(0, 10))) {
       return true;
     }
-    if (channelCompact.includes(nameCompact)) return true;
+    if (haystack.compact.includes(nameCompact)) return true;
+  }
+
+  const tokens = identity.nameTokens.filter((t) => t.length >= 3);
+  if (tokens.length >= 2) {
+    const first = tokens[0];
+    const last = tokens[tokens.length - 1];
+    const firstOk = tokenAppearsInHaystack(first, haystack);
+    const lastOk = tokenAppearsInHaystack(last, haystack);
+    // Both first and last (or full compact name) must align — not last name only
+    return firstOk && lastOk;
   }
 
   const hits = countTokenHitsInCase(caseRow, identity.nameTokens);
-  if (identity.nameTokens.length >= 2 && hits >= 2) return true;
-
-  return false;
+  return identity.nameTokens.length >= 1 && hits >= 1;
 }
 
 export function scoreCaseForClientIdentity(caseRow: Case, identity: ClientIdentity): number {
   if (identityConflictsWithCase(caseRow, identity)) return 0;
 
   let score = 0;
+  const haystack = caseHaystack(caseRow);
   const channel = caseRow.slack_channel_name.toLowerCase();
-  const channelCompact = compactAlpha(channel);
-  const folder = (caseRow.dropbox_folder_name ?? '').toLowerCase();
 
   if (identity.slackChannelHint && channel.includes(identity.slackChannelHint)) {
     score += 200;
@@ -116,12 +155,20 @@ export function scoreCaseForClientIdentity(caseRow: Case, identity: ClientIdenti
     score += 150;
   }
 
-  const hits = countTokenHitsInCase(caseRow, identity.nameTokens);
-  score += hits * 40;
+  const tokens = identity.nameTokens.filter((t) => t.length >= 3);
+  if (tokens.length >= 2) {
+    const firstOk = tokenAppearsInHaystack(tokens[0], haystack);
+    const lastOk = tokenAppearsInHaystack(tokens[tokens.length - 1], haystack);
+    if (firstOk) score += 80;
+    if (lastOk) score += 50;
+    if (firstOk && lastOk) score += 60;
+  } else {
+    score += countTokenHitsInCase(caseRow, identity.nameTokens) * 40;
+  }
 
   if (identity.clientFullName) {
     const nameCompact = compactAlpha(identity.clientFullName);
-    if (channelCompact.includes(nameCompact) || folder.includes(nameCompact.slice(0, 12))) {
+    if (haystack.compact.includes(nameCompact)) {
       score += 100;
     }
   }
