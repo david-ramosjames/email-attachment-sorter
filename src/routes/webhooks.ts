@@ -43,6 +43,7 @@ interface SlackInteractionPayload {
   type: string;
   user: { id: string; name?: string };
   channel?: { id: string };
+  message?: { ts?: string; thread_ts?: string };
   actions?: Array<{ action_id: string; value?: string }>;
   response_url?: string;
 }
@@ -103,9 +104,13 @@ webhooksRouter.post('/webhooks/slack/interactions', async (req, res) => {
   (async () => {
     try {
       const actionType = slackActionType(action.action_id);
+      const messageTs = payload.message?.thread_ts ?? payload.message?.ts;
+      const slackThread =
+        channelId && messageTs ? { channelId, messageTs } : undefined;
+
       switch (actionType) {
         case 'approve':
-          await handleApprove(itemId, userId);
+          await handleApprove(itemId, userId, slackThread);
           break;
         case 'change':
           await handleChange(itemId, userId);

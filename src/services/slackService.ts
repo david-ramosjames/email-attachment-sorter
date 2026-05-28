@@ -66,6 +66,38 @@ async function slackApi<T>(method: string, body: Record<string, unknown>): Promi
   return data;
 }
 
+/** Form-encoded POST — required for some methods (e.g. conversations.replies). */
+async function slackApiForm<T>(
+  method: string,
+  params: Record<string, string | number | boolean | undefined>
+): Promise<T> {
+  const body = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined && value !== null) {
+      body.set(key, String(value));
+    }
+  }
+  const res = await fetch(`${SLACK_API}/${method}`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${getEnv().SLACK_BOT_TOKEN}`,
+      'Content-Type': 'application/x-www-form-urlencoded; charset=utf-8',
+    },
+    body: body.toString(),
+  });
+  const data = (await res.json()) as T & { ok: boolean; error?: string };
+  if (!(data as { ok: boolean }).ok) {
+    throw new Error(`Slack API ${method} failed: ${(data as { error?: string }).error}`);
+  }
+  return data;
+}
+
+export interface SlackThreadContext {
+  channelId: string;
+  /** Parent message timestamp (thread root) */
+  messageTs: string;
+}
+
 function statusLabel(status: string): string {
   const map: Record<string, string> = {
     pending_review: 'Pending review',
@@ -237,12 +269,23 @@ export const slackService = {
     });
   },
 
-  async getThreadReplies(channel: string, threadTs: string): Promise<string[]> {
-    const result = await slackApi<{
-      messages: Array<{ text?: string; user?: string; bot_id?: string }>;
-    }>('conversations.replies', { channel, ts: threadTs, limit: 50 });
+  async getThreadReplies(ctx: SlackThreadContext): Promise<string[]> {
+    const channelId = ctx.channelId.trim();
+    const ts = ctx.messageTs.trim();
+    if (!channelId || !ts) {
+      throw new Error('Missing Slack channel or message timestamp');
+    }
+
+    const result = await slackApiForm<{
+      messages: Array<{ text?: string; user?: string; bot_id?: string; subtype?: string }>;
+    }>('conversations.replies', {
+      channel: channelId,
+      ts,
+      limit: 50,
+    });
+
     return (result.messages ?? [])
-      .filter((m) => !m.bot_id)
+      .filter((m) => !m.bot_id && m.subtype !== 'bot_message')
       .map((m) => m.text ?? '')
       .filter(Boolean);
   },

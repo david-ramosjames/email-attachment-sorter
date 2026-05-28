@@ -21,10 +21,14 @@ import {
 } from '../constants/rjlFolders.js';
 import { slackService } from './slackService.js';
 import { auditService } from './auditService.js';
-import { parseThreadReply } from '../utils/threadParser.js';
+import { parseThreadReplies } from '../utils/threadParser.js';
+import type { SlackThreadContext } from './slackService.js';
 import { logger } from '../utils/logger.js';
 
-async function resolveFinalPaths(itemId: string): Promise<{
+async function resolveFinalPaths(
+  itemId: string,
+  slackThread?: SlackThreadContext
+): Promise<{
   caseNumber: string;
   folderPath: string;
   caseRow: NonNullable<Awaited<ReturnType<typeof getCaseById>>>;
@@ -35,40 +39,59 @@ async function resolveFinalPaths(itemId: string): Promise<{
   let caseNumber = item.final_case_number ?? item.suggested_case_number;
   let folderPath = item.final_dropbox_path ?? item.suggested_folder_path;
 
-  if (item.slack_queue_channel_id && item.slack_queue_message_ts) {
-    const replies = await slackService.getThreadReplies(
-      item.slack_queue_channel_id,
-      item.slack_queue_message_ts
-    );
-    const latest = replies[replies.length - 1];
-    if (latest) {
-      const override = parseThreadReply(latest);
-      if (override.caseName) {
-        const matched = await getCaseByName(override.caseName);
-        if (matched) {
-          caseNumber = matched.case_number;
-          await auditService.log(itemId, 'thread_override', {
-            caseName: override.caseName,
-            caseNumber: matched.case_number,
-          });
+  const threadCtx: SlackThreadContext | null =
+    slackThread ??
+    (item.slack_queue_channel_id && item.slack_queue_message_ts
+      ? {
+          channelId: item.slack_queue_channel_id,
+          messageTs: item.slack_queue_message_ts,
         }
+      : null);
+
+  if (threadCtx) {
+    let replies: string[] = [];
+    try {
+      replies = await slackService.getThreadReplies(threadCtx);
+    } catch (err) {
+      logger.warn('Could not load Slack thread overrides', {
+        itemId,
+        channelId: threadCtx.channelId,
+        messageTs: threadCtx.messageTs,
+        err: String(err),
+      });
+    }
+
+    const override = parseThreadReplies(replies);
+    if (override.caseName) {
+      const matched = await getCaseByName(override.caseName);
+      if (matched) {
+        caseNumber = matched.case_number;
+        await auditService.log(itemId, 'thread_override', {
+          caseName: override.caseName,
+          caseNumber: matched.case_number,
+        });
       }
-      if (override.folderLabel && caseNumber) {
-        const folders = await getFoldersForCase(caseNumber);
-        const folder = folders.find(
-          (f) => f.folder_label.toLowerCase() === override.folderLabel!.toLowerCase()
-        );
-        if (folder) {
-          folderPath = folder.dropbox_path;
+    }
+    if (override.folderLabel && caseNumber) {
+      const folders = await getFoldersForCase(caseNumber);
+      const folder = folders.find(
+        (f) => f.folder_label.toLowerCase() === override.folderLabel!.toLowerCase()
+      );
+      if (folder) {
+        folderPath = folder.dropbox_path;
+        await auditService.log(itemId, 'thread_override', {
+          folderLabel: override.folderLabel,
+          dropboxPath: folder.dropbox_path,
+        });
+      } else if (caseNumber) {
+        const caseRow = await getCaseById(caseNumber);
+        if (caseRow) {
+          folderPath = `${caseRow.dropbox_root_path}/${override.folderLabel}`;
           await auditService.log(itemId, 'thread_override', {
             folderLabel: override.folderLabel,
-            dropboxPath: folder.dropbox_path,
+            dropboxPath: folderPath,
+            note: 'constructed from case root',
           });
-        } else if (caseNumber) {
-          const caseRow = await getCaseById(caseNumber);
-          if (caseRow) {
-            folderPath = `${caseRow.dropbox_root_path}/${override.folderLabel}`;
-          }
         }
       }
     }
@@ -84,14 +107,18 @@ async function resolveFinalPaths(itemId: string): Promise<{
   return { caseNumber, folderPath, caseRow };
 }
 
-export async function handleApprove(itemId: string, slackUserId: string): Promise<void> {
+export async function handleApprove(
+  itemId: string,
+  slackUserId: string,
+  slackThread?: SlackThreadContext
+): Promise<void> {
   const item = await getFileSorterItem(itemId);
   if (!item) throw new Error('Item not found');
   if (['saved', 'ignored'].includes(item.status)) {
     throw new Error(`Item already ${item.status}`);
   }
 
-  const { caseNumber, folderPath, caseRow } = await resolveFinalPaths(itemId);
+  const { caseNumber, folderPath, caseRow } = await resolveFinalPaths(itemId, slackThread);
 
   const exists = await fileExistsInDropbox(folderPath, item.attachment_filename);
   if (exists) {
