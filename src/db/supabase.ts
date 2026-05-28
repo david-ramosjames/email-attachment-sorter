@@ -219,18 +219,63 @@ export async function getSenderHistory(fromEmail: string): Promise<string[]> {
   return [...new Set(ids)];
 }
 
-export async function createFileSorterItem(
+export async function getFileSorterItemByGmailAttachment(
+  gmailMessageId: string,
+  attachmentFilename: string
+): Promise<FileSorterItem | null> {
+  const { data, error } = await getSupabase()
+    .from('file_sorter_items')
+    .select('*')
+    .eq('gmail_message_id', gmailMessageId)
+    .eq('attachment_filename', attachmentFilename)
+    .maybeSingle();
+  if (error) return null;
+  return data as FileSorterItem | null;
+}
+
+function isUniqueViolation(error: { code?: string; message?: string }): boolean {
+  return (
+    error.code === '23505' ||
+    (error.message?.includes('duplicate key') ?? false) ||
+    (error.message?.includes('file_sorter_items_gmail_message_id_attachment_filename_key') ??
+      false)
+  );
+}
+
+/** Insert a row, or return the existing row if this Gmail attachment was already queued. */
+export async function createFileSorterItemIfNew(
   row: Omit<FileSorterItem, 'created_at' | 'updated_at'> & {
     status?: FileSorterItemStatus;
   }
-): Promise<FileSorterItem> {
+): Promise<{ item: FileSorterItem; created: boolean }> {
   const { data, error } = await getSupabase()
     .from('file_sorter_items')
     .insert(row)
     .select()
     .single();
-  if (error) throw new Error(`Create item failed: ${error.message}`);
-  return data as FileSorterItem;
+
+  if (!error) {
+    return { item: data as FileSorterItem, created: true };
+  }
+
+  if (isUniqueViolation(error)) {
+    const existing = await getFileSorterItemByGmailAttachment(
+      row.gmail_message_id,
+      row.attachment_filename
+    );
+    if (existing) return { item: existing, created: false };
+  }
+
+  throw new Error(`Create item failed: ${error.message}`);
+}
+
+export async function createFileSorterItem(
+  row: Omit<FileSorterItem, 'created_at' | 'updated_at'> & {
+    status?: FileSorterItemStatus;
+  }
+): Promise<FileSorterItem> {
+  const { item } = await createFileSorterItemIfNew(row);
+  return item;
 }
 
 export async function updateFileSorterItem(

@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto';
 import {
-  createFileSorterItem,
+  createFileSorterItemIfNew,
+  getFileSorterItemByGmailAttachment,
   downloadTempAttachment,
   getCaseById,
   getSenderHistory,
@@ -83,18 +84,34 @@ export async function processInboundEmail(
   };
 
   let processed = 0;
+  let skipped = 0;
   for (const attachment of enrichedPayload.attachments) {
-    await processSingleAttachment(enrichedPayload, attachment, batch);
-    processed++;
+    const outcome = await processSingleAttachment(enrichedPayload, attachment, batch);
+    if (outcome === 'processed') processed++;
+    else skipped++;
   }
-  return { processed, skipped: 0 };
+  return { processed, skipped };
 }
 
 async function processSingleAttachment(
   payload: InboundEmailPayload,
   attachment: InboundAttachment,
   batch: EmailBatchState
-): Promise<void> {
+): Promise<'processed' | 'skipped'> {
+  const existing = await getFileSorterItemByGmailAttachment(
+    payload.gmailMessageId,
+    attachment.filename
+  );
+  if (existing) {
+    logger.info('Skipping duplicate inbound attachment', {
+      gmailMessageId: payload.gmailMessageId,
+      attachmentFilename: attachment.filename,
+      existingItemId: existing.id,
+      status: existing.status,
+    });
+    return 'skipped';
+  }
+
   const itemId = randomUUID();
   const buffer = await resolveAttachmentBuffer(itemId, attachment);
 
@@ -194,7 +211,7 @@ async function processSingleAttachment(
 
   const status = classification.needsAttention ? 'needs_attention' : 'pending_review';
 
-  const item = await createFileSorterItem({
+  const { item, created } = await createFileSorterItemIfNew({
     id: itemId,
     gmail_message_id: payload.gmailMessageId,
     from_email: payload.fromEmail,
@@ -223,6 +240,15 @@ async function processSingleAttachment(
     reviewed_by_slack_user_id: null,
     reviewed_at: null,
   });
+
+  if (!created) {
+    logger.info('Duplicate attachment insert raced; skipping Slack queue', {
+      gmailMessageId: payload.gmailMessageId,
+      attachmentFilename: attachment.filename,
+      itemId: item.id,
+    });
+    return 'skipped';
+  }
 
   await auditService.log(item.id, 'email_received', {
     gmailMessageId: payload.gmailMessageId,
@@ -255,6 +281,7 @@ async function processSingleAttachment(
   });
 
   await slackService.updateQueueMessage(updated, caseRow);
+  return 'processed';
 }
 
 export { downloadTempAttachment };
