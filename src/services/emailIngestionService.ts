@@ -11,7 +11,6 @@ import { extractClientIdentity } from './clientIdentityAi.js';
 import { findCaseCandidates } from './caseMatcher.js';
 import { classifyDocument } from './aiClassifier.js';
 import { extractDocumentExcerpt } from './documentExtractor.js';
-import { clientTokensFromFilename } from '../utils/filenameCaseMatch.js';
 import { slackService } from './slackService.js';
 import { auditService } from './auditService.js';
 import { parseInboundEmail } from './emailIngestion/index.js';
@@ -23,10 +22,6 @@ import type {
 } from '../types/index.js';
 import { extractPatientNamesFromText } from '../utils/patientNameExtract.js';
 import { buildSmartBodyExcerpt } from '../utils/emailBodyExcerpt.js';
-import {
-  isEmploymentRecordsAuthorization,
-  isLikelyNewClientContract,
-} from '../utils/intakeDetect.js';
 import { logger } from '../utils/logger.js';
 
 /** Shared state while processing all attachments in one inbound email. */
@@ -55,7 +50,6 @@ export async function processInboundEmail(
   headers: Record<string, string | string[] | undefined>,
   body: unknown
 ): Promise<{ processed: number; skipped: number }> {
-  // Refresh Dropbox index if stale (picks up new case folders)
   await syncDropboxStructureIfStale(30);
 
   const payload = parseInboundEmail(headers, body);
@@ -135,23 +129,7 @@ async function processSingleAttachment(
     attachment.mimeType.includes('msword') ||
     attachment.mimeType.startsWith('image/');
 
-  const genericAffidavitFilename =
-    /^(records|billings?)affidavit_/i.test(attachment.filename) &&
-    clientTokensFromFilename(attachment.filename).length === 0;
-
-  const likelyContract = isLikelyNewClientContract({
-    fromEmail: payload.fromEmail,
-    subject: payload.subject,
-    bodyExcerpt: payload.bodyExcerpt,
-    attachmentFilename: attachment.filename,
-  });
-
-  if (
-    isFilingDocument ||
-    genericAffidavitFilename ||
-    batch.patientNames.length > 0 ||
-    likelyContract
-  ) {
+  if (isFilingDocument) {
     const extracted = await extractDocumentExcerpt(
       buffer,
       attachment.mimeType,
@@ -174,54 +152,24 @@ async function processSingleAttachment(
   }
 
   matchContext.aiClientIdentity = await extractClientIdentity(matchContext);
-
-  const employmentAuth = isEmploymentRecordsAuthorization({
-    subject: payload.subject,
-    bodyExcerpt: payload.bodyExcerpt,
-    attachmentFilename: attachment.filename,
-    documentExcerpt: matchContext.documentExcerpt,
-  });
-
-  if (employmentAuth) {
-    matchContext.aiClientIdentity = {
-      ...matchContext.aiClientIdentity,
-      isNewClientIntake: false,
-      documentKind: 'employment_authorization',
-    };
-  } else if (likelyContract) {
-    matchContext.aiClientIdentity = {
-      ...matchContext.aiClientIdentity,
-      isNewClientIntake: true,
-      documentKind: 'client_contract',
-    };
-  }
   if (matchContext.aiClientIdentity.clientFullName) {
-    const names = [
-      matchContext.aiClientIdentity.clientFullName,
-      ...(matchContext.emailPatientNames ?? []),
+    matchContext.emailPatientNames = [
+      ...new Set([
+        matchContext.aiClientIdentity.clientFullName,
+        ...(matchContext.emailPatientNames ?? []),
+      ]),
     ];
-    matchContext.emailPatientNames = [...new Set(names)];
-    batch.patientNames = [...new Set([...batch.patientNames, ...names])];
+    batch.patientNames = [...new Set([...batch.patientNames, matchContext.aiClientIdentity.clientFullName])];
   }
 
-  let candidates = await findCaseCandidates(matchContext);
-  let classification = await classifyDocument(matchContext, candidates, {
-    usedDocumentContent: Boolean(matchContext.documentExcerpt),
-  });
-
-  if (matchContext.aiClientIdentity.clientFullName) {
-    classification = {
-      ...classification,
-      reason: `[Client: ${matchContext.aiClientIdentity.clientFullName}${matchContext.aiClientIdentity.slackChannelHint ? ` → ${matchContext.aiClientIdentity.slackChannelHint}` : ''}] ${classification.reason}`,
-    };
-  }
+  const candidates = await findCaseCandidates(matchContext);
+  const classification = await classifyDocument(matchContext, candidates);
 
   logger.info('Classification complete', {
     itemId,
     candidateCount: candidates.length,
     candidateCases: candidates.map((c) => c.case.slack_channel_name),
-    identity: matchContext.aiClientIdentity.clientFullName,
-    slackHint: matchContext.aiClientIdentity.slackChannelHint,
+    client: classification.reason.slice(0, 120),
     confidence: classification.confidence,
     suggestedCase: classification.suggestedCaseNumber,
   });

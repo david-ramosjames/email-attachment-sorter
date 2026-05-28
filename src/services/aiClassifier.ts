@@ -12,20 +12,9 @@ import {
   type MatchContext,
 } from '../types/index.js';
 import { RJL_STANDARD_SUBFOLDERS } from '../constants/rjlFolders.js';
-import {
-  inferDocumentTypeFromContent,
-  inferFolderLabelFromContent,
-  subfolderForDocumentType,
-} from '../utils/folderInference.js';
-import {
-  allPatientNameTokens,
-  extractPatientNamesFromText,
-} from '../utils/patientNameExtract.js';
+import { subfolderForDocumentType } from '../utils/folderInference.js';
+import { buildSmartBodyExcerpt } from '../utils/emailBodyExcerpt.js';
 import { caseMatchesClientIdentity, identityConflictsWithCase } from '../utils/caseNameMatch.js';
-import {
-  isEmploymentRecordsAuthorization,
-  isLikelyNewClientContract,
-} from '../utils/intakeDetect.js';
 import type { CaseFolder } from '../types/index.js';
 
 let openai: OpenAI | null = null;
@@ -42,7 +31,7 @@ function buildCandidatePrompt(candidates: CaseCandidate[]): string {
     .map((c, i) => {
       const folders = c.folders.map((f) => f.folder_label).join(', ') || 'none indexed';
       const dropboxFolder = c.case.dropbox_folder_name ?? '(not linked yet)';
-      return `[${i + 1}] case_number="${c.case.case_number}" slack_channel="${c.case.slack_channel_name}" dropbox_folder="${dropboxFolder}" folders=[${folders}] rule_match_score=${c.matchScore} rule_signals="${c.matchReasons.join('; ') || 'widened pool — verify against document'}"`;
+      return `[${i + 1}] case_number="${c.case.case_number}" slack_channel="${c.case.slack_channel_name}" dropbox_folder="${dropboxFolder}" folders=[${folders}]`;
     })
     .join('\n');
 }
@@ -50,14 +39,22 @@ function buildCandidatePrompt(candidates: CaseCandidate[]): string {
 const classificationSchema = {
   type: 'object' as const,
   properties: {
+    pi_client_full_name: {
+      type: ['string', 'null'] as const,
+      description:
+        'The Ramos James Law PI client this document belongs to (not the email sender unless they are the client)',
+    },
+    email_summary: {
+      type: 'string' as const,
+      description: 'One sentence: who emailed whom, and what this is about',
+    },
     suggested_case_number: {
       type: ['string', 'null'] as const,
-      description: 'case_number from candidate list, or null if needs_attention',
+      description: 'case_number from candidate list, or null if no case fits',
     },
     suggested_folder_label: {
       type: ['string', 'null'] as const,
-      description:
-        'RJL subfolder label from candidate folders list (e.g. Medical, Pleadings), or null to infer from document_type',
+      description: `RJL subfolder from candidate list: ${RJL_STANDARD_SUBFOLDERS.join(', ')}`,
     },
     document_type: {
       type: 'string' as const,
@@ -67,6 +64,8 @@ const classificationSchema = {
     reason: { type: 'string' as const },
   },
   required: [
+    'pi_client_full_name',
+    'email_summary',
     'suggested_case_number',
     'suggested_folder_label',
     'document_type',
@@ -76,129 +75,89 @@ const classificationSchema = {
   additionalProperties: false,
 };
 
+/**
+ * OpenAI reads full email + attachment context and decides case, folder, and type.
+ * No hard-coded shortcuts (e.g. "signed" or adobesign) — only prompt guidance and safety checks.
+ */
 export async function classifyDocument(
   ctx: MatchContext,
-  candidates: CaseCandidate[],
-  options?: { usedDocumentContent?: boolean }
+  candidates: CaseCandidate[]
 ): Promise<ClassificationResult> {
-  const employmentAuth = isEmploymentRecordsAuthorization({
-    subject: ctx.subject,
-    bodyExcerpt: ctx.bodyExcerpt,
-    attachmentFilename: ctx.attachmentFilename,
-    documentExcerpt: ctx.documentExcerpt,
-  });
-
-  const likelyNewClientContract = isLikelyNewClientContract({
-    fromEmail: ctx.fromEmail,
-    subject: ctx.subject,
-    bodyExcerpt: ctx.bodyExcerpt,
-    attachmentFilename: ctx.attachmentFilename,
-    documentExcerpt: ctx.documentExcerpt,
-  });
-
   if (ctx.aiClientIdentity) {
     candidates = candidates.filter(
       (c) => !identityConflictsWithCase(c.case, ctx.aiClientIdentity!)
     );
   }
 
-  if (
-    !employmentAuth &&
-    (ctx.aiClientIdentity?.isNewClientIntake ||
-      likelyNewClientContract ||
-      ctx.aiClientIdentity?.documentKind === 'client_contract')
-  ) {
-    const client = ctx.aiClientIdentity?.clientFullName ?? 'unknown client';
-    return {
-      suggestedCaseNumber: null,
-      suggestedFolderPath: null,
-      documentType: 'needs_attention',
-      confidence: 0.25,
-      reason: `New client contract (${client}) — no existing case folder; create case in Slack/Dropbox first, then re-file`,
-      needsAttention: true,
-    };
-  }
-
   if (candidates.length === 0) {
-    const hint = ctx.documentExcerpt
-      ? 'No case candidates matched — check case_slack_channels for names/numbers in the document'
-      : 'No matching cases found — attachment text may not have been extracted';
     return {
       suggestedCaseNumber: null,
       suggestedFolderPath: null,
       documentType: 'needs_attention',
       confidence: 0,
-      reason: hint,
+      reason:
+        'No case candidates in index for this client name — create or link the case, then re-file',
       needsAttention: true,
     };
   }
 
   const candidateNumbers = new Set(candidates.map((c) => c.case.case_number));
+  const bodyForAi = buildSmartBodyExcerpt(ctx.bodyExcerpt, 8000);
 
-  const systemPrompt = `You are a legal document filing assistant for Ramos James Law.
+  const identityHint = ctx.aiClientIdentity?.clientFullName
+    ? `\nPre-analysis hint (verify, do not trust blindly): client may be "${ctx.aiClientIdentity.clientFullName}" — ${ctx.aiClientIdentity.reason}`
+    : '';
 
-Your job: pick the best matching case, folder, and document type. YOU make the final decision — automated rule_match_score hints are often wrong.
+  const systemPrompt = `You are the filing assistant for Ramos James Law (RJL), a personal injury law firm.
 
-Rules:
-- Choose ONLY from the candidate list using the exact case_number string.
-- The EMAIL BODY is primary evidence for medical-records packages (records@, procare, "Attached are … records and billing"). Attachment filenames like RecordsAffidavit_*.pdf often do NOT contain the client name — use email + PDF text.
-- When multiple attachments are listed in one email, they are almost always the SAME case unless patient names clearly differ.
-- rule_match_score can be WRONG (e.g. matching "wallace" from the wrong field). Prefer patient name in email/PDF vs partial token matches in slack_channel_name.
-- NEVER match a case based only on a short number inside a phone number, fax header, date, or page number.
-- Fax/scan emails (HelloFax, "Incoming fax", filenames with 10+ digit ids) usually need client/name matching from the document body, not fax metadata.
-- The attachment FILENAME often contains the client name (e.g. "Galeas Montoya Lourdes 89195.pdf") — treat filename tokens as primary evidence, stronger than vendor senders like settlement@ or adobesign@.
-- Prefer client name tokens, Dropbox folder names (e.g. "1321. CLIENT NAME"), and labeled "Case/Cause/File No." over bare 3-digit numbers.
-- Do NOT match a case when the filename names a different client than the candidate's slack_channel / dropbox_folder.
-- If no candidate fits well, set suggested_case_number to null, document_type to "needs_attention", and confidence below 0.5.
-- Pick suggested_folder_label from the candidate's indexed folder labels only (standard RJL labels: ${RJL_STANDARD_SUBFOLDERS.join(', ')}).
-- Folder must match document content — do NOT default to Correspondence.
-- Medical provider records/affidavits (e.g. RecordsAffidavit, BillingsAffidavit, records@…injury.com, procare) → document_type "Medical Records", folder_label "Medical".
-- Attorney pleadings/motions/complaints → "Pleadings". Generic letters → "Correspondence".
-- Adobe Sign / DocuSign **engagement contracts** with a named client → document_type "Intake", suggested_case_number **null**, confidence **below 0.5** (new client — no case folder yet).
-- NEVER assign 0.9+ when first OR last name does not match the candidate slack_channel (Israel Mejia ≠ javiermejias-etal — different first names Javier vs Israel).
-- Matching on last name only is forbidden; first name must appear in slack_channel or dropbox_folder.
-- If unsure of folder, set suggested_folder_label to null (system maps from document_type).
-- Calibrate confidence honestly: 0.9+ only when client name clearly matches slack_channel/dropbox_folder.
+Read the entire situation — who sent the email, who received it, the subject, body (including forwards), attachment filename, and attachment text — then decide how to file this document.
+
+Your job:
+1. Identify the PI CLIENT (injured party RJL represents) — usually NOT the person who sent the email.
+   - Senders are often vendors: medical records companies, Adobe Sign, HR departments, opposing counsel, fax services.
+   - In forwards, the client is usually in the original RJL request (e.g. Jorge @ramosjames.com asking for records on behalf of a named client).
+2. Summarize what this email is about in one sentence.
+3. Pick the best case_number from the candidate list ONLY if that case clearly belongs to this client (first AND last name should match slack_channel / dropbox_folder).
+4. Pick folder and document_type from the document's actual purpose (medical records → Medical; employment authorization → Lost Wages; court filing → Pleadings; new engagement contract with no case yet → needs_attention with null case).
+5. Calibrate confidence honestly — never use 0.9+ unless the client name clearly matches the chosen case channel.
+
+Important:
+- Words like "signed", "authorization", or "contract" in a filename do NOT by themselves mean anything — read the content.
+- A signed employment authorization for an existing client is NOT a new retainer and NOT Pleadings.
+- A new Adobe Sign retainer for a brand-new client with no matching case in the list → suggested_case_number null, document_type needs_attention, low confidence.
+- Partial surname matches are wrong (Israel Mejia ≠ javiermejias / Javier Mejias).
+- rule_match_score in older systems was unreliable — you decide from meaning.
 
 Document types: ${DOCUMENT_TYPES.join(', ')}.
 Return strict JSON only.`;
 
   const documentSection = ctx.documentExcerpt
-    ? `\n\nAttachment text (primary evidence for fax/scanned docs):\n${ctx.documentExcerpt.slice(0, MAX_DOCUMENT_TEXT_FOR_AI)}`
-    : '';
+    ? `\n\nAttachment text:\n${ctx.documentExcerpt.slice(0, MAX_DOCUMENT_TEXT_FOR_AI)}`
+    : '\n\n(No attachment text extracted)';
 
-  const senderSection =
-    ctx.senderPriorCaseNumbers?.length
-      ? `\nSender previously filed to case(s): ${ctx.senderPriorCaseNumbers.join(', ')}`
-      : '';
-
-  const identity = ctx.aiClientIdentity;
-  const identitySection = identity?.clientFullName
-    ? `\nAI identity (from all text — use as primary):\n  Client: ${identity.clientFullName}\n  Name tokens: ${identity.nameTokens.join(', ')}\n  Case # hint: ${identity.caseNumberHint ?? 'none'}\n  Slack channel hint: ${identity.slackChannelHint ?? 'none'}\n  Identity confidence: ${identity.confidence}\n  ${identity.reason}`
-    : '';
-
-  const patientSection = ctx.emailPatientNames?.length
-    ? `\nPatient/client name(s) from email: ${ctx.emailPatientNames.join('; ')}`
+  const senderSection = ctx.senderPriorCaseNumbers?.length
+    ? `\nSender has previously filed to case(s): ${ctx.senderPriorCaseNumbers.join(', ')} (weak hint only)`
     : '';
 
   const siblingSection = ctx.siblingAttachmentFilenames?.length
-    ? `\nAll attachments in this email (same case): ${ctx.siblingAttachmentFilenames.join(', ')}`
+    ? `\nAll attachments in this email (usually same case): ${ctx.siblingAttachmentFilenames.join(', ')}`
     : '';
 
   const batchSection = ctx.batchSharedCaseNumber
-    ? `\nPrior attachment in this email was matched to case_number="${ctx.batchSharedCaseNumber}" — use the same case unless this document names a different patient.`
+    ? `\nEarlier attachment in this email was filed to case_number="${ctx.batchSharedCaseNumber}" — use same case unless this document is clearly for a different client.`
     : '';
 
-  const userPrompt = `Email metadata:
-From: ${ctx.fromEmail}
-To: ${ctx.toEmails.join(', ')}
+  const userPrompt = `From (sender): ${ctx.fromEmail}
+To: ${ctx.toEmails.join(', ') || '(not provided)'}
+Cc: ${ctx.ccEmails.join(', ') || '(none)'}
 Subject: ${ctx.subject}
-Email body (PRIMARY for client identity — read carefully):
-${ctx.bodyExcerpt.slice(0, 4000)}
-Current attachment filename: ${ctx.attachmentFilename}
-Filename tokens (often NOT the client name for affidavits): ${ctx.attachmentFilename.replace(/\.[a-z0-9]+$/i, '').split(/[^a-zA-Z]+/).filter((t) => t.length >= 4).join(', ') || '(none)'}${identitySection}${patientSection}${siblingSection}${batchSection}${senderSection}${documentSection}
 
-Candidate cases (${candidates.length} — choose ONLY from this list):
+Email body:
+${bodyForAi}
+
+Attachment filename: ${ctx.attachmentFilename}${identityHint}${siblingSection}${batchSection}${senderSection}${documentSection}
+
+Candidate cases (choose ONLY from this list, exact case_number):
 ${buildCandidatePrompt(candidates)}`;
 
   const response = await getOpenAI().chat.completions.create({
@@ -224,6 +183,8 @@ ${buildCandidatePrompt(candidates)}`;
   }
 
   const parsed = JSON.parse(content) as {
+    pi_client_full_name: string | null;
+    email_summary: string;
     suggested_case_number: string | null;
     suggested_folder_label: string | null;
     document_type: string;
@@ -234,23 +195,9 @@ ${buildCandidatePrompt(candidates)}`;
   let suggestedCaseNumber = parsed.suggested_case_number;
   let documentType = parsed.document_type as DocumentType | 'needs_attention';
   let confidence = parsed.confidence;
-  let reason = parsed.reason;
-
-  const contentParts = {
-    attachmentFilename: ctx.attachmentFilename,
-    subject: ctx.subject,
-    bodyExcerpt: ctx.bodyExcerpt,
-    documentExcerpt: ctx.documentExcerpt,
-  };
-
-  const inferredType = inferDocumentTypeFromContent(contentParts);
-  if (
-    inferredType &&
-    documentType !== 'needs_attention' &&
-    (documentType === 'Bills' || documentType === 'Misc' || documentType === 'Correspondence')
-  ) {
-    documentType = inferredType;
-    reason += ` (document type adjusted to ${inferredType} from filename/content)`;
+  let reason = `${parsed.email_summary} ${parsed.reason}`;
+  if (parsed.pi_client_full_name) {
+    reason = `Client: ${parsed.pi_client_full_name}. ${reason}`;
   }
 
   if (suggestedCaseNumber && !candidateNumbers.has(suggestedCaseNumber)) {
@@ -259,12 +206,6 @@ ${buildCandidatePrompt(candidates)}`;
     confidence = 0;
     reason = 'AI returned case number not in candidate list — rejected';
   }
-
-  const patientNames =
-    ctx.emailPatientNames ??
-    extractPatientNamesFromText(
-      [ctx.subject, ctx.bodyExcerpt, ctx.documentExcerpt ?? ''].join('\n')
-    );
 
   if (ctx.aiClientIdentity && suggestedCaseNumber) {
     const picked = candidates.find((c) => c.case.case_number === suggestedCaseNumber);
@@ -278,39 +219,12 @@ ${buildCandidatePrompt(candidates)}`;
       );
       if (better) {
         suggestedCaseNumber = better.case.case_number;
-        confidence = Math.max(confidence, 0.88);
-        reason += ` (corrected to ${better.case.slack_channel_name} — AI client identity)`;
+        reason += ` (matched case ${better.case.slack_channel_name})`;
       } else {
         suggestedCaseNumber = null;
         documentType = 'needs_attention';
-        confidence = 0.3;
-        reason += ` (rejected ${picked.case.slack_channel_name} — "${ctx.aiClientIdentity.clientFullName}" is a different person; first name must match case channel)`;
-      }
-    } else if (!picked) {
-      const better = candidates.find((c) =>
-        caseMatchesClientIdentity(c.case, ctx.aiClientIdentity!)
-      );
-      if (better) {
-        suggestedCaseNumber = better.case.case_number;
-        confidence = Math.max(confidence, 0.88);
-        reason += ` (picked ${better.case.slack_channel_name} from AI identity)`;
-      }
-    }
-  }
-
-  if (suggestedCaseNumber && patientNames.length) {
-    const picked = candidates.find((c) => c.case.case_number === suggestedCaseNumber);
-    if (picked && !caseMatchesPatientNames(picked.case, patientNames)) {
-      const better = candidates.find((c) => caseMatchesPatientNames(c.case, patientNames));
-      if (better) {
-        suggestedCaseNumber = better.case.case_number;
-        confidence = Math.max(confidence, 0.88);
-        reason += ` (corrected to ${better.case.case_number} — patient name in email/PDF)`;
-      } else if (!ctx.aiClientIdentity?.slackChannelHint) {
-        confidence = Math.min(confidence, 0.45);
-        suggestedCaseNumber = null;
-        documentType = 'needs_attention';
-        reason += ' (AI case did not match patient name in email/document)';
+        confidence = Math.min(confidence, 0.4);
+        reason += ` (no case in list matches client ${ctx.aiClientIdentity.clientFullName})`;
       }
     }
   }
@@ -319,10 +233,9 @@ ${buildCandidatePrompt(candidates)}`;
     const batchCase = candidates.find(
       (c) => c.case.case_number === ctx.batchSharedCaseNumber
     );
-    if (batchCase && patientNames.length && caseMatchesPatientNames(batchCase.case, patientNames)) {
+    if (batchCase && ctx.aiClientIdentity && caseMatchesClientIdentity(batchCase.case, ctx.aiClientIdentity)) {
       suggestedCaseNumber = ctx.batchSharedCaseNumber;
-      confidence = Math.max(confidence, 0.9);
-      reason += ` (same email batch → case ${ctx.batchSharedCaseNumber})`;
+      reason += ` (same email batch → ${ctx.batchSharedCaseNumber})`;
     }
   }
 
@@ -332,8 +245,7 @@ ${buildCandidatePrompt(candidates)}`;
       suggestedCaseNumber,
       candidates,
       parsed.suggested_folder_label,
-      documentType,
-      contentParts
+      documentType
     );
     suggestedFolderPath = resolved.path;
     if (resolved.reasonSuffix) reason += resolved.reasonSuffix;
@@ -354,25 +266,6 @@ ${buildCandidatePrompt(candidates)}`;
   };
 }
 
-function caseMatchesPatientNames(
-  caseRow: CaseCandidate['case'],
-  patientNames: string[]
-): boolean {
-  const tokens = allPatientNameTokens(patientNames);
-  if (tokens.length < 2) return true;
-  const identity = {
-    clientFullName: patientNames[0] ?? null,
-    nameTokens: tokens,
-    caseNumberHint: null,
-    slackChannelHint: null,
-    documentKind: null,
-    isNewClientIntake: false,
-    confidence: 1,
-    reason: '',
-  };
-  return caseMatchesClientIdentity(caseRow, identity);
-}
-
 function findFolderByLabel(
   folders: CaseFolder[],
   label: string | null | undefined
@@ -382,45 +275,23 @@ function findFolderByLabel(
   return folders.find((f) => f.folder_label.toLowerCase() === norm);
 }
 
-/** Resolve Dropbox path: content rules → AI label → document_type map (never folders[0]). */
 function resolveFolderForCase(
   caseNumber: string,
   candidates: CaseCandidate[],
   aiFolderLabel: string | null,
-  documentType: string,
-  contentParts: {
-    attachmentFilename: string;
-    subject: string;
-    bodyExcerpt: string;
-    documentExcerpt?: string;
-  }
+  documentType: string
 ): { path: string | null; reasonSuffix: string } {
   const match = candidates.find((c) => c.case.case_number === caseNumber);
   if (!match?.folders.length) {
     return { path: null, reasonSuffix: ' (no indexed folders for case)' };
   }
 
-  const fromContent = inferFolderLabelFromContent(contentParts);
-  if (fromContent) {
-    const folder = findFolderByLabel(match.folders, fromContent);
-    if (folder) {
-      return {
-        path: folder.dropbox_path,
-        reasonSuffix: ` (folder ${fromContent} from filename/email/document)`,
-      };
-    }
-  }
-
   const fromAi = findFolderByLabel(match.folders, aiFolderLabel);
   if (fromAi) {
     return { path: fromAi.dropbox_path, reasonSuffix: '' };
   }
-  if (aiFolderLabel) {
-    // AI picked a label not in index — fall through to type mapping, not Correspondence
-  }
 
-  const subfolder =
-    fromContent ?? subfolderForDocumentType(documentType) ?? null;
+  const subfolder = subfolderForDocumentType(documentType);
   if (subfolder) {
     const folder = findFolderByLabel(match.folders, subfolder);
     if (folder) {
@@ -436,5 +307,5 @@ function resolveFolderForCase(
     };
   }
 
-  return { path: null, reasonSuffix: ' (could not resolve folder — use thread override)' };
+  return { path: null, reasonSuffix: '' };
 }

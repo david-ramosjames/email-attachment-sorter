@@ -21,31 +21,29 @@ const identitySchema = {
   properties: {
     client_full_name: {
       type: ['string', 'null'] as const,
-      description: 'Patient/client full name from the document, e.g. Lourdes Galeas Montoya',
+      description: 'PI client full name (injured party RJL represents)',
     },
     name_tokens: {
       type: 'array' as const,
       items: { type: 'string' as const },
-      description: 'Distinct name parts for matching (lourdes, galeas, montoya)',
+      description: 'Lowercase name parts for search (e.g. kisha, williams)',
     },
     case_number_hint: {
       type: ['string', 'null'] as const,
-      description: 'RJL case number if visible (often 3-5 digits, e.g. 940)',
+      description: 'RJL case number digits if clearly stated',
     },
     slack_channel_hint: {
       type: ['string', 'null'] as const,
-      description:
-        'Likely Slack/case channel slug if inferable (e.g. lourdesgaleas-940), lowercase. Null for new clients.',
+      description: 'Likely case channel slug if inferable, else null',
     },
     document_kind: {
       type: ['string', 'null'] as const,
-      description:
-        'client_contract | medical_records | court_filing | correspondence | other',
+      description: 'Brief label: e.g. medical_records, employment_authorization, retainer_contract',
     },
     is_new_client_intake: {
       type: 'boolean' as const,
       description:
-        'True for signed engagement/retainer contracts (Adobe Sign) when no existing case is referenced',
+        'True only if this appears to be a brand-new engagement with no existing case folder yet',
     },
     confidence: { type: 'number' as const, minimum: 0, maximum: 1 },
     reason: { type: 'string' as const },
@@ -64,51 +62,40 @@ const identitySchema = {
 };
 
 /**
- * OpenAI reads ALL available text and extracts who the document is about.
- * Runs before case matching so rules/search can target lourdesgaleas-940-style channels.
+ * Optional pre-pass: extract who the PI client is to widen the case candidate search.
+ * Final filing decisions are made by classifyDocument() — not hard rules here.
  */
 export async function extractClientIdentity(ctx: MatchContext): Promise<ClientIdentity> {
   const attachmentSection = ctx.documentExcerpt
     ? `\n\nAttachment text:\n${ctx.documentExcerpt.slice(0, MAX_DOCUMENT_TEXT_FOR_AI)}`
-    : '\n\n(No attachment text extracted yet)';
+    : '';
 
   const siblings = ctx.siblingAttachmentFilenames?.length
     ? `\nAll attachments in this email: ${ctx.siblingAttachmentFilenames.join(', ')}`
     : '';
 
-  const systemPrompt = `You extract the client/patient identity from legal inbound mail for Ramos James Law.
+  const systemPrompt = `You analyze inbound email for Ramos James Law (personal injury firm).
 
-Read the email subject, body, attachment filename, and attachment text together.
+From: sender, To/Cc, subject, body (including forwards), attachment filename, and attachment text — determine:
 
-Output:
-- client_full_name: the person the records are about (not the sender company)
-- name_tokens: 2+ lowercase tokens from that name (e.g. lourdes, galeas, montoya)
-- case_number_hint: RJL case number digits if stated (e.g. 940, 1455) — NOT phone/fax numbers
-- slack_channel_hint: if you can infer the firm's case channel slug, use format like "firstnamelastname-940" (no spaces, lowercase). Example: Lourdes Galeas Montoya on case 940 → "lourdesgaleas-940"
+1. Who is the PI CLIENT (person RJL represents)? This is usually NOT the email sender (often a vendor, HR dept, Adobe Sign, medical records company, or RJL staff).
+2. What kind of document this is (brief document_kind label).
+3. Whether this looks like a brand-new client engagement with no case folder yet (is_new_client_intake) — decide from meaning, not keywords like "signed" alone.
 
-Medical records from records@procareinjury.com: the email body often says "Attached are [Name] records and billing" — that name is the client.
-Affidavit filenames (RecordsAffidavit_*.pdf) usually do NOT contain the client name — rely on email body and PDF body (Patient: line).
-
-Adobe Sign / DocuSign contracts (adobesign@): the email names the client party (e.g. "between Ramos James Law and Israel Mejia"). That person is the client.
-- document_kind = client_contract for retainer/engagement contracts
-- is_new_client_intake = true when this is a new engagement contract and NO existing RJL case number is in the document
-- First AND last name must match the case — never match on surname alone (Israel Mejia ≠ Javier Mejias / javiermejias-etal-625)
-- Do NOT guess slack_channel_hint from a similar surname or different first name
-
-Employment authorization / employee records (HR reply to Jorge Barros, forwarded threads):
-- The CLIENT is the person whose records are requested (e.g. "represents Kisha Ann Williams in a personal injury", "employment of KISHA ANN WILLIAMS", Employee Records Request - Kisha Williams).
-- NOT the HR person emailing (Michele Nelson, Les Stobart). NOT Jorge Barros (RJL staff).
-- document_kind = employment_authorization, is_new_client_intake = false — match existing case like kishawilliams-1277
-- Ignore top-of-thread HR chit-chat; read forwarded message and attachment text for the client name.
+Read forwarded threads carefully: the client is often named in the original RJL message at the bottom.
 
 Return strict JSON only.`;
 
   const bodyForAi = buildSmartBodyExcerpt(ctx.bodyExcerpt, 8000);
 
   const userPrompt = `From: ${ctx.fromEmail}
+To: ${ctx.toEmails.join(', ') || '(not provided)'}
+Cc: ${ctx.ccEmails.join(', ') || '(none)'}
 Subject: ${ctx.subject}
-Email body (includes forwarded thread tail):
+
+Email body:
 ${bodyForAi}
+
 Attachment filename: ${ctx.attachmentFilename}${siblings}${attachmentSection}`;
 
   try {
@@ -173,12 +160,10 @@ Attachment filename: ${ctx.attachmentFilename}${siblings}${attachmentSection}`;
       reason: parsed.reason,
     };
 
-    logger.info('AI client identity extracted', {
+    logger.info('AI client identity (candidate search hint)', {
       clientFullName: identity.clientFullName,
-      nameTokens: identity.nameTokens,
-      caseNumberHint: identity.caseNumberHint,
-      slackChannelHint: identity.slackChannelHint,
-      confidence: identity.confidence,
+      documentKind: identity.documentKind,
+      isNewClientIntake: identity.isNewClientIntake,
     });
 
     return identity;
