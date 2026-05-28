@@ -116,9 +116,6 @@ function folderLabelFromPath(path: string | null): string {
   return parts[parts.length - 1] ?? path;
 }
 
-/**
- * Compact review card — details live in Supabase; buttons only send item id in `value`.
- */
 function buildQueueBlocks(
   item: FileSorterItem,
   caseRow: Case | null,
@@ -134,31 +131,58 @@ function buildQueueBlocks(
   const caseLabel = caseRow
     ? `${caseRow.slack_channel_name} (${caseRow.case_number})`
     : item.suggested_case_number ?? '—';
-  const folderLabel = folderLabelFromPath(item.suggested_folder_path);
-
-  const lines = [
-    `*${slackFieldText(item.attachment_filename, 200)}*`,
-    `Status: ${statusLabel(status)}`,
-    `Case: ${slackFieldText(caseLabel, 200)}`,
-    `Folder: ${slackFieldText(folderLabel, 120)}`,
-    item.suggested_document_type
-      ? `Type: ${slackFieldText(item.suggested_document_type, 80)}`
-      : null,
-    item.ai_confidence != null
-      ? `Confidence: ${(item.ai_confidence * 100).toFixed(0)}%`
-      : null,
-    `From: ${slackFieldText(item.from_email, 120)}`,
-  ].filter(Boolean);
+  const folderDisplay =
+    item.suggested_folder_path != null
+      ? folderLabelFromPath(item.suggested_folder_path)
+      : '—';
+  const toLine = [...item.to_emails, ...item.cc_emails].filter(Boolean).join(', ') || '—';
 
   const blocks: Record<string, unknown>[] = [
+    {
+      type: 'header',
+      text: { type: 'plain_text', text: 'New File Sorter Item', emoji: false },
+    },
+    {
+      type: 'section',
+      fields: [
+        { type: 'mrkdwn', text: `*Status:*\n${slackFieldText(statusLabel(status))}` },
+        { type: 'mrkdwn', text: `*From:*\n${slackFieldText(item.from_email)}` },
+        { type: 'mrkdwn', text: `*To:*\n${slackFieldText(toLine)}` },
+        { type: 'mrkdwn', text: `*Subject:*\n${slackFieldText(item.subject ?? '—')}` },
+        {
+          type: 'mrkdwn',
+          text: `*Attachment:*\n${slackFieldText(item.attachment_filename)}`,
+        },
+        { type: 'mrkdwn', text: `*AI Suggested Case:*\n${slackFieldText(caseLabel)}` },
+        {
+          type: 'mrkdwn',
+          text: `*AI Suggested Folder:*\n${slackFieldText(folderDisplay)}`,
+        },
+        {
+          type: 'mrkdwn',
+          text: `*Document Type:*\n${slackFieldText(item.suggested_document_type ?? '—')}`,
+        },
+        {
+          type: 'mrkdwn',
+          text: `*Confidence:*\n${item.ai_confidence != null ? `${(item.ai_confidence * 100).toFixed(0)}%` : '—'}`,
+        },
+      ],
+    },
     {
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: lines.join('\n'),
+        text: `*Reason:*\n${slackFieldText(item.ai_reason ?? '—')}`,
       },
     },
   ];
+
+  if (status === 'needs_attention') {
+    blocks.unshift({
+      type: 'context',
+      elements: [{ type: 'mrkdwn', text: ':warning: *NEEDS ATTENTION*' }],
+    });
+  }
 
   if (options?.approvedBy) {
     blocks.push({
@@ -234,7 +258,7 @@ export const slackService = {
     const blocks = buildQueueBlocks(item, caseRow);
     const result = await slackApi<{ channel: string; ts: string }>('chat.postMessage', {
       channel,
-      text: `File Sorter: ${item.attachment_filename} → ${caseRow?.case_number ?? item.suggested_case_number ?? '?'}`,
+      text: `New File Sorter Item: ${item.attachment_filename}`,
       blocks,
     });
     return { channel: result.channel, ts: result.ts };
@@ -255,7 +279,7 @@ export const slackService = {
     await slackApi('chat.update', {
       channel: item.slack_queue_channel_id,
       ts: item.slack_queue_message_ts,
-      text: `File Sorter: ${item.attachment_filename} — ${statusLabel(item.status)}`,
+      text: `File Sorter Item: ${item.attachment_filename} — ${statusLabel(item.status)}`,
       blocks,
     });
   },
