@@ -14,6 +14,7 @@ import {
 import { RJL_STANDARD_SUBFOLDERS } from '../constants/rjlFolders.js';
 import { subfolderForDocumentType } from '../utils/folderInference.js';
 import { buildSmartBodyExcerpt } from '../utils/emailBodyExcerpt.js';
+import { getCaseById, getFoldersForCase } from '../db/supabase.js';
 import { caseMatchesClientIdentity, identityConflictsWithCase } from '../utils/caseNameMatch.js';
 import type { CaseFolder } from '../types/index.js';
 
@@ -87,6 +88,21 @@ export async function classifyDocument(
     candidates = candidates.filter(
       (c) => !identityConflictsWithCase(c.case, ctx.aiClientIdentity!)
     );
+  }
+
+  if (candidates.length === 0 && ctx.batchSharedCaseNumber) {
+    const sharedCase = await getCaseById(ctx.batchSharedCaseNumber);
+    if (sharedCase) {
+      const folders = await getFoldersForCase(sharedCase.case_number);
+      candidates = [
+        {
+          case: sharedCase,
+          folders,
+          matchScore: 200,
+          matchReasons: ['Same email — prior attachment matched this case'],
+        },
+      ];
+    }
   }
 
   if (candidates.length === 0) {
@@ -229,13 +245,25 @@ ${buildCandidatePrompt(candidates)}`;
     }
   }
 
-  if (ctx.batchSharedCaseNumber && suggestedCaseNumber !== ctx.batchSharedCaseNumber) {
+  if (ctx.batchSharedCaseNumber) {
     const batchCase = candidates.find(
       (c) => c.case.case_number === ctx.batchSharedCaseNumber
     );
-    if (batchCase && ctx.aiClientIdentity && caseMatchesClientIdentity(batchCase.case, ctx.aiClientIdentity)) {
-      suggestedCaseNumber = ctx.batchSharedCaseNumber;
-      reason += ` (same email batch → ${ctx.batchSharedCaseNumber})`;
+    const identityBlocks =
+      batchCase &&
+      ctx.aiClientIdentity &&
+      identityConflictsWithCase(batchCase.case, ctx.aiClientIdentity);
+    if (batchCase && !identityBlocks) {
+      const shouldUseBatch =
+        !suggestedCaseNumber ||
+        confidence < CONFIDENCE_THRESHOLD ||
+        (ctx.aiClientIdentity &&
+          caseMatchesClientIdentity(batchCase.case, ctx.aiClientIdentity));
+      if (shouldUseBatch && suggestedCaseNumber !== ctx.batchSharedCaseNumber) {
+        suggestedCaseNumber = ctx.batchSharedCaseNumber;
+        confidence = Math.max(confidence, 0.72);
+        reason += ` (same email batch → ${ctx.batchSharedCaseNumber})`;
+      }
     }
   }
 

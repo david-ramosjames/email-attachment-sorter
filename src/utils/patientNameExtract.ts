@@ -64,6 +64,44 @@ export function extractPatientNamesFromText(text: string): string[] {
   );
   if (printedName) add(printedName[1]);
 
+  for (const name of extractCourtCaptionPlaintiffNames(text)) {
+    add(name);
+  }
+
+  return [...new Set(names)];
+}
+
+/**
+ * Plaintiff names from court-style captions in subject/body.
+ * e.g. "MINDY PARDON,ZACHARY ZAPATA VS. TERRY" or "ZAPATAVS. TERRY" (no space before VS).
+ */
+export function extractCourtCaptionPlaintiffNames(text: string): string[] {
+  const vsIdx = text.search(/VS\.?\s+/i);
+  if (vsIdx < 0) return [];
+
+  const before = text.slice(Math.max(0, vsIdx - 160), vsIdx);
+  const parts = before
+    .split(/[,;]/)
+    .map((p) => p.trim())
+    .filter(Boolean);
+
+  const names: string[] = [];
+  for (const part of parts.slice(-4)) {
+    const cleaned = part
+      .replace(/.*\bCase:\s*[^,]+,?\s*/i, '')
+      .replace(/^(RE:|FW:|FWD:)\s*/gi, '')
+      .replace(/\bfor filing\b.*$/i, '')
+      .replace(/\d{3,}[-/]\d+.*/g, '')
+      .trim();
+    if (
+      cleaned.length >= 4 &&
+      cleaned.length <= 60 &&
+      /[A-Za-z]/.test(cleaned) &&
+      /^[A-Za-z][A-Za-z\s.'-]+$/.test(cleaned)
+    ) {
+      names.push(cleaned);
+    }
+  }
   return [...new Set(names)];
 }
 

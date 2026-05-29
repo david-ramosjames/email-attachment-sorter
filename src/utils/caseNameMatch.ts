@@ -12,13 +12,35 @@ function caseHaystack(caseRow: Case): { text: string; compact: string } {
   return { text, compact: compactAlpha(text) };
 }
 
+function surnameTokensSimilar(token: string, haystackCompact: string): boolean {
+  if (token.length < 5) return false;
+  const t = compactAlpha(token);
+  if (haystackCompact.includes(t)) return true;
+  const prefix = t.slice(0, 4);
+  if (prefix.length < 4) return false;
+  if (!haystackCompact.includes(prefix)) return false;
+  // e.g. pardon vs padron in mindypadron
+  if (Math.abs(t.length - prefix.length) > 4) return false;
+  for (let i = 0; i <= haystackCompact.length - t.length; i++) {
+    const slice = haystackCompact.slice(i, i + t.length);
+    if (slice.length !== t.length) continue;
+    let diff = 0;
+    for (let j = 0; j < t.length; j++) {
+      if (slice[j] !== t[j]) diff++;
+    }
+    if (diff <= 2) return true;
+  }
+  return false;
+}
+
 function tokenAppearsInHaystack(token: string, haystack: { text: string; compact: string }): boolean {
   if (token.length < 3) return false;
   const t = token.toLowerCase();
   return (
     haystack.text.includes(t) ||
     haystack.compact.includes(compactAlpha(t)) ||
-    (t.length >= 5 && haystack.compact.includes(compactAlpha(t).slice(0, 5)))
+    (t.length >= 5 && haystack.compact.includes(compactAlpha(t).slice(0, 5))) ||
+    surnameTokensSimilar(t, haystack.compact)
   );
 }
 

@@ -83,9 +83,13 @@ export async function processInboundEmail(
     sharedConfidence: 0,
   };
 
+  await preflightEmailBatchCase(enrichedPayload, batch);
+
+  const attachments = [...enrichedPayload.attachments].sort(attachmentSortRank);
+
   let processed = 0;
   let skipped = 0;
-  for (const attachment of enrichedPayload.attachments) {
+  for (const attachment of attachments) {
     const outcome = await processSingleAttachment(enrichedPayload, attachment, batch);
     if (outcome === 'processed') processed++;
     else skipped++;
@@ -202,8 +206,8 @@ async function processSingleAttachment(
 
   if (
     classification.suggestedCaseNumber &&
-    !classification.needsAttention &&
-    classification.confidence >= 0.75
+    classification.confidence >= 0.5 &&
+    (!classification.needsAttention || classification.confidence >= 0.65)
   ) {
     batch.sharedCaseNumber = classification.suggestedCaseNumber;
     batch.sharedConfidence = classification.confidence;
@@ -285,6 +289,55 @@ async function processSingleAttachment(
 
   await slackService.updateQueueMessage(updated, caseRow);
   return 'processed';
+}
+
+/** Process documents with extractable text before generic email signature images. */
+function attachmentSortRank(a: InboundAttachment): number {
+  if (/\.(docx?|pdf)$/i.test(a.filename)) return 0;
+  if (/\.(jpe?g|png|gif|webp|tiff?)$/i.test(a.filename)) return 2;
+  return 1;
+}
+
+/** Resolve likely case from subject/body before any attachment is classified. */
+async function preflightEmailBatchCase(
+  payload: InboundEmailPayload,
+  batch: EmailBatchState
+): Promise<void> {
+  const primaryFilename =
+    payload.attachments.find((a) => /\.(docx?|pdf)$/i.test(a.filename))?.filename ??
+    payload.attachments[0]?.filename ??
+    '';
+
+  const matchContext: MatchContext = {
+    fromEmail: payload.fromEmail,
+    toEmails: payload.toEmails,
+    ccEmails: payload.ccEmails,
+    subject: payload.subject,
+    bodyExcerpt: payload.bodyExcerpt,
+    attachmentFilename: primaryFilename,
+    emailPatientNames: batch.patientNames,
+    siblingAttachmentFilenames: payload.attachments.map((a) => a.filename),
+  };
+
+  matchContext.aiClientIdentity = await extractClientIdentity(matchContext);
+  if (matchContext.aiClientIdentity.clientFullName) {
+    batch.patientNames = [
+      ...new Set([...batch.patientNames, matchContext.aiClientIdentity.clientFullName]),
+    ];
+    matchContext.emailPatientNames = batch.patientNames;
+  }
+
+  const candidates = await findCaseCandidates(matchContext);
+  const top = candidates[0];
+  if (top && top.matchScore >= 40) {
+    batch.sharedCaseNumber = top.case.case_number;
+    batch.sharedConfidence = 0.7;
+    logger.info('Email preflight matched case for batch', {
+      caseNumber: top.case.case_number,
+      slackChannel: top.case.slack_channel_name,
+      score: top.matchScore,
+    });
+  }
 }
 
 export { downloadTempAttachment };
