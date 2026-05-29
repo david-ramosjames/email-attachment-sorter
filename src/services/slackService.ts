@@ -1,6 +1,10 @@
 import { RJL_STANDARD_SUBFOLDERS, type RjlSubfolder } from '../constants/rjlFolders.js';
 import { getEnv } from '../config/env.js';
-import { getSlackChannelForCase, updateCaseSlackChannelId } from '../db/supabase.js';
+import {
+  getQueueBatchItems,
+  getSlackChannelForCase,
+  updateCaseSlackChannelId,
+} from '../db/supabase.js';
 import type { Case, FileSorterItem } from '../types/index.js';
 import { logger } from '../utils/logger.js';
 import {
@@ -242,41 +246,106 @@ function threadOverrideHelpText(): string {
   return (
     '_Optional — reply in thread before Approve (use your own values):_\n' +
     '• `case: 1277` (case number) or `case: First Last` (client name)\n' +
-    `• \`folder: <name>\` — ${folderList}`
+    `• \`folder: <name>\` — ${folderList} (applies to all files unless you Approve per-folder later)`
   );
 }
 
+function pickPrimaryQueueItem(items: FileSorterItem[]): FileSorterItem {
+  const sorted = [...items].sort((a, b) => (b.ai_confidence ?? 0) - (a.ai_confidence ?? 0));
+  return sorted.find((i) => i.suggested_case_number) ?? sorted[0]!;
+}
+
+function aggregateBatchStatus(items: FileSorterItem[]): string {
+  if (items.every((i) => i.status === 'saved')) return 'saved';
+  if (items.every((i) => i.status === 'ignored')) return 'ignored';
+  if (items.some((i) => i.status === 'needs_attention')) return 'needs_attention';
+  if (items.some((i) => i.status === 'failed')) return 'failed';
+  return items[0]!.status;
+}
+
+function formatAttachmentList(items: FileSorterItem[]): string {
+  return items
+    .map((i) => {
+      const folder = i.suggested_folder_path
+        ? folderLabelFromPath(i.suggested_folder_path)
+        : null;
+      const folderNote = folder && folder !== '—' ? ` → ${folder}` : '';
+      return `• \`${i.attachment_filename}\`${folderNote}`;
+    })
+    .join('\n');
+}
+
+function formatConfidenceRange(items: FileSorterItem[]): string {
+  const values = items
+    .map((i) => i.ai_confidence)
+    .filter((c): c is number => c != null);
+  if (!values.length) return '—';
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  if (min === max) return `${(min * 100).toFixed(0)}%`;
+  return `${(min * 100).toFixed(0)}%–${(max * 100).toFixed(0)}%`;
+}
+
 function buildQueueBlocks(
-  item: FileSorterItem,
+  items: FileSorterItem[],
   caseRow: Case | null,
   options?: {
     statusOverride?: string;
     reviewedByUserId?: string;
     dropboxLink?: string;
+    savedFiles?: Array<{ filename: string; dropboxLink: string }>;
     disabled?: boolean;
     emailReceivedAt?: string | null;
   }
 ): Record<string, unknown>[] {
+  const batch = items.length > 1;
+  const item = pickPrimaryQueueItem(items);
   const disabled = options?.disabled ?? false;
-  const status = options?.statusOverride ?? item.status;
+  const status = options?.statusOverride ?? (batch ? aggregateBatchStatus(items) : item.status);
   const reviewedBy = options?.reviewedByUserId?.trim();
   const caseLabel = caseRow
     ? `${caseRow.slack_channel_name} (${caseRow.case_number})`
     : item.suggested_case_number ?? '—';
+
+  const folderLabels = [
+    ...new Set(
+      items
+        .map((i) => folderLabelFromPath(i.suggested_folder_path))
+        .filter((f) => f !== '—')
+    ),
+  ];
   const folderDisplay =
-    item.suggested_folder_path != null
-      ? folderLabelFromPath(item.suggested_folder_path)
-      : '—';
+    folderLabels.length === 0
+      ? '—'
+      : folderLabels.length === 1
+        ? folderLabels[0]!
+        : `Multiple (${folderLabels.join(', ')})`;
+
+  const docTypes = [
+    ...new Set(items.map((i) => i.suggested_document_type).filter(Boolean)),
+  ] as string[];
+  const documentTypeDisplay =
+    docTypes.length === 0 ? '—' : docTypes.length === 1 ? docTypes[0]! : docTypes.join(', ');
+
   const toLine = [...item.to_emails, ...item.cc_emails].filter(Boolean).join(', ') || '—';
+  const attachmentDisplay = batch
+    ? formatAttachmentList(items)
+    : item.attachment_filename;
 
   const headerText =
     status === 'saved'
-      ? 'File sorted'
+      ? batch
+        ? `${items.length} files sorted`
+        : 'File sorted'
       : status === 'ignored'
         ? 'Not sorted'
         : status === 'needs_attention'
-          ? 'New File Sorter Item — Needs Human Review'
-          : 'New File Sorter Item';
+          ? batch
+            ? `New File Sorter Item — Needs Human Review (${items.length} files)`
+            : 'New File Sorter Item — Needs Human Review'
+          : batch
+            ? `New File Sorter Item (${items.length} attachments)`
+            : 'New File Sorter Item';
 
   const blocks: Record<string, unknown>[] = [
     {
@@ -298,7 +367,7 @@ function buildQueueBlocks(
         { type: 'mrkdwn', text: `*Subject:*\n${slackFieldText(item.subject ?? '—')}` },
         {
           type: 'mrkdwn',
-          text: `*Attachment:*\n${slackFieldText(item.attachment_filename)}`,
+          text: `*Attachment${batch ? 's' : ''}:*\n${slackFieldText(attachmentDisplay, batch ? 900 : 200)}`,
         },
         { type: 'mrkdwn', text: `*AI Suggested Case:*\n${slackFieldText(caseLabel)}` },
         {
@@ -307,11 +376,11 @@ function buildQueueBlocks(
         },
         {
           type: 'mrkdwn',
-          text: `*Document Type:*\n${slackFieldText(item.suggested_document_type ?? '—')}`,
+          text: `*Document Type:*\n${slackFieldText(documentTypeDisplay)}`,
         },
         {
           type: 'mrkdwn',
-          text: `*Confidence:*\n${item.ai_confidence != null ? `${(item.ai_confidence * 100).toFixed(0)}%` : '—'}`,
+          text: `*Confidence:*\n${batch ? formatConfidenceRange(items) : item.ai_confidence != null ? `${(item.ai_confidence * 100).toFixed(0)}%` : '—'}`,
         },
       ],
     },
@@ -325,20 +394,27 @@ function buildQueueBlocks(
   ];
 
   if (status === 'saved') {
-    const sortedPath = item.final_dropbox_path ?? item.suggested_folder_path;
-    const folderName = folderLabelFromPath(sortedPath);
     const successExtras = [
       reviewedBy ? `Sorted by: ${slackUserMention(reviewedBy)}` : '',
-      options?.dropboxLink ? slackMrkdwnLink(options.dropboxLink, 'Open in Dropbox') : '',
-    ].filter(Boolean);
+    ];
+    if (options?.savedFiles?.length) {
+      for (const f of options.savedFiles) {
+        successExtras.push(`${f.filename}: ${slackMrkdwnLink(f.dropboxLink, 'Open in Dropbox')}`);
+      }
+    } else if (options?.dropboxLink) {
+      successExtras.push(slackMrkdwnLink(options.dropboxLink, 'Open in Dropbox'));
+    }
+    const sortedPath = item.final_dropbox_path ?? item.suggested_folder_path;
+    const folderName = folderLabelFromPath(sortedPath);
     blocks.unshift({
       type: 'section',
       text: {
         type: 'mrkdwn',
         text: slackSectionWithExtras(
           `:white_check_mark: *Successfully sorted to Dropbox*\n` +
-            `Case: ${caseLabel} · Folder: ${folderName}`,
-          successExtras
+            `Case: ${caseLabel}` +
+            (batch ? `\n${formatAttachmentList(items)}` : ` · Folder: ${folderName}`),
+          successExtras.filter(Boolean)
         ),
       },
     });
@@ -455,22 +531,31 @@ async function resolveCaseSlackChannelId(caseRow: Case): Promise<string | null> 
 }
 
 export const slackService = {
+  async postQueueBatch(
+    items: FileSorterItem[],
+    caseRow: Case | null,
+    options?: { emailReceivedAt?: string | null }
+  ): Promise<{ channel: string; ts: string }> {
+    const channel = getEnv().SLACK_FILE_SORTER_QUEUE_CHANNEL_ID;
+    const blocks = buildQueueBlocks(items, caseRow, options);
+    const label =
+      items.length === 1
+        ? items[0]!.attachment_filename
+        : `${items.length} attachments: ${items.map((i) => i.attachment_filename).join(', ')}`;
+    const result = await slackApi<{ channel: string; ts: string }>('chat.postMessage', {
+      channel,
+      text: `New File Sorter Item: ${label}`,
+      blocks,
+    });
+    return { channel: result.channel, ts: result.ts };
+  },
+
   async postQueueItem(
     item: FileSorterItem,
     caseRow: Case | null,
     options?: { emailReceivedAt?: string | null }
-  ): Promise<{
-    channel: string;
-    ts: string;
-  }> {
-    const channel = getEnv().SLACK_FILE_SORTER_QUEUE_CHANNEL_ID;
-    const blocks = buildQueueBlocks(item, caseRow, options);
-    const result = await slackApi<{ channel: string; ts: string }>('chat.postMessage', {
-      channel,
-      text: `New File Sorter Item: ${item.attachment_filename}`,
-      blocks,
-    });
-    return { channel: result.channel, ts: result.ts };
+  ): Promise<{ channel: string; ts: string }> {
+    return slackService.postQueueBatch([item], caseRow, options);
   },
 
   async updateQueueMessage(
@@ -479,24 +564,33 @@ export const slackService = {
     options?: {
       reviewedByUserId?: string;
       dropboxLink?: string;
+      savedFiles?: Array<{ filename: string; dropboxLink: string }>;
       disabled?: boolean;
     }
   ): Promise<void> {
     if (!item.slack_queue_channel_id || !item.slack_queue_message_ts) return;
+    const batchItems = await getQueueBatchItems(item);
     const reviewedByUserId =
       options?.reviewedByUserId ?? item.reviewed_by_slack_user_id ?? undefined;
-    const blocks = buildQueueBlocks(item, caseRow, {
-      statusOverride: item.status,
+    const status = aggregateBatchStatus(batchItems);
+    const blocks = buildQueueBlocks(batchItems, caseRow, {
+      statusOverride: status,
       reviewedByUserId,
       dropboxLink: options?.dropboxLink,
-      disabled: options?.disabled ?? ['saved', 'ignored', 'failed'].includes(item.status),
+      savedFiles: options?.savedFiles,
+      disabled:
+        options?.disabled ?? ['saved', 'ignored', 'failed'].includes(status),
     });
+    const label =
+      batchItems.length === 1
+        ? batchItems[0]!.attachment_filename
+        : `${batchItems.length} attachments`;
     const fallbackText =
-      item.status === 'saved'
-        ? `Sorted to Dropbox: ${item.attachment_filename}`
-        : item.status === 'ignored'
-          ? `Do not sort: ${item.attachment_filename}`
-          : `File Sorter Item: ${item.attachment_filename} — ${statusLabel(item.status)}`;
+      status === 'saved'
+        ? `Sorted to Dropbox: ${label}`
+        : status === 'ignored'
+          ? `Do not sort: ${label}`
+          : `File Sorter Item: ${label} — ${statusLabel(status)}`;
     await slackApi('chat.update', {
       channel: item.slack_queue_channel_id,
       ts: item.slack_queue_message_ts,

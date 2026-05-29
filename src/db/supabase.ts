@@ -328,6 +328,21 @@ export async function getFileSorterItem(id: string): Promise<FileSorterItem | nu
   return data as FileSorterItem;
 }
 
+/** All items sharing the same Slack queue message (one email batch card). */
+export async function getQueueBatchItems(item: FileSorterItem): Promise<FileSorterItem[]> {
+  if (!item.slack_queue_channel_id || !item.slack_queue_message_ts) {
+    return [item];
+  }
+  const { data, error } = await getSupabase()
+    .from('file_sorter_items')
+    .select('*')
+    .eq('slack_queue_channel_id', item.slack_queue_channel_id)
+    .eq('slack_queue_message_ts', item.slack_queue_message_ts)
+    .order('created_at', { ascending: true });
+  if (error || !data?.length) return [item];
+  return data as FileSorterItem[];
+}
+
 export async function listFileSorterItems(opts?: {
   status?: FileSorterItemStatus;
   limit?: number;

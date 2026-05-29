@@ -4,6 +4,7 @@ import {
   getCaseByName,
   getFileSorterItem,
   getFoldersForCase,
+  getQueueBatchItems,
   updateCaseDropboxFolderName,
   updateFileSorterItem,
   upsertCaseFolder,
@@ -24,29 +25,40 @@ import { auditService } from './auditService.js';
 import { parseThreadReplies } from '../utils/threadParser.js';
 import type { SlackThreadContext } from './slackService.js';
 import { logger } from '../utils/logger.js';
+import type { Case, FileSorterItem } from '../types/index.js';
 
-async function resolveFinalPaths(
-  itemId: string,
-  slackThread?: SlackThreadContext
-): Promise<{
-  caseNumber: string;
-  folderPath: string;
-  caseRow: NonNullable<Awaited<ReturnType<typeof getCaseById>>>;
-}> {
-  const item = await getFileSorterItem(itemId);
-  if (!item) throw new Error('Item not found');
-
-  let caseNumber = item.final_case_number ?? item.suggested_case_number;
-  let folderPath = item.final_dropbox_path ?? item.suggested_folder_path;
-
-  const threadCtx: SlackThreadContext | null =
+function slackThreadForItem(item: FileSorterItem, slackThread?: SlackThreadContext): SlackThreadContext | null {
+  return (
     slackThread ??
     (item.slack_queue_channel_id && item.slack_queue_message_ts
       ? {
           channelId: item.slack_queue_channel_id,
           messageTs: item.slack_queue_message_ts,
         }
-      : null);
+      : null)
+  );
+}
+
+async function resolveBatchCase(
+  itemId: string,
+  slackThread?: SlackThreadContext
+): Promise<{
+  caseNumber: string;
+  caseRow: Case;
+  threadFolderPath: string | null;
+}> {
+  const trigger = await getFileSorterItem(itemId);
+  if (!trigger) throw new Error('Item not found');
+
+  const batch = await getQueueBatchItems(trigger);
+  let caseNumber =
+    trigger.final_case_number ??
+    trigger.suggested_case_number ??
+    batch.find((i) => i.suggested_case_number)?.suggested_case_number ??
+    null;
+
+  let threadFolderPath: string | null = null;
+  const threadCtx = slackThreadForItem(trigger, slackThread);
 
   if (threadCtx) {
     let replies: string[] = [];
@@ -55,8 +67,6 @@ async function resolveFinalPaths(
     } catch (err) {
       logger.warn('Could not load Slack thread overrides', {
         itemId,
-        channelId: threadCtx.channelId,
-        messageTs: threadCtx.messageTs,
         err: String(err),
       });
     }
@@ -78,18 +88,18 @@ async function resolveFinalPaths(
         (f) => f.folder_label.toLowerCase() === override.folderLabel!.toLowerCase()
       );
       if (folder) {
-        folderPath = folder.dropbox_path;
+        threadFolderPath = folder.dropbox_path;
         await auditService.log(itemId, 'thread_override', {
           folderLabel: override.folderLabel,
           dropboxPath: folder.dropbox_path,
         });
-      } else if (caseNumber) {
+      } else {
         const caseRow = await getCaseById(caseNumber);
         if (caseRow) {
-          folderPath = `${caseRow.dropbox_root_path}/${override.folderLabel}`;
+          threadFolderPath = `${caseRow.dropbox_root_path}/${override.folderLabel}`;
           await auditService.log(itemId, 'thread_override', {
             folderLabel: override.folderLabel,
-            dropboxPath: folderPath,
+            dropboxPath: threadFolderPath,
             note: 'constructed from case root',
           });
         }
@@ -97,14 +107,23 @@ async function resolveFinalPaths(
     }
   }
 
-  if (!caseNumber || !folderPath) {
-    throw new Error('Case and folder must be set before approval (use thread overrides or AI suggestion)');
+  if (!caseNumber) {
+    throw new Error('Case must be set before approval (use thread overrides or AI suggestion)');
   }
 
   const caseRow = await getCaseById(caseNumber);
   if (!caseRow) throw new Error('Case not found');
 
-  return { caseNumber, folderPath, caseRow };
+  return { caseNumber, caseRow, threadFolderPath };
+}
+
+function folderPathForBatchItem(
+  item: FileSorterItem,
+  caseRow: Case,
+  threadFolderPath: string | null
+): string | null {
+  if (threadFolderPath) return threadFolderPath;
+  return item.suggested_folder_path;
 }
 
 export async function handleApprove(
@@ -112,78 +131,101 @@ export async function handleApprove(
   slackUserId: string,
   slackThread?: SlackThreadContext
 ): Promise<void> {
-  const item = await getFileSorterItem(itemId);
-  if (!item) throw new Error('Item not found');
-  if (['saved', 'ignored'].includes(item.status)) {
-    throw new Error(`Item already ${item.status}`);
+  const trigger = await getFileSorterItem(itemId);
+  if (!trigger) throw new Error('Item not found');
+
+  const batch = await getQueueBatchItems(trigger);
+  const pending = batch.filter((i) => !['saved', 'ignored'].includes(i.status));
+  if (!pending.length) {
+    throw new Error('All attachments in this email are already processed');
   }
 
-  const { caseNumber, folderPath, caseRow } = await resolveFinalPaths(itemId, slackThread);
+  const { caseNumber, caseRow, threadFolderPath } = await resolveBatchCase(itemId, slackThread);
 
-  const exists = await fileExistsInDropbox(folderPath, item.attachment_filename);
-  if (exists) {
-    await updateFileSorterItem(itemId, { status: 'needs_attention' });
-    await auditService.log(itemId, 'duplicate_detected', { folderPath, filename: item.attachment_filename }, slackUserId);
-    const updated = await getFileSorterItem(itemId);
-    if (updated) {
-      await slackService.updateQueueMessage(updated, caseRow);
+  const savedFiles: Array<{ filename: string; dropboxLink: string }> = [];
+  const reviewedAt = new Date().toISOString();
+
+  for (const batchItem of pending) {
+    const folderPath = folderPathForBatchItem(batchItem, caseRow, threadFolderPath);
+    if (!folderPath) {
+      throw new Error(
+        `No folder for ${batchItem.attachment_filename} — use Change Case/Folder or a thread override`
+      );
     }
-    throw new Error('Duplicate file exists in Dropbox folder — marked needs_attention');
-  }
 
-  await updateFileSorterItem(itemId, {
-    status: 'approved',
-    final_case_number: caseNumber,
-    final_dropbox_path: folderPath,
-    reviewed_by_slack_user_id: slackUserId,
-    reviewed_at: new Date().toISOString(),
-  });
+    const exists = await fileExistsInDropbox(folderPath, batchItem.attachment_filename);
+    if (exists) {
+      await updateFileSorterItem(batchItem.id, { status: 'needs_attention' });
+      await auditService.log(
+        batchItem.id,
+        'duplicate_detected',
+        { folderPath, filename: batchItem.attachment_filename },
+        slackUserId
+      );
+      continue;
+    }
 
-  await auditService.log(itemId, 'approved', { caseNumber, folderPath }, slackUserId);
+    await updateFileSorterItem(batchItem.id, {
+      status: 'approved',
+      final_case_number: caseNumber,
+      final_dropbox_path: folderPath,
+      reviewed_by_slack_user_id: slackUserId,
+      reviewed_at: reviewedAt,
+    });
 
-  const buffer = await downloadTempAttachment(itemId, item.attachment_filename);
-  const upload = await uploadFileToDropbox(folderPath, item.attachment_filename, buffer);
-  const permalink = await generateDropboxPermalink(upload.path);
+    await auditService.log(batchItem.id, 'approved', { caseNumber, folderPath }, slackUserId);
 
-  const saved = await updateFileSorterItem(itemId, {
-    status: 'saved',
-    final_dropbox_path: upload.path,
-    dropbox_permalink: permalink,
-  });
+    const buffer = await downloadTempAttachment(batchItem.id, batchItem.attachment_filename);
+    const upload = await uploadFileToDropbox(folderPath, batchItem.attachment_filename, buffer);
+    const permalink = await generateDropboxPermalink(upload.path);
 
-  await auditService.log(
-    itemId,
-    'saved_to_dropbox',
-    { path: upload.path, permalink },
-    slackUserId
-  );
+    const saved = await updateFileSorterItem(batchItem.id, {
+      status: 'saved',
+      final_dropbox_path: upload.path,
+      dropbox_permalink: permalink,
+    });
 
-  await slackService.updateQueueMessage(saved, caseRow, {
-    reviewedByUserId: slackUserId,
-    dropboxLink: permalink,
-    disabled: true,
-  });
-
-  const crossPosted = await slackService.postCaseChannelConfirmation({
-    caseRow,
-    item: saved,
-    dropboxLink: permalink,
-    approvedByUserId: slackUserId,
-    fileBuffer: buffer,
-  });
-
-  if (!crossPosted) {
     await auditService.log(
-      itemId,
-      'case_channel_cross_post_failed',
-      {
-        caseNumber: caseRow.case_number,
-        slackChannelName: caseRow.slack_channel_name,
-        note: 'Invite the File Sorter bot to this case channel; ensure channels:read and files:write scopes are enabled.',
-      },
+      batchItem.id,
+      'saved_to_dropbox',
+      { path: upload.path, permalink },
       slackUserId
     );
+
+    savedFiles.push({ filename: batchItem.attachment_filename, dropboxLink: permalink });
+
+    const crossPosted = await slackService.postCaseChannelConfirmation({
+      caseRow,
+      item: saved,
+      dropboxLink: permalink,
+      approvedByUserId: slackUserId,
+      fileBuffer: buffer,
+    });
+
+    if (!crossPosted) {
+      await auditService.log(
+        batchItem.id,
+        'case_channel_cross_post_failed',
+        { caseNumber: caseRow.case_number, slackChannelName: caseRow.slack_channel_name },
+        slackUserId
+      );
+    }
   }
+
+  if (!savedFiles.length) {
+    const refreshed = await getFileSorterItem(itemId);
+    if (refreshed) {
+      await slackService.updateQueueMessage(refreshed, caseRow);
+    }
+    throw new Error('No files were saved — duplicates or missing folders');
+  }
+
+  const primary = (await getQueueBatchItems(trigger))[0] ?? trigger;
+  await slackService.updateQueueMessage(primary, caseRow, {
+    reviewedByUserId: slackUserId,
+    savedFiles,
+    disabled: true,
+  });
 }
 
 export async function handleChange(itemId: string, slackUserId: string): Promise<void> {
@@ -197,41 +239,53 @@ export async function handleNeedsAttention(
   itemId: string,
   slackUserId: string
 ): Promise<void> {
-  const item = await getFileSorterItem(itemId);
-  if (!item) throw new Error('Item not found');
+  const trigger = await getFileSorterItem(itemId);
+  if (!trigger) throw new Error('Item not found');
 
-  const updated = await updateFileSorterItem(itemId, {
-    status: 'needs_attention',
-    reviewed_by_slack_user_id: slackUserId,
-    reviewed_at: new Date().toISOString(),
-  });
+  const batch = await getQueueBatchItems(trigger);
+  const reviewedAt = new Date().toISOString();
 
-  await auditService.log(itemId, 'needs_attention', {}, slackUserId);
+  for (const batchItem of batch) {
+    if (['saved', 'ignored'].includes(batchItem.status)) continue;
+    await updateFileSorterItem(batchItem.id, {
+      status: 'needs_attention',
+      reviewed_by_slack_user_id: slackUserId,
+      reviewed_at: reviewedAt,
+    });
+    await auditService.log(batchItem.id, 'needs_attention', { batch: true }, slackUserId);
+  }
 
-  const caseRow = updated.suggested_case_number
-    ? await getCaseById(updated.suggested_case_number)
+  const primary = batch[0] ?? trigger;
+  const caseRow = primary.suggested_case_number
+    ? await getCaseById(primary.suggested_case_number)
     : null;
-  await slackService.updateQueueMessage(updated, caseRow, {
+  await slackService.updateQueueMessage(primary, caseRow, {
     reviewedByUserId: slackUserId,
   });
 }
 
 export async function handleDoNotSort(itemId: string, slackUserId: string): Promise<void> {
-  const item = await getFileSorterItem(itemId);
-  if (!item) throw new Error('Item not found');
+  const trigger = await getFileSorterItem(itemId);
+  if (!trigger) throw new Error('Item not found');
 
-  const updated = await updateFileSorterItem(itemId, {
-    status: 'ignored',
-    reviewed_by_slack_user_id: slackUserId,
-    reviewed_at: new Date().toISOString(),
-  });
+  const batch = await getQueueBatchItems(trigger);
+  const reviewedAt = new Date().toISOString();
 
-  await auditService.log(itemId, 'ignored', {}, slackUserId);
+  for (const batchItem of batch) {
+    if (['saved', 'ignored'].includes(batchItem.status)) continue;
+    await updateFileSorterItem(batchItem.id, {
+      status: 'ignored',
+      reviewed_by_slack_user_id: slackUserId,
+      reviewed_at: reviewedAt,
+    });
+    await auditService.log(batchItem.id, 'ignored', { batch: true }, slackUserId);
+  }
 
-  const caseRow = updated.suggested_case_number
-    ? await getCaseById(updated.suggested_case_number)
+  const primary = batch[0] ?? trigger;
+  const caseRow = primary.suggested_case_number
+    ? await getCaseById(primary.suggested_case_number)
     : null;
-  await slackService.updateQueueMessage(updated, caseRow, {
+  await slackService.updateQueueMessage(primary, caseRow, {
     reviewedByUserId: slackUserId,
     disabled: true,
   });

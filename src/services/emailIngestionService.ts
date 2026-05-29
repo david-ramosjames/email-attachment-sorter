@@ -12,7 +12,7 @@ import { extractClientIdentity } from './clientIdentityAi.js';
 import { findCaseCandidates } from './caseMatcher.js';
 import { classifyDocument } from './aiClassifier.js';
 import { extractDocumentExcerpt } from './documentExtractor.js';
-import { slackService } from './slackService.js';
+import { postEmailItemsToSlack, type QueuedInboundItem } from './emailBatchSlack.js';
 import { auditService } from './auditService.js';
 import { parseInboundEmail } from './emailIngestion/index.js';
 import { syncDropboxStructureIfStale } from './dropboxSyncService.js';
@@ -87,21 +87,29 @@ export async function processInboundEmail(
 
   const attachments = [...enrichedPayload.attachments].sort(attachmentSortRank);
 
-  let processed = 0;
+  const queued: QueuedInboundItem[] = [];
   let skipped = 0;
   for (const attachment of attachments) {
     const outcome = await processSingleAttachment(enrichedPayload, attachment, batch);
-    if (outcome === 'processed') processed++;
-    else skipped++;
+    if (outcome === 'skipped') {
+      skipped++;
+    } else {
+      queued.push(outcome);
+    }
   }
-  return { processed, skipped };
+
+  if (queued.length > 0) {
+    await postEmailItemsToSlack(enrichedPayload, queued, batch.sharedCaseNumber);
+  }
+
+  return { processed: queued.length, skipped };
 }
 
 async function processSingleAttachment(
   payload: InboundEmailPayload,
   attachment: InboundAttachment,
   batch: EmailBatchState
-): Promise<'processed' | 'skipped'> {
+): Promise<QueuedInboundItem | 'skipped'> {
   const existing = await getFileSorterItemByGmailAttachment(
     payload.gmailMessageId,
     attachment.filename
@@ -272,23 +280,11 @@ async function processSingleAttachment(
 
   const caseRow = classification.suggestedCaseNumber
     ? await getCaseById(classification.suggestedCaseNumber)
-    : null;
+    : batch.sharedCaseNumber
+      ? await getCaseById(batch.sharedCaseNumber)
+      : null;
 
-  const slackMsg = await slackService.postQueueItem(item, caseRow, {
-    emailReceivedAt: payload.receivedAt,
-  });
-  const updated = await updateFileSorterItem(item.id, {
-    slack_queue_channel_id: slackMsg.channel,
-    slack_queue_message_ts: slackMsg.ts,
-  });
-
-  await auditService.log(item.id, 'slack_queued', {
-    channel: slackMsg.channel,
-    ts: slackMsg.ts,
-  });
-
-  await slackService.updateQueueMessage(updated, caseRow);
-  return 'processed';
+  return { item, caseRow };
 }
 
 /** Process documents with extractable text before generic email signature images. */
