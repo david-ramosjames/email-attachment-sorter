@@ -1,4 +1,4 @@
-import { RJL_STANDARD_SUBFOLDERS } from '../constants/rjlFolders.js';
+import { RJL_STANDARD_SUBFOLDERS, type RjlSubfolder } from '../constants/rjlFolders.js';
 import { getEnv } from '../config/env.js';
 import { getSlackChannelForCase, updateCaseSlackChannelId } from '../db/supabase.js';
 import type { Case, FileSorterItem } from '../types/index.js';
@@ -75,20 +75,56 @@ async function slackApi<T>(method: string, body: Record<string, unknown>): Promi
   return data;
 }
 
-/** Upload a file into a channel (optionally in a thread). Requires files:write scope. */
-async function slackUploadFile(opts: {
+/**
+ * Upload a file into a channel so it appears as a normal Slack file attachment.
+ * Uses files.getUploadURLExternal + files.completeUploadExternal (files.upload is deprecated).
+ * Requires files:write scope.
+ */
+async function slackUploadFileToChannel(opts: {
   channelId: string;
   filename: string;
   buffer: Buffer;
   mimeType?: string | null;
-  threadTs?: string;
-  title?: string;
+  initialComment?: string;
+}): Promise<void> {
+  const mime = opts.mimeType?.trim() || 'application/octet-stream';
+
+  const uploadStart = await slackApi<{
+    upload_url: string;
+    file_id: string;
+  }>('files.getUploadURLExternal', {
+    filename: opts.filename,
+    length: opts.buffer.length,
+  });
+
+  const byteUpload = await fetch(uploadStart.upload_url, {
+    method: 'POST',
+    headers: { 'Content-Type': mime },
+    body: opts.buffer,
+  });
+  if (!byteUpload.ok) {
+    throw new Error(`Slack file byte upload failed: HTTP ${byteUpload.status}`);
+  }
+
+  await slackApi('files.completeUploadExternal', {
+    files: [{ id: uploadStart.file_id, title: opts.filename }],
+    channel_id: opts.channelId,
+    initial_comment: opts.initialComment,
+  });
+}
+
+/** Legacy fallback if external upload is unavailable on the workspace. */
+async function slackUploadFileLegacy(opts: {
+  channelId: string;
+  filename: string;
+  buffer: Buffer;
+  mimeType?: string | null;
+  initialComment?: string;
 }): Promise<void> {
   const form = new FormData();
   form.append('channels', opts.channelId);
   form.append('filename', opts.filename);
-  if (opts.title) form.append('title', opts.title);
-  if (opts.threadTs) form.append('thread_ts', opts.threadTs);
+  if (opts.initialComment) form.append('initial_comment', opts.initialComment);
   const mime = opts.mimeType?.trim() || 'application/octet-stream';
   form.append('file', new Blob([opts.buffer], { type: mime }), opts.filename);
 
@@ -100,6 +136,24 @@ async function slackUploadFile(opts: {
   const data = (await res.json()) as { ok: boolean; error?: string };
   if (!data.ok) {
     throw new Error(`Slack API files.upload failed: ${data.error ?? 'unknown'}`);
+  }
+}
+
+async function slackUploadFileToChannelWithFallback(opts: {
+  channelId: string;
+  filename: string;
+  buffer: Buffer;
+  mimeType?: string | null;
+  initialComment?: string;
+}): Promise<void> {
+  try {
+    await slackUploadFileToChannel(opts);
+  } catch (err) {
+    logger.warn('Slack external file upload failed, trying legacy files.upload', {
+      filename: opts.filename,
+      err: String(err),
+    });
+    await slackUploadFileLegacy(opts);
   }
 }
 
@@ -154,7 +208,19 @@ function slackUserMention(userId: string): string {
 function folderLabelFromPath(path: string | null): string {
   if (!path) return '—';
   const parts = path.split('/').filter(Boolean);
-  return parts[parts.length - 1] ?? path;
+  if (!parts.length) return '—';
+
+  const known = new Set<string>(RJL_STANDARD_SUBFOLDERS);
+  for (let i = parts.length - 1; i >= 0; i--) {
+    const segment = parts[i]!;
+    if (known.has(segment as RjlSubfolder)) return segment;
+  }
+
+  const last = parts[parts.length - 1]!;
+  if (/\.[a-z0-9]{2,5}$/i.test(last) && parts.length >= 2) {
+    return parts[parts.length - 2]!;
+  }
+  return last;
 }
 
 /** Slack renders this in each viewer's local timezone. */
@@ -525,7 +591,7 @@ export const slackService = {
     );
 
     try {
-      const posted = await slackApi<{ ts: string }>('chat.postMessage', {
+      await slackApi('chat.postMessage', {
         channel: channelId,
         text: `Document sorted to Dropbox: ${opts.item.attachment_filename}`,
         blocks: [
@@ -537,20 +603,19 @@ export const slackService = {
       });
 
       try {
-        await slackUploadFile({
+        await slackUploadFileToChannelWithFallback({
           channelId,
-          threadTs: posted.ts,
           filename: opts.item.attachment_filename,
           buffer: opts.fileBuffer,
           mimeType: opts.item.attachment_mime_type,
-          title: opts.item.attachment_filename,
         });
       } catch (uploadErr) {
-        logger.warn('Case channel summary posted but file upload failed', {
+        logger.error('Case channel file attachment failed', {
           caseNumber: opts.caseRow.case_number,
           channelId,
           filename: opts.item.attachment_filename,
           err: String(uploadErr),
+          hint: 'Ensure the bot has files:write scope and is in this channel.',
         });
       }
 
