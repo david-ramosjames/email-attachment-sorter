@@ -34,7 +34,10 @@ webhooksRouter.post('/webhooks/inbound-email', async (req, res) => {
     );
     res.status(202).json({ accepted: true, ...result });
   } catch (err) {
-    logger.error('Inbound email webhook failed', { err: String(err) });
+    logger.error('Inbound email webhook failed', {
+      err: err instanceof Error ? err.message : String(err),
+      stack: err instanceof Error ? err.stack : undefined,
+    });
     res.status(400).json({ error: err instanceof Error ? err.message : 'Processing failed' });
   }
 });

@@ -270,7 +270,9 @@ async function processSingleAttachment(
     ? await getCaseById(classification.suggestedCaseNumber)
     : null;
 
-  const slackMsg = await slackService.postQueueItem(item, caseRow);
+  const slackMsg = await slackService.postQueueItem(item, caseRow, {
+    emailReceivedAt: payload.receivedAt,
+  });
   const updated = await updateFileSorterItem(item.id, {
     slack_queue_channel_id: slackMsg.channel,
     slack_queue_message_ts: slackMsg.ts,

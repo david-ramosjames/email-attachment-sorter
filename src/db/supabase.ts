@@ -242,17 +242,43 @@ function isUniqueViolation(error: { code?: string; message?: string }): boolean 
   );
 }
 
+function isMissingColumnError(error: { message?: string }, column: string): boolean {
+  const msg = (error.message ?? '').toLowerCase();
+  const col = column.toLowerCase();
+  return (
+    msg.includes(col) &&
+    (msg.includes('column') || msg.includes('schema cache') || msg.includes('does not exist'))
+  );
+}
+
 /** Insert a row, or return the existing row if this Gmail attachment was already queued. */
 export async function createFileSorterItemIfNew(
   row: Omit<FileSorterItem, 'created_at' | 'updated_at'> & {
     status?: FileSorterItemStatus;
   }
 ): Promise<{ item: FileSorterItem; created: boolean }> {
-  const { data, error } = await getSupabase()
-    .from('file_sorter_items')
-    .insert(row)
-    .select()
-    .single();
+  const attemptInsert = async (
+    insertRow: Omit<FileSorterItem, 'created_at' | 'updated_at'> & {
+      status?: FileSorterItemStatus;
+    }
+  ) =>
+    getSupabase().from('file_sorter_items').insert(insertRow).select().single();
+
+  let { data, error } = await attemptInsert(row);
+
+  if (
+    error &&
+    row.email_received_at != null &&
+    isMissingColumnError(error, 'email_received_at')
+  ) {
+    const { email_received_at: _dropped, ...withoutReceivedAt } = row;
+    ({ data, error } = await attemptInsert(
+      withoutReceivedAt as Omit<FileSorterItem, 'created_at' | 'updated_at'> & {
+        status?: FileSorterItemStatus;
+        email_received_at?: string | null;
+      }
+    ));
+  }
 
   if (!error) {
     return { item: data as FileSorterItem, created: true };

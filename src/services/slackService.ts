@@ -188,6 +188,7 @@ function buildQueueBlocks(
     reviewedByUserId?: string;
     dropboxLink?: string;
     disabled?: boolean;
+    emailReceivedAt?: string | null;
   }
 ): Record<string, unknown>[] {
   const disabled = options?.disabled ?? false;
@@ -224,7 +225,9 @@ function buildQueueBlocks(
         { type: 'mrkdwn', text: `*To:*\n${slackFieldText(toLine)}` },
         {
           type: 'mrkdwn',
-          text: `*Received:*\n${slackReceivedAt(item.email_received_at ?? item.created_at)}`,
+          text: `*Received:*\n${slackReceivedAt(
+            options?.emailReceivedAt ?? item.email_received_at ?? item.created_at
+          )}`,
         },
         { type: 'mrkdwn', text: `*Subject:*\n${slackFieldText(item.subject ?? '—')}` },
         {
@@ -386,12 +389,16 @@ async function resolveCaseSlackChannelId(caseRow: Case): Promise<string | null> 
 }
 
 export const slackService = {
-  async postQueueItem(item: FileSorterItem, caseRow: Case | null): Promise<{
+  async postQueueItem(
+    item: FileSorterItem,
+    caseRow: Case | null,
+    options?: { emailReceivedAt?: string | null }
+  ): Promise<{
     channel: string;
     ts: string;
   }> {
     const channel = getEnv().SLACK_FILE_SORTER_QUEUE_CHANNEL_ID;
-    const blocks = buildQueueBlocks(item, caseRow);
+    const blocks = buildQueueBlocks(item, caseRow, options);
     const result = await slackApi<{ channel: string; ts: string }>('chat.postMessage', {
       channel,
       text: `New File Sorter Item: ${item.attachment_filename}`,
