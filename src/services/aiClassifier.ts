@@ -14,6 +14,7 @@ import {
 import { RJL_STANDARD_SUBFOLDERS } from '../constants/rjlFolders.js';
 import { subfolderForDocumentType } from '../utils/folderInference.js';
 import { buildSmartBodyExcerpt } from '../utils/emailBodyExcerpt.js';
+import { caseMatchingHintsPromptSection, documentSortHintsPromptSection } from '../utils/matchingHints.js';
 import { getCaseById, getFoldersForCase } from '../db/supabase.js';
 import { caseMatchesClientIdentity, identityConflictsWithCase } from '../utils/caseNameMatch.js';
 import type { CaseFolder } from '../types/index.js';
@@ -171,7 +172,7 @@ Subject: ${ctx.subject}
 Email body:
 ${bodyForAi}
 
-Attachment filename: ${ctx.attachmentFilename}${identityHint}${siblingSection}${batchSection}${senderSection}${documentSection}
+Attachment filename: ${ctx.attachmentFilename}${identityHint}${caseMatchingHintsPromptSection(ctx.caseMatchingHints)}${documentSortHintsPromptSection(ctx.documentSortHints)}${siblingSection}${batchSection}${senderSection}${documentSection}
 
 Candidate cases (choose ONLY from this list, exact case_number):
 ${buildCandidatePrompt(candidates)}`;

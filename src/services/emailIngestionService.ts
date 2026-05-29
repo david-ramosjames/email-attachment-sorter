@@ -4,6 +4,8 @@ import {
   getFileSorterItemByGmailAttachment,
   downloadTempAttachment,
   getCaseById,
+  getCaseHintsForSender,
+  getSortHintsForSender,
   getSenderHistory,
   updateFileSorterItem,
   uploadTempAttachment,
@@ -144,6 +146,8 @@ async function processSingleAttachment(
   }
 
   const senderPriorCaseNumbers = await getSenderHistory(payload.fromEmail);
+  const senderCaseHints = await getCaseHintsForSender(payload.fromEmail);
+  const senderSortHints = await getSortHintsForSender(payload.fromEmail);
 
   const matchContext: MatchContext = {
     fromEmail: payload.fromEmail,
@@ -153,6 +157,8 @@ async function processSingleAttachment(
     bodyExcerpt: payload.bodyExcerpt,
     attachmentFilename: attachment.filename,
     senderPriorCaseNumbers,
+    caseMatchingHints: senderCaseHints,
+    documentSortHints: senderSortHints,
     emailPatientNames: batch.patientNames,
     siblingAttachmentFilenames: payload.attachments.map((a) => a.filename),
     batchSharedCaseNumber: batch.sharedCaseNumber ?? undefined,

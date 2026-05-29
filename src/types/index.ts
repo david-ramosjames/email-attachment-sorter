@@ -95,6 +95,21 @@ export interface MatchContext {
   batchSharedCaseNumber?: string;
   /** OpenAI-extracted client/case identity from all text sources */
   aiClientIdentity?: ClientIdentity;
+  /** Who the PI client is — relatives, nicknames, sender→case links */
+  caseMatchingHints?: MatchingHint[];
+  /** How to classify/file mail from this sender or provider */
+  documentSortHints?: MatchingHint[];
+}
+
+export type MatchingHintType = 'case' | 'sort';
+
+export interface MatchingHint {
+  id?: string;
+  hintType: MatchingHintType;
+  caseNumber: string | null;
+  senderEmail: string | null;
+  hintText: string;
+  source?: string;
 }
 
 /** From OpenAI reading subject + body + filename + attachment text */

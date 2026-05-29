@@ -1,0 +1,660 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>RJL File Sorter — FAQ</title>
+  <style>
+    :root {
+      --navy-950: #060d18;
+      --navy-900: #0b1526;
+      --navy-800: #111f35;
+      --navy-700: #1a2d4a;
+      --navy-600: #243b5c;
+      --navy-500: #334f73;
+      --pink: #e8488a;
+      --pink-bright: #ff6ba8;
+      --pink-soft: rgba(232, 72, 138, 0.14);
+      --pink-glow: rgba(232, 72, 138, 0.35);
+      --text: #eef2f8;
+      --text-muted: #9fb0c8;
+      --text-dim: #6b7f9a;
+      --border: rgba(148, 163, 184, 0.14);
+      --card: rgba(17, 31, 53, 0.72);
+      --radius: 14px;
+      --max: 920px;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      font-family: "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+      background: var(--navy-950);
+      color: var(--text);
+      line-height: 1.65;
+      min-height: 100vh;
+    }
+
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      background:
+        radial-gradient(ellipse 80% 50% at 50% -10%, var(--pink-soft), transparent 55%),
+        radial-gradient(ellipse 60% 40% at 100% 20%, rgba(36, 59, 92, 0.5), transparent),
+        linear-gradient(180deg, var(--navy-900), var(--navy-950));
+      pointer-events: none;
+      z-index: -1;
+    }
+
+    a { color: var(--pink-bright); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    .wrap {
+      max-width: var(--max);
+      margin: 0 auto;
+      padding: 0 1.25rem 4rem;
+    }
+
+    header {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      backdrop-filter: blur(14px);
+      background: rgba(6, 13, 24, 0.82);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .header-inner {
+      max-width: var(--max);
+      margin: 0 auto;
+      padding: 0.85rem 1.25rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+      flex-wrap: wrap;
+    }
+
+    .brand-bar {
+      display: flex;
+      align-items: center;
+      gap: 0.85rem;
+      flex-wrap: wrap;
+    }
+
+    .brand-logo-app {
+      height: 42px;
+      width: auto;
+      display: block;
+      filter: drop-shadow(0 2px 8px rgba(232, 72, 138, 0.25));
+    }
+
+    .brand-logo-firm {
+      height: 34px;
+      width: auto;
+      display: block;
+      opacity: 0.95;
+    }
+
+    .brand-divider {
+      width: 1px;
+      height: 30px;
+      background: var(--border);
+      flex-shrink: 0;
+    }
+
+    .brand-text {
+      font-weight: 700;
+      font-size: 1.05rem;
+      letter-spacing: 0.01em;
+      color: var(--text);
+    }
+
+    .hero-brand {
+      display: flex;
+      align-items: center;
+      gap: 1.25rem;
+      margin-bottom: 1.35rem;
+      flex-wrap: wrap;
+    }
+
+    .hero-brand .brand-logo-app {
+      height: 88px;
+    }
+
+    .hero-brand .brand-logo-firm {
+      height: 52px;
+    }
+
+    .hero-brand .brand-divider {
+      height: 56px;
+    }
+
+    nav {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.35rem 1rem;
+      font-size: 0.88rem;
+    }
+
+    nav a {
+      color: var(--text-muted);
+      text-decoration: none;
+    }
+
+    nav a:hover { color: var(--pink-bright); text-decoration: none; }
+
+    .hero {
+      padding: 3rem 0 2.5rem;
+    }
+
+    .badge {
+      display: inline-block;
+      font-size: 0.75rem;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--pink-bright);
+      background: var(--pink-soft);
+      border: 1px solid rgba(232, 72, 138, 0.25);
+      padding: 0.3rem 0.7rem;
+      border-radius: 999px;
+      margin-bottom: 1rem;
+    }
+
+    h1 {
+      font-size: clamp(1.85rem, 5vw, 2.65rem);
+      line-height: 1.15;
+      font-weight: 800;
+      letter-spacing: -0.02em;
+      margin-bottom: 0.85rem;
+    }
+
+    h1 span { color: var(--pink-bright); }
+
+    .lead {
+      font-size: 1.08rem;
+      color: var(--text-muted);
+      max-width: 62ch;
+    }
+
+    section {
+      margin-bottom: 2.75rem;
+      scroll-margin-top: 5rem;
+    }
+
+    h2 {
+      font-size: 1.35rem;
+      font-weight: 700;
+      margin-bottom: 1rem;
+      display: flex;
+      align-items: center;
+      gap: 0.55rem;
+    }
+
+    h2::before {
+      content: "";
+      width: 4px;
+      height: 1.1em;
+      border-radius: 2px;
+      background: var(--pink);
+      flex-shrink: 0;
+    }
+
+    h3 {
+      font-size: 1rem;
+      font-weight: 650;
+      margin: 1.25rem 0 0.5rem;
+      color: var(--text);
+    }
+
+    p { margin-bottom: 0.85rem; color: var(--text-muted); }
+    p strong { color: var(--text); }
+
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 1.25rem 1.35rem;
+      margin-bottom: 1rem;
+    }
+
+    .card-accent {
+      border-color: rgba(232, 72, 138, 0.28);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+    }
+
+    ul, ol {
+      margin: 0.5rem 0 0.85rem 1.25rem;
+      color: var(--text-muted);
+    }
+
+    li { margin-bottom: 0.4rem; }
+    li strong { color: var(--text); }
+
+    .flow {
+      display: grid;
+      gap: 0.65rem;
+      counter-reset: step;
+    }
+
+    .flow-step {
+      display: flex;
+      gap: 1rem;
+      align-items: flex-start;
+      padding: 0.85rem 1rem;
+      background: rgba(11, 21, 38, 0.6);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+    }
+
+    .flow-num {
+      flex-shrink: 0;
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      background: var(--pink);
+      color: #fff;
+      font-size: 0.8rem;
+      font-weight: 700;
+      display: grid;
+      place-items: center;
+    }
+
+    .flow-body { font-size: 0.95rem; color: var(--text-muted); }
+    .flow-body strong { color: var(--text); display: block; margin-bottom: 0.15rem; }
+
+    .cmd-grid {
+      display: grid;
+      gap: 0.85rem;
+    }
+
+    @media (min-width: 640px) {
+      .cmd-grid { grid-template-columns: 1fr 1fr; }
+      .cmd-grid .full { grid-column: 1 / -1; }
+    }
+
+    .cmd {
+      background: rgba(6, 13, 24, 0.55);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 1rem 1.1rem;
+    }
+
+    .cmd-label {
+      font-size: 0.78rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--pink-bright);
+      margin-bottom: 0.35rem;
+    }
+
+    .cmd-name {
+      font-size: 1.05rem;
+      font-weight: 700;
+      color: var(--text);
+      margin-bottom: 0.35rem;
+    }
+
+    .cmd p { margin: 0; font-size: 0.92rem; }
+
+    code, .code-block {
+      font-family: "Cascadia Code", "Consolas", "SF Mono", monospace;
+      font-size: 0.86rem;
+    }
+
+    code {
+      background: rgba(232, 72, 138, 0.12);
+      color: #ffc2da;
+      padding: 0.12rem 0.4rem;
+      border-radius: 5px;
+      border: 1px solid rgba(232, 72, 138, 0.2);
+    }
+
+    .code-block {
+      display: block;
+      background: var(--navy-950);
+      border: 1px solid var(--border);
+      border-left: 3px solid var(--pink);
+      border-radius: 8px;
+      padding: 0.85rem 1rem;
+      color: #c8d4e8;
+      white-space: pre-wrap;
+      margin: 0.65rem 0 0;
+      line-height: 1.55;
+    }
+
+    details {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      margin-bottom: 0.55rem;
+      overflow: hidden;
+    }
+
+    details[open] { border-color: rgba(232, 72, 138, 0.22); }
+
+    summary {
+      cursor: pointer;
+      padding: 0.9rem 1.1rem;
+      font-weight: 600;
+      color: var(--text);
+      list-style: none;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.75rem;
+    }
+
+    summary::-webkit-details-marker { display: none; }
+
+    summary::after {
+      content: "+";
+      color: var(--pink);
+      font-size: 1.2rem;
+      font-weight: 400;
+      flex-shrink: 0;
+    }
+
+    details[open] summary::after { content: "−"; }
+
+    details .answer {
+      padding: 0 1.1rem 1rem;
+      border-top: 1px solid var(--border);
+    }
+
+    details .answer p:last-child { margin-bottom: 0; }
+
+    .pill-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.45rem;
+      margin-top: 0.65rem;
+    }
+
+    .pill {
+      font-size: 0.78rem;
+      padding: 0.25rem 0.6rem;
+      border-radius: 999px;
+      background: var(--navy-700);
+      border: 1px solid var(--border);
+      color: var(--text-muted);
+    }
+
+    .notice {
+      background: var(--pink-soft);
+      border: 1px solid rgba(232, 72, 138, 0.3);
+      border-radius: 10px;
+      padding: 0.9rem 1.1rem;
+      font-size: 0.92rem;
+      color: var(--text-muted);
+    }
+
+    .notice strong { color: var(--pink-bright); }
+
+    footer {
+      text-align: center;
+      padding: 2rem 1rem 0;
+      font-size: 0.82rem;
+      color: var(--text-dim);
+      border-top: 1px solid var(--border);
+      margin-top: 1rem;
+    }
+
+    .footer-brand {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.75rem;
+      margin-bottom: 0.65rem;
+      flex-wrap: wrap;
+    }
+
+    .footer-brand .brand-logo-app { height: 36px; }
+    .footer-brand .brand-logo-firm { height: 28px; }
+    .footer-brand .brand-divider { height: 24px; }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="header-inner">
+      <div class="brand-bar">
+        <img src="/logo.png" alt="RJL File Sorter" class="brand-logo-app" width="42" height="42" />
+        <div class="brand-divider" aria-hidden="true"></div>
+        <img src="/rjl.webp" alt="Ramos James Law" class="brand-logo-firm" width="120" height="34" />
+      </div>
+      <nav aria-label="Page sections">
+        <a href="#overview">Overview</a>
+        <a href="#how-it-works">How it works</a>
+        <a href="#buttons">Buttons</a>
+        <a href="#thread">Thread commands</a>
+        <a href="#hints">Hints</a>
+        <a href="#faq">FAQ</a>
+      </nav>
+    </div>
+  </header>
+
+  <div class="wrap">
+    <div class="hero" id="overview">
+      <div class="hero-brand">
+        <img src="/logo.png" alt="RJL File Sorter app logo" class="brand-logo-app" width="88" height="88" />
+        <div class="brand-divider" aria-hidden="true"></div>
+        <img src="/rjl.webp" alt="Ramos James Law" class="brand-logo-firm" width="180" height="52" />
+      </div>
+      <div class="badge">Ramos James Law · Internal</div>
+      <h1>File Sorter <span>FAQ</span></h1>
+      <p class="lead">
+        A human-in-the-loop assistant that reads inbound email attachments, suggests which case and folder they belong in,
+        and waits for your approval before anything is saved to Dropbox.
+      </p>
+    </div>
+
+    <section>
+      <h2>Purpose &amp; goals</h2>
+      <div class="card card-accent">
+        <p><strong>The problem:</strong> Client documents arrive by email from all kinds of senders — medical records vendors, HR departments, e-sign services, relatives, listservs. Sorting them into the right case folder takes time and context.</p>
+        <p><strong>What File Sorter does:</strong> It reads each email and attachment, uses AI to suggest a case and Dropbox subfolder, and posts a review card in Slack so a team member can confirm or correct before filing.</p>
+        <p><strong>What it never does:</strong> It does <em>not</em> automatically save files. Every document requires an explicit <strong>Approve</strong> click. Low-confidence or ambiguous items are flagged for human review.</p>
+      </div>
+      <div class="notice">
+        <strong>Human approval required.</strong> Think of the bot as a smart intake clerk — it prepares the filing recommendation; you make the final call.
+      </div>
+    </section>
+
+    <section id="how-it-works">
+      <h2>How it works</h2>
+      <div class="flow">
+        <div class="flow-step">
+          <div class="flow-num">1</div>
+          <div class="flow-body">
+            <strong>Email arrives with attachment(s)</strong>
+            Gmail / Workspace forwards mail with attachments to the File Sorter webhook.
+          </div>
+        </div>
+        <div class="flow-step">
+          <div class="flow-num">2</div>
+          <div class="flow-body">
+            <strong>AI analyzes the content</strong>
+            Reads subject, body (including forwards), filename, and document text. Matches against known cases and staff hints.
+          </div>
+        </div>
+        <div class="flow-step">
+          <div class="flow-num">3</div>
+          <div class="flow-body">
+            <strong>One Slack card per email</strong>
+            Multiple attachments from the same email appear on a single queue card in <code>#file-sorter-queue</code>.
+          </div>
+        </div>
+        <div class="flow-step">
+          <div class="flow-num">4</div>
+          <div class="flow-body">
+            <strong>You review in Slack</strong>
+            Check the suggested case, folder, and confidence. Use buttons or thread commands to correct if needed.
+          </div>
+        </div>
+        <div class="flow-step">
+          <div class="flow-num">5</div>
+          <div class="flow-body">
+            <strong>Approve → saved to Dropbox</strong>
+            All attachments in the email are filed. The case Slack channel gets a confirmation with the file attached.
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>What you see on a queue card</h2>
+      <div class="card">
+        <ul>
+          <li><strong>From / To / Subject / Received</strong> — email metadata</li>
+          <li><strong>Attachment(s)</strong> — filename(s) and each suggested folder</li>
+          <li><strong>AI Suggested Case</strong> — matched client case (Slack channel name)</li>
+          <li><strong>AI Suggested Folder</strong> — Dropbox subfolder (Medical, Pleadings, etc.)</li>
+          <li><strong>Confidence</strong> — how sure the AI is (below 75% → needs review)</li>
+          <li><strong>Reason</strong> — short explanation of why it chose that case/folder</li>
+        </ul>
+        <p>Cards marked <strong>Needs Human Review</strong> usually mean no case matched, low confidence, or the AI couldn't identify the PI client from the email alone.</p>
+      </div>
+    </section>
+
+    <section id="buttons">
+      <h2>Slack buttons</h2>
+      <p>These appear on each queue card. Clicking a button is how you interact with the bot — there are no slash commands.</p>
+      <div class="cmd-grid">
+        <div class="cmd">
+          <div class="cmd-label">Primary action</div>
+          <div class="cmd-name">Approve</div>
+          <p>Saves all attachments in this email to Dropbox under the suggested (or overridden) case and folder. Posts confirmation to the case Slack channel with the file attached.</p>
+        </div>
+        <div class="cmd">
+          <div class="cmd-label">Get help</div>
+          <div class="cmd-name">Change Case/Folder</div>
+          <p>Posts instructions in the thread explaining how to override case, folder, or hints. Does not change anything by itself — reply in the thread, then click Approve.</p>
+        </div>
+        <div class="cmd">
+          <div class="cmd-label">Flag</div>
+          <div class="cmd-name">Needs Attention</div>
+          <p>Marks the item for follow-up. You can still use Change Case/Folder and Approve when ready. Use when something looks off but you aren't ready to file or skip.</p>
+        </div>
+        <div class="cmd">
+          <div class="cmd-label">Skip</div>
+          <div class="cmd-name">Do Not Sort</div>
+          <p>Closes the item without saving to Dropbox. Use for newsletters, spam, or mail that isn't a client document.</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="thread">
+      <h2>Thread commands</h2>
+      <p>Before clicking <strong>Approve</strong>, reply in the card's thread with any of these. They are read when you Approve.</p>
+
+      <div class="card">
+        <h3>Override case or folder</h3>
+        <div class="code-block">case: 1277
+case: Juan Garcia
+folder: Medical</div>
+        <ul>
+          <li><code>case:</code> — case number or client name</li>
+          <li><code>folder:</code> — applies to <strong>all attachments</strong> in that email</li>
+        </ul>
+        <div class="pill-row">
+          <span class="pill">Correspondence</span>
+          <span class="pill">Expenses</span>
+          <span class="pill">Intake</span>
+          <span class="pill">Investigation</span>
+          <span class="pill">LOP</span>
+          <span class="pill">Lost Wages</span>
+          <span class="pill">Medical</span>
+          <span class="pill">PD</span>
+          <span class="pill">Photos</span>
+          <span class="pill">Pleadings</span>
+          <span class="pill">Settlement</span>
+          <span class="pill">Subrogation</span>
+        </div>
+      </div>
+
+      <div class="card card-accent" id="hints">
+        <h3>Teach the system (saved for future emails)</h3>
+        <p>Two types of hints — use the right one:</p>
+        <div class="code-block">case hint: Maria Garcia emails on behalf of PI client Juan Garcia
+sort hint: Law360 newsletters from this listserv — Do Not Sort</div>
+        <ul>
+          <li><strong><code>case hint:</code></strong> — <em>Who is the client?</em> Relatives, nicknames, sender→client links. Helps match the right case.</li>
+          <li><strong><code>sort hint:</code></strong> — <em>How should mail from this sender be filed?</em> Provider behavior, folder rules, newsletters to ignore.</li>
+        </ul>
+        <p>Hints are saved when you Approve. The next email from that sender gets (usually) match better automatically.</p>
+      </div>
+    </section>
+
+    <section>
+      <h2>Multiple attachments</h2>
+      <div class="card">
+        <p>One email with several attachments produces <strong>one Slack card</strong>, not one card per file. One <strong>Approve</strong> files everything to the same case.</p>
+        <ul>
+          <li>Each file can have its own suggested folder unless you set a thread <code>folder:</code> override (then all files use that folder).</li>
+          <li>If the first attachment identifies the case, later attachments in the same email inherit that case.</li>
+        </ul>
+      </div>
+    </section>
+
+    <section id="faq">
+      <h2>Frequently asked questions</h2>
+
+      <details>
+        <summary>Why didn't the bot pick a case?</summary>
+        <div class="answer">
+          <p>Common reasons: the PI client isn't named clearly in the email (sender is a vendor, not the client), the case isn't in the index yet, or the name only partially matches a different client. Use <code>case hint:</code> and <code>case:</code> in the thread, then Approve to teach it for next time.</p>
+        </div>
+      </details>
+
+      <details>
+        <summary>What's the difference between Needs Attention and Needs Human Review?</summary>
+        <div class="answer">
+          <p><strong>Needs Human Review</strong> on the card title means the AI flagged uncertainty before anyone clicked anything — usually no case match or low confidence. <strong>Needs Attention</strong> (status) can also mean someone pressed the button, or a duplicate file was detected in Dropbox.</p>
+        </div>
+      </details>
+
+      <details>
+        <summary>Can I file to a case the AI didn't suggest?</summary>
+        <div class="answer">
+          <p>Yes. Reply in the thread with <code>case: 1277</code> or <code>case: Client Name</code>, then Approve. The system saves a case hint for that sender so future mail may auto-match.</p>
+        </div>
+      </details>
+
+      <details>
+        <summary>What emails are ignored?</summary>
+        <div class="answer">
+          <p>Emails without attachments are skipped. Certain known list senders (e.g. TTLA listserv) are ignored at ingestion. Use <code>sort hint:</code> + Do Not Sort for other recurring non-client mail.</p>
+        </div>
+      </details>
+
+      <details>
+        <summary>Where do files go after Approve?</summary>
+        <div class="answer">
+          <p>Files upload to the case's Dropbox folder under the chosen subfolder (Medical, Pleadings, etc.). A summary message with the file is cross-posted to that case's Slack channel.</p>
+        </div>
+      </details>
+
+      <details>
+        <summary>Does the bot read old Slack messages to update?</summary>
+        <div class="answer">
+          <p>No. Only <strong>new</strong> inbound emails get the latest card layout and logic. Existing queue cards won't change after a deploy.</p>
+        </div>
+      </details>
+    </section>
+
+    <footer>
+      <div class="footer-brand">
+        <img src="/logo.png" alt="" class="brand-logo-app" width="36" height="36" aria-hidden="true" />
+        <div class="brand-divider" aria-hidden="true"></div>
+        <img src="/rjl.webp" alt="" class="brand-logo-firm" width="100" height="28" aria-hidden="true" />
+      </div>
+      RJL File Sorter · Ramos James Law · Internal use only
+    </footer>
+  </div>
+</body>
+</html>

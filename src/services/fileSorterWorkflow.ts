@@ -8,6 +8,9 @@ import {
   updateCaseDropboxFolderName,
   updateFileSorterItem,
   upsertCaseFolder,
+  upsertSenderCaseHint,
+  upsertSenderSortHint,
+  addCaseOnlyHint,
 } from '../db/supabase.js';
 import {
   getCasesRootPath,
@@ -46,6 +49,11 @@ async function resolveBatchCase(
   caseNumber: string;
   caseRow: Case;
   threadFolderPath: string | null;
+  threadCaseHints: string[];
+  threadSortHints: string[];
+  usedCaseOverride: boolean;
+  usedFolderOverride: boolean;
+  threadFolderLabel: string | null;
 }> {
   const trigger = await getFileSorterItem(itemId);
   if (!trigger) throw new Error('Item not found');
@@ -58,6 +66,11 @@ async function resolveBatchCase(
     null;
 
   let threadFolderPath: string | null = null;
+  let threadCaseHints: string[] = [];
+  let threadSortHints: string[] = [];
+  let usedCaseOverride = false;
+  let usedFolderOverride = false;
+  let threadFolderLabel: string | null = null;
   const threadCtx = slackThreadForItem(trigger, slackThread);
 
   if (threadCtx) {
@@ -72,10 +85,17 @@ async function resolveBatchCase(
     }
 
     const override = parseThreadReplies(replies);
+    if (override.caseHints?.length) {
+      threadCaseHints = override.caseHints;
+    }
+    if (override.sortHints?.length) {
+      threadSortHints = override.sortHints;
+    }
     if (override.caseName) {
       const matched = await getCaseByName(override.caseName);
       if (matched) {
         caseNumber = matched.case_number;
+        usedCaseOverride = true;
         await auditService.log(itemId, 'thread_override', {
           caseName: override.caseName,
           caseNumber: matched.case_number,
@@ -83,6 +103,8 @@ async function resolveBatchCase(
       }
     }
     if (override.folderLabel && caseNumber) {
+      usedFolderOverride = true;
+      threadFolderLabel = override.folderLabel;
       const folders = await getFoldersForCase(caseNumber);
       const folder = folders.find(
         (f) => f.folder_label.toLowerCase() === override.folderLabel!.toLowerCase()
@@ -114,7 +136,16 @@ async function resolveBatchCase(
   const caseRow = await getCaseById(caseNumber);
   if (!caseRow) throw new Error('Case not found');
 
-  return { caseNumber, caseRow, threadFolderPath };
+  return {
+    caseNumber,
+    caseRow,
+    threadFolderPath,
+    threadCaseHints,
+    threadSortHints,
+    usedCaseOverride,
+    usedFolderOverride,
+    threadFolderLabel,
+  };
 }
 
 function folderPathForBatchItem(
@@ -124,6 +155,112 @@ function folderPathForBatchItem(
 ): string | null {
   if (threadFolderPath) return threadFolderPath;
   return item.suggested_folder_path;
+}
+
+async function persistMatchingHintsFromApproval(opts: {
+  trigger: FileSorterItem;
+  batch: FileSorterItem[];
+  caseNumber: string;
+  caseRow: Case;
+  threadCaseHints: string[];
+  threadSortHints: string[];
+  usedCaseOverride: boolean;
+  usedFolderOverride: boolean;
+  threadFolderLabel: string | null;
+  slackUserId: string;
+}): Promise<void> {
+  const {
+    trigger,
+    batch,
+    caseNumber,
+    caseRow,
+    threadCaseHints,
+    threadSortHints,
+    usedCaseOverride,
+    usedFolderOverride,
+    threadFolderLabel,
+    slackUserId,
+  } = opts;
+
+  const aiMissedCase = batch.some(
+    (i) => !i.suggested_case_number || i.suggested_case_number !== caseNumber
+  );
+
+  for (const hintText of threadCaseHints) {
+    try {
+      await upsertSenderCaseHint({
+        caseNumber,
+        senderEmail: trigger.from_email,
+        hintText,
+        source: 'slack_thread',
+        createdBy: slackUserId,
+      });
+      await addCaseOnlyHint({
+        caseNumber,
+        hintText,
+        source: 'slack_thread',
+        createdBy: slackUserId,
+      });
+      await auditService.log(
+        trigger.id,
+        'matching_hint_saved',
+        { hintType: 'case', caseNumber, senderEmail: trigger.from_email, hintText: hintText.slice(0, 200) },
+        slackUserId
+      );
+    } catch (err) {
+      logger.warn('Could not save case hint', { caseNumber, err: String(err) });
+    }
+  }
+
+  for (const hintText of threadSortHints) {
+    try {
+      await upsertSenderSortHint({
+        senderEmail: trigger.from_email,
+        hintText,
+        caseNumber: null,
+        source: 'slack_thread',
+        createdBy: slackUserId,
+      });
+      await auditService.log(
+        trigger.id,
+        'matching_hint_saved',
+        { hintType: 'sort', senderEmail: trigger.from_email, hintText: hintText.slice(0, 200) },
+        slackUserId
+      );
+    } catch (err) {
+      logger.warn('Could not save sort hint', { err: String(err) });
+    }
+  }
+
+  if ((usedCaseOverride || aiMissedCase) && !threadCaseHints.length) {
+    const hintText = `Emails from ${trigger.from_email} belong to case ${caseRow.slack_channel_name} (${caseNumber}).`;
+    try {
+      await upsertSenderCaseHint({
+        caseNumber,
+        senderEmail: trigger.from_email,
+        hintText,
+        source: 'auto_learned',
+        createdBy: slackUserId,
+      });
+    } catch (err) {
+      logger.warn('Could not auto-learn case hint', { caseNumber, err: String(err) });
+    }
+  }
+
+  if (usedFolderOverride && threadFolderLabel && !threadSortHints.length) {
+    const hintText = `Emails from ${trigger.from_email} → folder ${threadFolderLabel}.`;
+    try {
+      await upsertSenderSortHint({
+        senderEmail: trigger.from_email,
+        hintText,
+        caseNumber: null,
+        source: 'auto_learned',
+        createdBy: slackUserId,
+      });
+    } catch (err) {
+      logger.warn('Could not auto-learn sort hint', { err: String(err) });
+    }
+  }
 }
 
 export async function handleApprove(
@@ -140,7 +277,16 @@ export async function handleApprove(
     throw new Error('All attachments in this email are already processed');
   }
 
-  const { caseNumber, caseRow, threadFolderPath } = await resolveBatchCase(itemId, slackThread);
+  const {
+    caseNumber,
+    caseRow,
+    threadFolderPath,
+    threadCaseHints,
+    threadSortHints,
+    usedCaseOverride,
+    usedFolderOverride,
+    threadFolderLabel,
+  } = await resolveBatchCase(itemId, slackThread);
 
   const savedFiles: Array<{ filename: string; dropboxLink: string }> = [];
   const reviewedAt = new Date().toISOString();
@@ -225,6 +371,19 @@ export async function handleApprove(
     reviewedByUserId: slackUserId,
     savedFiles,
     disabled: true,
+  });
+
+  await persistMatchingHintsFromApproval({
+    trigger,
+    batch,
+    caseNumber,
+    caseRow,
+    threadCaseHints,
+    threadSortHints,
+    usedCaseOverride,
+    usedFolderOverride,
+    threadFolderLabel,
+    slackUserId,
   });
 }
 

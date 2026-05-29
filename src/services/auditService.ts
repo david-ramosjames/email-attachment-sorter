@@ -13,7 +13,8 @@ export type AuditEventType =
   | 'thread_override'
   | 'duplicate_detected'
   | 'case_channel_cross_post_failed'
-  | 'reindex_folders';
+  | 'reindex_folders'
+  | 'matching_hint_saved';
 
 export const auditService = {
   async log(

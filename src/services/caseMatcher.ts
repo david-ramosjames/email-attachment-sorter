@@ -1,5 +1,7 @@
 import {
   getFoldersForCase,
+  getCaseHintsForCases,
+  getCaseHintsForSender,
   getSenderHistory,
   listAllCases,
   searchCases,
@@ -22,6 +24,7 @@ import {
   scoreCaseForClientIdentity,
 } from '../utils/caseNameMatch.js';
 import { logger } from '../utils/logger.js';
+import { mergeMatchingHints } from '../utils/matchingHints.js';
 import { isPhoneLikeNumber, maskPhoneAndFaxNumbers } from '../utils/phoneMask.js';
 
 const SEARCH_STOPWORDS = new Set([
@@ -618,7 +621,53 @@ async function findCasesFromFilename(ctx: MatchContext): Promise<Case[]> {
   return matched;
 }
 
+async function findCandidatesFromMatchingHints(
+  ctx: MatchContext,
+  allCases: Case[],
+  senderCaseNumbers: string[],
+  numericRefs: string[],
+  knownCaseNumbers: Set<string>
+): Promise<CaseCandidate[]> {
+  const hints = ctx.caseMatchingHints ?? [];
+  if (!hints.length) return [];
+
+  const caseNumbers = [...new Set(hints.map((h) => h.caseNumber))];
+  const matched = allCases.filter((c) => caseNumbers.includes(c.case_number));
+  if (!matched.length) return [];
+
+  logger.info('Candidates from staff matching hints', {
+    fromEmail: ctx.fromEmail,
+    cases: matched.map((c) => c.slack_channel_name),
+    hints: hints.map((h) => h.hintText.slice(0, 80)),
+  });
+
+  const candidates = await buildCandidates(
+    matched,
+    ctx,
+    senderCaseNumbers,
+    numericRefs,
+    knownCaseNumbers
+  );
+
+  return candidates.map((c) => {
+    const hintTexts = hints
+      .filter((h) => h.caseNumber === c.case.case_number)
+      .map((h) => h.hintText);
+    return {
+      ...c,
+      matchScore: c.matchScore + 250,
+      matchReasons: [
+        ...c.matchReasons,
+        `Staff matching hint: ${hintTexts.join('; ').slice(0, 160)}`,
+      ],
+    };
+  });
+}
+
 export async function findCaseCandidates(ctx: MatchContext): Promise<CaseCandidate[]> {
+  const senderHints = await getCaseHintsForSender(ctx.fromEmail);
+  ctx.caseMatchingHints = mergeMatchingHints(senderHints, ctx.caseMatchingHints);
+
   const allCases = await listAllCases();
   const knownCaseNumbers = new Set(allCases.map((c) => c.case_number));
   const senderCaseNumbers = await getSenderHistory(ctx.fromEmail);
@@ -659,6 +708,17 @@ export async function findCaseCandidates(ctx: MatchContext): Promise<CaseCandida
 
   if (identityCandidates.length) {
     candidates = mergeCandidates(identityCandidates, candidates);
+  }
+
+  const hintCandidates = await findCandidatesFromMatchingHints(
+    ctx,
+    allCases,
+    senderCaseNumbers,
+    numericRefs,
+    knownCaseNumbers
+  );
+  if (hintCandidates.length) {
+    candidates = mergeCandidates(hintCandidates, candidates);
   }
 
   if (patientCandidates.length) {
@@ -775,6 +835,13 @@ export async function findCaseCandidates(ctx: MatchContext): Promise<CaseCandida
         removed: before - candidates.length,
       });
     }
+  }
+
+  if (candidates.length) {
+    const caseHints = await getCaseHintsForCases(
+      candidates.map((c) => c.case.case_number)
+    );
+    ctx.caseMatchingHints = mergeMatchingHints(ctx.caseMatchingHints, caseHints);
   }
 
   return candidates;

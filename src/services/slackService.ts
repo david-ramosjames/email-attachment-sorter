@@ -246,7 +246,9 @@ function threadOverrideHelpText(): string {
   return (
     '_Optional — reply in thread before Approve (use your own values):_\n' +
     '• `case: 1277` (case number) or `case: First Last` (client name)\n' +
-    `• \`folder: <name>\` — ${folderList} (applies to all files unless you Approve per-folder later)`
+    `• \`folder: <name>\` — ${folderList} (applies to all files in this email)\n` +
+    '• `case hint: Client is Juan Garcia — sender is his daughter Maria` (who the client is)\n' +
+    '• `sort hint: Law360 newsletters from this sender — Do Not Sort` (how to file by provider/sender)'
   );
 }
 
@@ -284,6 +286,46 @@ function formatConfidenceRange(items: FileSorterItem[]): string {
   const max = Math.max(...values);
   if (min === max) return `${(min * 100).toFixed(0)}%`;
   return `${(min * 100).toFixed(0)}%–${(max * 100).toFixed(0)}%`;
+}
+
+function queueCardEmoji(status: string): string {
+  switch (status) {
+    case 'saved':
+      return '✅';
+    case 'ignored':
+      return '🚫';
+    case 'needs_attention':
+      return '⚠️';
+    case 'failed':
+      return '❌';
+    case 'pending_review':
+      return '📥';
+    default:
+      return '📎';
+  }
+}
+
+function buildQueueHeaderText(status: string, batch: boolean, batchCount: number): string {
+  const emoji = queueCardEmoji(status);
+  const batchSuffix = batch
+    ? status === 'needs_attention' || status === 'saved' || status === 'failed'
+      ? ` (${batchCount} files)`
+      : ` (${batchCount} attachments)`
+    : '';
+
+  if (status === 'saved') {
+    return `${emoji} ${batch ? `${batchCount} files sorted` : 'File sorted'}`;
+  }
+  if (status === 'ignored') {
+    return `${emoji} Not sorted`;
+  }
+  if (status === 'needs_attention') {
+    return `${emoji} New File Sorter Item — Needs Human Review${batchSuffix}`;
+  }
+  if (status === 'failed') {
+    return `${emoji} File Sorter failed${batchSuffix}`;
+  }
+  return `${emoji} New File Sorter Item${batchSuffix}`;
 }
 
 function buildQueueBlocks(
@@ -332,25 +374,13 @@ function buildQueueBlocks(
     ? formatAttachmentList(items)
     : item.attachment_filename;
 
-  const headerText =
-    status === 'saved'
-      ? batch
-        ? `${items.length} files sorted`
-        : 'File sorted'
-      : status === 'ignored'
-        ? 'Not sorted'
-        : status === 'needs_attention'
-          ? batch
-            ? `New File Sorter Item — Needs Human Review (${items.length} files)`
-            : 'New File Sorter Item — Needs Human Review'
-          : batch
-            ? `New File Sorter Item (${items.length} attachments)`
-            : 'New File Sorter Item';
+  const headerText = buildQueueHeaderText(status, batch, items.length);
 
   const blocks: Record<string, unknown>[] = [
+    { type: 'divider' },
     {
       type: 'header',
-      text: { type: 'plain_text', text: headerText, emoji: false },
+      text: { type: 'plain_text', text: headerText, emoji: true },
     },
     {
       type: 'section',
@@ -480,6 +510,19 @@ function buildQueueBlocks(
     });
   }
 
+  blocks.push({
+    type: 'context',
+    elements: [
+      {
+        type: 'mrkdwn',
+        text: `${queueCardEmoji(status)} *RJL File Sorter* · ${slackFieldText(
+          batch ? `${items.length} attachments` : item.attachment_filename,
+          120
+        )}`,
+      },
+    ],
+  });
+
   return blocks;
 }
 
@@ -542,9 +585,10 @@ export const slackService = {
       items.length === 1
         ? items[0]!.attachment_filename
         : `${items.length} attachments: ${items.map((i) => i.attachment_filename).join(', ')}`;
+    const status = aggregateBatchStatus(items);
     const result = await slackApi<{ channel: string; ts: string }>('chat.postMessage', {
       channel,
-      text: `New File Sorter Item: ${label}`,
+      text: `${buildQueueHeaderText(status, items.length > 1, items.length)} — ${label}`,
       blocks,
     });
     return { channel: result.channel, ts: result.ts };
@@ -585,12 +629,7 @@ export const slackService = {
       batchItems.length === 1
         ? batchItems[0]!.attachment_filename
         : `${batchItems.length} attachments`;
-    const fallbackText =
-      status === 'saved'
-        ? `Sorted to Dropbox: ${label}`
-        : status === 'ignored'
-          ? `Do not sort: ${label}`
-          : `File Sorter Item: ${label} — ${statusLabel(status)}`;
+    const fallbackText = `${buildQueueHeaderText(status, batchItems.length > 1, batchItems.length)} — ${label}`;
     await slackApi('chat.update', {
       channel: item.slack_queue_channel_id,
       ts: item.slack_queue_message_ts,

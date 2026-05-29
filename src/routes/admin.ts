@@ -1,6 +1,13 @@
 import { Router } from 'express';
-import { listCases, listFileSorterItems } from '../db/supabase.js';
-import type { FileSorterItemStatus } from '../types/index.js';
+import {
+  listCases,
+  listFileSorterItems,
+  listMatchingHints,
+  upsertSenderCaseHint,
+  upsertSenderSortHint,
+  addCaseOnlyHint,
+} from '../db/supabase.js';
+import type { FileSorterItemStatus, MatchingHintType } from '../types/index.js';
 import { reindexDropboxFoldersForCase } from '../services/fileSorterWorkflow.js';
 import {
   getLastDropboxSyncAt,
@@ -11,6 +18,70 @@ import { discoverCasesRoot, getCasesRootPath, verifyDropboxConnection } from '..
 import { logger } from '../utils/logger.js';
 
 export const adminRouter = Router();
+
+adminRouter.get('/admin/matching-hints', async (req, res) => {
+  try {
+    const caseNumber = req.query.caseNumber as string | undefined;
+    const senderEmail = req.query.senderEmail as string | undefined;
+    const hintType = req.query.hintType as MatchingHintType | undefined;
+    const limit = req.query.limit ? parseInt(String(req.query.limit), 10) : 100;
+    const hints = await listMatchingHints({ hintType, caseNumber, senderEmail, limit });
+    res.json({ hints, count: hints.length });
+  } catch (err) {
+    logger.error('Admin list matching hints failed', { err: String(err) });
+    res.status(500).json({ error: 'Failed to list matching hints' });
+  }
+});
+
+adminRouter.post('/admin/matching-hints', async (req, res) => {
+  try {
+    const caseNumber = req.body?.caseNumber as string | undefined;
+    const hintType = (req.body?.hintType as MatchingHintType | undefined) ?? 'case';
+    const hintText = req.body?.hintText as string | undefined;
+    const senderEmail = req.body?.senderEmail as string | undefined;
+    if (!hintText?.trim()) {
+      res.status(400).json({ error: 'hintText is required' });
+      return;
+    }
+    if (hintType === 'sort') {
+      if (!senderEmail?.trim()) {
+        res.status(400).json({ error: 'senderEmail is required for sort hints' });
+        return;
+      }
+      await upsertSenderSortHint({
+        senderEmail: senderEmail.trim(),
+        hintText: hintText.trim(),
+        caseNumber: caseNumber?.trim() ?? null,
+        source: 'admin',
+      });
+    } else {
+      if (!caseNumber?.trim()) {
+        res.status(400).json({ error: 'caseNumber is required for case hints' });
+        return;
+      }
+      if (senderEmail?.trim()) {
+        await upsertSenderCaseHint({
+          caseNumber: caseNumber.trim(),
+          senderEmail: senderEmail.trim(),
+          hintText: hintText.trim(),
+          source: 'admin',
+        });
+      } else {
+        await addCaseOnlyHint({
+          caseNumber: caseNumber.trim(),
+          hintText: hintText.trim(),
+          source: 'admin',
+        });
+      }
+    }
+    res.json({ ok: true });
+  } catch (err) {
+    logger.error('Admin create matching hint failed', { err: String(err) });
+    res.status(500).json({
+      error: err instanceof Error ? err.message : 'Failed to create matching hint',
+    });
+  }
+});
 
 adminRouter.get('/admin/file-sorter-items', async (req, res) => {
   try {

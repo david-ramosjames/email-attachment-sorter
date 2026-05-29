@@ -3,6 +3,7 @@ import { getEnv } from '../config/env.js';
 import { MAX_DOCUMENT_TEXT_FOR_AI } from '../constants/classification.js';
 import type { ClientIdentity, MatchContext } from '../types/index.js';
 import { buildSmartBodyExcerpt } from '../utils/emailBodyExcerpt.js';
+import { caseMatchingHintsPromptSection } from '../utils/matchingHints.js';
 import { logger } from '../utils/logger.js';
 
 export type { ClientIdentity };
@@ -96,7 +97,7 @@ Subject: ${ctx.subject}
 Email body:
 ${bodyForAi}
 
-Attachment filename: ${ctx.attachmentFilename}${siblings}${attachmentSection}`;
+Attachment filename: ${ctx.attachmentFilename}${siblings}${attachmentSection}${caseMatchingHintsPromptSection(ctx.caseMatchingHints)}`;
 
   try {
     const response = await getOpenAI().chat.completions.create({

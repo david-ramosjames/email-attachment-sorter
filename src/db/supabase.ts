@@ -8,6 +8,7 @@ import type {
   CaseSlackChannel,
   FileSorterItem,
   FileSorterItemStatus,
+  MatchingHint,
 } from '../types/index.js';
 
 let client: SupabaseClient | null = null;
@@ -217,6 +218,250 @@ export async function getSenderHistory(fromEmail: string): Promise<string[]> {
     .map((r) => r.final_case_number as string)
     .filter(Boolean);
   return [...new Set(ids)];
+}
+
+function isMissingMatchingHintsTable(error: { message?: string }): boolean {
+  const msg = (error.message ?? '').toLowerCase();
+  return msg.includes('matching_hints') && (msg.includes('does not exist') || msg.includes('schema cache'));
+}
+
+function normalizeSenderEmail(email: string): string {
+  return email.trim().toLowerCase();
+}
+
+function mapMatchingHintRow(row: {
+  id: string;
+  hint_type?: string;
+  case_number: string | null;
+  sender_email: string | null;
+  hint_text: string;
+  source?: string;
+}): MatchingHint {
+  return {
+    id: row.id,
+    hintType: row.hint_type === 'sort' ? 'sort' : 'case',
+    caseNumber: row.case_number,
+    senderEmail: row.sender_email,
+    hintText: row.hint_text,
+    source: row.source,
+  };
+}
+
+const MATCHING_HINT_COLUMNS = 'id, hint_type, case_number, sender_email, hint_text, source';
+
+/** Case-matching hints for this sender (who the client is). */
+export async function getCaseHintsForSender(fromEmail: string): Promise<MatchingHint[]> {
+  const sender = normalizeSenderEmail(fromEmail);
+  const { data, error } = await getSupabase()
+    .from('matching_hints')
+    .select(MATCHING_HINT_COLUMNS)
+    .eq('sender_email', sender)
+    .eq('hint_type', 'case')
+    .order('created_at', { ascending: false })
+    .limit(20);
+  if (error) {
+    if (isMissingMatchingHintsTable(error)) return [];
+    throw new Error(`Case hints lookup failed: ${error.message}`);
+  }
+  return (data ?? []).map(mapMatchingHintRow);
+}
+
+/** Document-sorting hints for this sender (folder, type, ignore). */
+export async function getSortHintsForSender(fromEmail: string): Promise<MatchingHint[]> {
+  const sender = normalizeSenderEmail(fromEmail);
+  const { data, error } = await getSupabase()
+    .from('matching_hints')
+    .select(MATCHING_HINT_COLUMNS)
+    .eq('sender_email', sender)
+    .eq('hint_type', 'sort')
+    .order('created_at', { ascending: false })
+    .limit(20);
+  if (error) {
+    if (isMissingMatchingHintsTable(error)) return [];
+    throw new Error(`Sort hints lookup failed: ${error.message}`);
+  }
+  return (data ?? []).map(mapMatchingHintRow);
+}
+
+/** General case identity notes (no sender). */
+export async function getCaseHintsForCases(caseNumbers: string[]): Promise<MatchingHint[]> {
+  const unique = [...new Set(caseNumbers.filter(Boolean))];
+  if (!unique.length) return [];
+
+  const { data, error } = await getSupabase()
+    .from('matching_hints')
+    .select(MATCHING_HINT_COLUMNS)
+    .in('case_number', unique)
+    .eq('hint_type', 'case')
+    .is('sender_email', null)
+    .order('created_at', { ascending: false })
+    .limit(50);
+  if (error) {
+    if (isMissingMatchingHintsTable(error)) return [];
+    throw new Error(`Case notes lookup failed: ${error.message}`);
+  }
+  return (data ?? []).map(mapMatchingHintRow);
+}
+
+export async function upsertSenderCaseHint(params: {
+  caseNumber: string;
+  senderEmail: string;
+  hintText: string;
+  source: string;
+  createdBy?: string;
+}): Promise<void> {
+  await upsertMatchingHint({
+    hintType: 'case',
+    caseNumber: params.caseNumber,
+    senderEmail: params.senderEmail,
+    hintText: params.hintText,
+    source: params.source,
+    createdBy: params.createdBy,
+  });
+}
+
+export async function upsertSenderSortHint(params: {
+  senderEmail: string;
+  hintText: string;
+  source: string;
+  caseNumber?: string | null;
+  createdBy?: string;
+}): Promise<void> {
+  await upsertMatchingHint({
+    hintType: 'sort',
+    caseNumber: params.caseNumber ?? null,
+    senderEmail: params.senderEmail,
+    hintText: params.hintText,
+    source: params.source,
+    createdBy: params.createdBy,
+  });
+}
+
+export async function addCaseOnlyHint(params: {
+  caseNumber: string;
+  hintText: string;
+  source: string;
+  createdBy?: string;
+}): Promise<void> {
+  const hintText = params.hintText.trim();
+  if (!hintText) return;
+
+  const { error } = await getSupabase().from('matching_hints').insert({
+    hint_type: 'case',
+    case_number: params.caseNumber,
+    sender_email: null,
+    hint_text: hintText,
+    source: params.source,
+    created_by: params.createdBy ?? null,
+  });
+  if (error) throw new Error(`Insert case-only hint failed: ${error.message}`);
+}
+
+async function upsertMatchingHint(params: {
+  hintType: MatchingHint['hintType'];
+  caseNumber: string | null;
+  senderEmail: string;
+  hintText: string;
+  source: string;
+  createdBy?: string;
+}): Promise<void> {
+  const sender = normalizeSenderEmail(params.senderEmail);
+  const hintText = params.hintText.trim();
+  if (!hintText) return;
+
+  let query = getSupabase()
+    .from('matching_hints')
+    .select('id')
+    .eq('sender_email', sender)
+    .eq('hint_type', params.hintType);
+
+  if (params.hintType === 'case') {
+    query = query.eq('case_number', params.caseNumber!);
+  } else {
+    query = params.caseNumber
+      ? query.eq('case_number', params.caseNumber)
+      : query.is('case_number', null);
+  }
+
+  const { data: existing } = await query.maybeSingle();
+
+  if (existing?.id) {
+    const { error } = await getSupabase()
+      .from('matching_hints')
+      .update({
+        hint_text: hintText,
+        source: params.source,
+        created_by: params.createdBy ?? null,
+      })
+      .eq('id', existing.id);
+    if (error) throw new Error(`Update matching hint failed: ${error.message}`);
+    return;
+  }
+
+  const { error } = await getSupabase().from('matching_hints').insert({
+    hint_type: params.hintType,
+    case_number: params.caseNumber,
+    sender_email: sender,
+    hint_text: hintText,
+    source: params.source,
+    created_by: params.createdBy ?? null,
+  });
+  if (error) throw new Error(`Insert matching hint failed: ${error.message}`);
+}
+
+export async function listMatchingHints(opts?: {
+  hintType?: MatchingHint['hintType'];
+  caseNumber?: string;
+  senderEmail?: string;
+  limit?: number;
+}): Promise<MatchingHint[]> {
+  let q = getSupabase()
+    .from('matching_hints')
+    .select(MATCHING_HINT_COLUMNS)
+    .order('created_at', { ascending: false })
+    .limit(opts?.limit ?? 100);
+
+  if (opts?.hintType) q = q.eq('hint_type', opts.hintType);
+  if (opts?.caseNumber) q = q.eq('case_number', opts.caseNumber);
+  if (opts?.senderEmail) q = q.eq('sender_email', normalizeSenderEmail(opts.senderEmail));
+
+  const { data, error } = await q;
+  if (error) {
+    if (isMissingMatchingHintsTable(error)) return [];
+    throw new Error(`List matching hints failed: ${error.message}`);
+  }
+  return (data ?? []).map(mapMatchingHintRow);
+}
+
+/** @deprecated use getCaseHintsForSender or getSortHintsForSender */
+export async function getMatchingHintsForSender(fromEmail: string): Promise<MatchingHint[]> {
+  return getCaseHintsForSender(fromEmail);
+}
+
+/** @deprecated use getCaseHintsForCases */
+export async function getMatchingHintsForCases(caseNumbers: string[]): Promise<MatchingHint[]> {
+  return getCaseHintsForCases(caseNumbers);
+}
+
+/** @deprecated use upsertSenderCaseHint */
+export async function upsertSenderMatchingHint(params: {
+  caseNumber: string;
+  senderEmail: string;
+  hintText: string;
+  source: string;
+  createdBy?: string;
+}): Promise<void> {
+  return upsertSenderCaseHint(params);
+}
+
+/** @deprecated use addCaseOnlyHint */
+export async function addCaseMatchingHint(params: {
+  caseNumber: string;
+  hintText: string;
+  source: string;
+  createdBy?: string;
+}): Promise<void> {
+  return addCaseOnlyHint(params);
 }
 
 export async function getFileSorterItemByGmailAttachment(
