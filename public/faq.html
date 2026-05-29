@@ -6,21 +6,20 @@
   <title>RJL File Sorter — FAQ</title>
   <style>
     :root {
-      --navy-950: #060d18;
-      --navy-900: #0b1526;
+      --navy: #0b1526;
       --navy-800: #111f35;
       --navy-700: #1a2d4a;
       --navy-600: #243b5c;
-      --navy-500: #334f73;
       --pink: #e8488a;
-      --pink-bright: #ff6ba8;
-      --pink-soft: rgba(232, 72, 138, 0.14);
-      --pink-glow: rgba(232, 72, 138, 0.35);
-      --text: #eef2f8;
-      --text-muted: #9fb0c8;
-      --text-dim: #6b7f9a;
-      --border: rgba(148, 163, 184, 0.14);
-      --card: rgba(17, 31, 53, 0.72);
+      --pink-dark: #c2185b;
+      --pink-soft: rgba(232, 72, 138, 0.08);
+      --bg: #ffffff;
+      --bg-subtle: #f6f8fb;
+      --text: #0b1526;
+      --text-muted: #4a5568;
+      --text-dim: #6b7280;
+      --border: rgba(11, 21, 38, 0.1);
+      --card: #f6f8fb;
       --radius: 14px;
       --max: 920px;
     }
@@ -31,7 +30,7 @@
 
     body {
       font-family: "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
-      background: var(--navy-950);
+      background: var(--bg);
       color: var(--text);
       line-height: 1.65;
       min-height: 100vh;
@@ -42,14 +41,13 @@
       position: fixed;
       inset: 0;
       background:
-        radial-gradient(ellipse 80% 50% at 50% -10%, var(--pink-soft), transparent 55%),
-        radial-gradient(ellipse 60% 40% at 100% 20%, rgba(36, 59, 92, 0.5), transparent),
-        linear-gradient(180deg, var(--navy-900), var(--navy-950));
+        radial-gradient(ellipse 70% 40% at 50% -5%, var(--pink-soft), transparent 60%),
+        linear-gradient(180deg, #fafbfc, var(--bg));
       pointer-events: none;
       z-index: -1;
     }
 
-    a { color: var(--pink-bright); text-decoration: none; }
+    a { color: var(--pink-dark); text-decoration: none; }
     a:hover { text-decoration: underline; }
 
     .wrap {
@@ -63,8 +61,9 @@
       top: 0;
       z-index: 10;
       backdrop-filter: blur(14px);
-      background: rgba(6, 13, 24, 0.82);
+      background: rgba(255, 255, 255, 0.92);
       border-bottom: 1px solid var(--border);
+      box-shadow: 0 1px 12px rgba(11, 21, 38, 0.04);
     }
 
     .header-inner {
@@ -89,14 +88,12 @@
       height: 42px;
       width: auto;
       display: block;
-      filter: drop-shadow(0 2px 8px rgba(232, 72, 138, 0.25));
     }
 
     .brand-logo-firm {
       height: 34px;
       width: auto;
       display: block;
-      opacity: 0.95;
     }
 
     .brand-divider {
@@ -104,33 +101,6 @@
       height: 30px;
       background: var(--border);
       flex-shrink: 0;
-    }
-
-    .brand-text {
-      font-weight: 700;
-      font-size: 1.05rem;
-      letter-spacing: 0.01em;
-      color: var(--text);
-    }
-
-    .hero-brand {
-      display: flex;
-      align-items: center;
-      gap: 1.25rem;
-      margin-bottom: 1.35rem;
-      flex-wrap: wrap;
-    }
-
-    .hero-brand .brand-logo-app {
-      height: 88px;
-    }
-
-    .hero-brand .brand-logo-firm {
-      height: 52px;
-    }
-
-    .hero-brand .brand-divider {
-      height: 56px;
     }
 
     nav {
@@ -145,10 +115,10 @@
       text-decoration: none;
     }
 
-    nav a:hover { color: var(--pink-bright); text-decoration: none; }
+    nav a:hover { color: var(--pink); text-decoration: none; }
 
     .hero {
-      padding: 3rem 0 2.5rem;
+      padding: 2.25rem 0 2.5rem;
     }
 
     .badge {
@@ -157,9 +127,9 @@
       font-weight: 600;
       letter-spacing: 0.06em;
       text-transform: uppercase;
-      color: var(--pink-bright);
+      color: var(--pink-dark);
       background: var(--pink-soft);
-      border: 1px solid rgba(232, 72, 138, 0.25);
+      border: 1px solid rgba(232, 72, 138, 0.2);
       padding: 0.3rem 0.7rem;
       border-radius: 999px;
       margin-bottom: 1rem;
@@ -173,7 +143,7 @@
       margin-bottom: 0.85rem;
     }
 
-    h1 span { color: var(--pink-bright); }
+    h1 span { color: var(--pink); }
 
     .lead {
       font-size: 1.08rem;
@@ -223,8 +193,8 @@
     }
 
     .card-accent {
-      border-color: rgba(232, 72, 138, 0.28);
-      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+      border-color: rgba(232, 72, 138, 0.22);
+      background: #fff;
     }
 
     ul, ol {
@@ -246,7 +216,7 @@
       gap: 1rem;
       align-items: flex-start;
       padding: 0.85rem 1rem;
-      background: rgba(11, 21, 38, 0.6);
+      background: var(--bg-subtle);
       border: 1px solid var(--border);
       border-radius: 10px;
     }
@@ -278,7 +248,7 @@
     }
 
     .cmd {
-      background: rgba(6, 13, 24, 0.55);
+      background: var(--bg-subtle);
       border: 1px solid var(--border);
       border-radius: 10px;
       padding: 1rem 1.1rem;
@@ -289,7 +259,7 @@
       font-weight: 700;
       text-transform: uppercase;
       letter-spacing: 0.05em;
-      color: var(--pink-bright);
+      color: var(--pink-dark);
       margin-bottom: 0.35rem;
     }
 
@@ -308,21 +278,21 @@
     }
 
     code {
-      background: rgba(232, 72, 138, 0.12);
-      color: #ffc2da;
+      background: var(--pink-soft);
+      color: var(--pink-dark);
       padding: 0.12rem 0.4rem;
       border-radius: 5px;
-      border: 1px solid rgba(232, 72, 138, 0.2);
+      border: 1px solid rgba(232, 72, 138, 0.18);
     }
 
     .code-block {
       display: block;
-      background: var(--navy-950);
+      background: var(--bg-subtle);
       border: 1px solid var(--border);
       border-left: 3px solid var(--pink);
       border-radius: 8px;
       padding: 0.85rem 1rem;
-      color: #c8d4e8;
+      color: var(--navy-800);
       white-space: pre-wrap;
       margin: 0.65rem 0 0;
       line-height: 1.55;
@@ -380,21 +350,21 @@
       font-size: 0.78rem;
       padding: 0.25rem 0.6rem;
       border-radius: 999px;
-      background: var(--navy-700);
+      background: #fff;
       border: 1px solid var(--border);
       color: var(--text-muted);
     }
 
     .notice {
       background: var(--pink-soft);
-      border: 1px solid rgba(232, 72, 138, 0.3);
+      border: 1px solid rgba(232, 72, 138, 0.2);
       border-radius: 10px;
       padding: 0.9rem 1.1rem;
       font-size: 0.92rem;
       color: var(--text-muted);
     }
 
-    .notice strong { color: var(--pink-bright); }
+    .notice strong { color: var(--pink-dark); }
 
     footer {
       text-align: center;
@@ -404,19 +374,6 @@
       border-top: 1px solid var(--border);
       margin-top: 1rem;
     }
-
-    .footer-brand {
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      gap: 0.75rem;
-      margin-bottom: 0.65rem;
-      flex-wrap: wrap;
-    }
-
-    .footer-brand .brand-logo-app { height: 36px; }
-    .footer-brand .brand-logo-firm { height: 28px; }
-    .footer-brand .brand-divider { height: 24px; }
   </style>
 </head>
 <body>
@@ -440,11 +397,6 @@
 
   <div class="wrap">
     <div class="hero" id="overview">
-      <div class="hero-brand">
-        <img src="/logo.png" alt="RJL File Sorter app logo" class="brand-logo-app" width="88" height="88" />
-        <div class="brand-divider" aria-hidden="true"></div>
-        <img src="/rjl.webp" alt="Ramos James Law" class="brand-logo-firm" width="180" height="52" />
-      </div>
       <div class="badge">Ramos James Law · Internal</div>
       <h1>File Sorter <span>FAQ</span></h1>
       <p class="lead">
@@ -648,11 +600,6 @@ sort hint: Law360 newsletters from this listserv — Do Not Sort</div>
     </section>
 
     <footer>
-      <div class="footer-brand">
-        <img src="/logo.png" alt="" class="brand-logo-app" width="36" height="36" aria-hidden="true" />
-        <div class="brand-divider" aria-hidden="true"></div>
-        <img src="/rjl.webp" alt="" class="brand-logo-firm" width="100" height="28" aria-hidden="true" />
-      </div>
       RJL File Sorter · Ramos James Law · Internal use only
     </footer>
   </div>
