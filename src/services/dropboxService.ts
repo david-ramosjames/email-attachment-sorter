@@ -112,16 +112,29 @@ async function listFolderEntriesInternal(
   }
 }
 
-function extractDropboxError(err: unknown): string {
+export function extractDropboxError(err: unknown): string {
   if (err && typeof err === 'object') {
     const e = err as {
       error?: { error_summary?: string; error?: { '.tag'?: string } };
       message?: string;
+      status?: number;
     };
     if (e.error?.error_summary) return e.error.error_summary;
     if (e.message) return e.message;
+    if (e.status) return `Response failed with a ${e.status} code`;
   }
   return String(err);
+}
+
+/** Dropbox filesUpload mode:add returns 409 when the path already exists. */
+export function isDropboxFileConflict(err: unknown): boolean {
+  const msg = extractDropboxError(err).toLowerCase();
+  return (
+    msg.includes('409') ||
+    msg.includes('path/conflict/file') ||
+    msg.includes('path/conflict') ||
+    msg.includes('already exists')
+  );
 }
 
 export interface DropboxConnectionStatus {

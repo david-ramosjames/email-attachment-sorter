@@ -63,15 +63,39 @@ export async function uploadTempAttachment(
   return data.publicUrl;
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 export async function downloadTempAttachment(
   itemId: string,
-  filename: string
+  filename: string,
+  options?: { maxAttempts?: number }
 ): Promise<Buffer> {
   const supabase = getSupabase();
   const path = `${itemId}/${filename}`;
-  const { data, error } = await supabase.storage.from(TEMP_BUCKET).download(path);
-  if (error || !data) throw new Error(`Temp download failed: ${error?.message}`);
-  return Buffer.from(await data.arrayBuffer());
+  const maxAttempts = options?.maxAttempts ?? 3;
+  let lastMessage = 'unknown error';
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const { data, error } = await supabase.storage.from(TEMP_BUCKET).download(path);
+    if (!error && data) {
+      return Buffer.from(await data.arrayBuffer());
+    }
+
+    lastMessage = error?.message ?? 'empty response';
+    const retryable = /timeout|timed out|ECONNRESET|fetch failed|502|503|504/i.test(
+      lastMessage
+    );
+    if (!retryable || attempt === maxAttempts) {
+      throw new Error(
+        `Temp download failed: ${lastMessage} (bucket "${TEMP_BUCKET}", path "${path}")`
+      );
+    }
+    await sleep(800 * attempt);
+  }
+
+  throw new Error(`Temp download failed: ${lastMessage}`);
 }
 
 export async function searchCases(query: {

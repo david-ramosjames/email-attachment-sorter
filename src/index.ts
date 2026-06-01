@@ -5,10 +5,22 @@ import { getDropboxConfigIssue } from './config/env.js';
 import { startDropboxSyncScheduler } from './services/dropboxSyncService.js';
 import { logger } from './utils/logger.js';
 
+process.on('unhandledRejection', (reason) => {
+  logger.error('Unhandled promise rejection', {
+    err: reason instanceof Error ? reason.message : String(reason),
+    stack: reason instanceof Error ? reason.stack : undefined,
+  });
+});
+
+process.on('uncaughtException', (err) => {
+  logger.error('Uncaught exception', { err: err.message, stack: err.stack });
+});
+
 const env = getEnv();
 const app = createApp();
 
 app.listen(env.PORT, () => {
+  console.log(`RJL File Sorter listening on port ${env.PORT}`);
   logger.info('RJL File Sorter started', {
     port: env.PORT,
     dropboxAuth: dropboxAuthMode(),

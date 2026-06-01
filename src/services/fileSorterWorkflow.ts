@@ -16,9 +16,11 @@ import {
   getCasesRootPath,
   fileExistsInDropbox,
   generateDropboxPermalink,
+  isDropboxFileConflict,
   listCaseFolders,
   uploadFileToDropbox,
 } from './dropboxService.js';
+import { formatApproveError } from '../utils/approveErrors.js';
 import {
   parseCaseNumberFromDropboxFolder,
   RJL_STANDARD_SUBFOLDERS,
@@ -277,6 +279,13 @@ export async function handleApprove(
     throw new Error('All attachments in this email are already processed');
   }
 
+  logger.info('Approve started', {
+    itemId,
+    slackUserId,
+    pendingCount: pending.length,
+    filenames: pending.map((i) => i.attachment_filename),
+  });
+
   const {
     caseNumber,
     caseRow,
@@ -301,6 +310,11 @@ export async function handleApprove(
 
     const exists = await fileExistsInDropbox(folderPath, batchItem.attachment_filename);
     if (exists) {
+      logger.warn('Dropbox duplicate skipped at pre-check', {
+        itemId: batchItem.id,
+        folderPath,
+        filename: batchItem.attachment_filename,
+      });
       await updateFileSorterItem(batchItem.id, { status: 'needs_attention' });
       await auditService.log(
         batchItem.id,
@@ -311,25 +325,57 @@ export async function handleApprove(
       continue;
     }
 
-    await updateFileSorterItem(batchItem.id, {
-      status: 'approved',
+    let buffer: Buffer;
+    try {
+      buffer = await downloadTempAttachment(batchItem.id, batchItem.attachment_filename);
+    } catch (err) {
+      logger.error('Temp attachment download failed', {
+        itemId: batchItem.id,
+        filename: batchItem.attachment_filename,
+        err: String(err),
+      });
+      throw err;
+    }
+
+    let upload: { path: string; id: string; folderCreated: boolean };
+    try {
+      upload = await uploadFileToDropbox(folderPath, batchItem.attachment_filename, buffer);
+    } catch (err) {
+      if (isDropboxFileConflict(err)) {
+        logger.warn('Dropbox upload conflict (409)', {
+          itemId: batchItem.id,
+          folderPath,
+          filename: batchItem.attachment_filename,
+        });
+        await updateFileSorterItem(batchItem.id, { status: 'needs_attention' });
+        await auditService.log(
+          batchItem.id,
+          'duplicate_detected',
+          { folderPath, filename: batchItem.attachment_filename, source: 'upload_409' },
+          slackUserId
+        );
+        continue;
+      }
+      logger.error('Dropbox upload failed', {
+        itemId: batchItem.id,
+        folderPath,
+        err: String(err),
+      });
+      throw err;
+    }
+
+    const permalink = await generateDropboxPermalink(upload.path);
+
+    const saved = await updateFileSorterItem(batchItem.id, {
+      status: 'saved',
       final_case_number: caseNumber,
-      final_dropbox_path: folderPath,
+      final_dropbox_path: upload.path,
+      dropbox_permalink: permalink,
       reviewed_by_slack_user_id: slackUserId,
       reviewed_at: reviewedAt,
     });
 
     await auditService.log(batchItem.id, 'approved', { caseNumber, folderPath }, slackUserId);
-
-    const buffer = await downloadTempAttachment(batchItem.id, batchItem.attachment_filename);
-    const upload = await uploadFileToDropbox(folderPath, batchItem.attachment_filename, buffer);
-    const permalink = await generateDropboxPermalink(upload.path);
-
-    const saved = await updateFileSorterItem(batchItem.id, {
-      status: 'saved',
-      final_dropbox_path: upload.path,
-      dropbox_permalink: permalink,
-    });
 
     await auditService.log(
       batchItem.id,
@@ -358,19 +404,21 @@ export async function handleApprove(
     }
   }
 
-  if (!savedFiles.length) {
-    const refreshed = await getFileSorterItem(itemId);
-    if (refreshed) {
-      await slackService.updateQueueMessage(refreshed, caseRow);
-    }
-    throw new Error('No files were saved — duplicates or missing folders');
-  }
-
   const primary = (await getQueueBatchItems(trigger))[0] ?? trigger;
   await slackService.updateQueueMessage(primary, caseRow, {
     reviewedByUserId: slackUserId,
     savedFiles,
-    disabled: true,
+    disabled: savedFiles.length > 0,
+  });
+
+  if (!savedFiles.length) {
+    throw new Error('No files were saved — duplicates or missing folders');
+  }
+
+  logger.info('Approve completed', {
+    itemId,
+    savedCount: savedFiles.length,
+    caseNumber,
   });
 
   await persistMatchingHintsFromApproval({

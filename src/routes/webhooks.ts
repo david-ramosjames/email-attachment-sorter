@@ -14,6 +14,7 @@ import {
   slackService,
 } from '../services/slackService.js';
 import { logger } from '../utils/logger.js';
+import { formatApproveError, isRecoverableApproveError } from '../utils/approveErrors.js';
 
 export const webhooksRouter = Router();
 
@@ -129,30 +130,37 @@ webhooksRouter.post('/webhooks/slack/interactions', async (req, res) => {
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      const stack = err instanceof Error ? err.stack : undefined;
+      const userMessage = formatApproveError(err);
       logger.error('Slack action handler failed', {
         itemId,
         action: action.action_id,
         err: message,
+        stack,
+        recoverable: isRecoverableApproveError(err),
       });
-      const item = await import('../db/supabase.js').then((m) => m.getFileSorterItem(itemId));
+      const db = await import('../db/supabase.js');
+      const item = await db.getFileSorterItem(itemId);
       if (item) {
-        await import('../db/supabase.js').then((m) =>
-          m.updateFileSorterItem(itemId, { status: 'failed' })
-        );
         const caseRow = item.suggested_case_number
-          ? await import('../db/supabase.js').then((m) => m.getCaseById(item.suggested_case_number!))
+          ? await db.getCaseById(item.suggested_case_number)
           : null;
-        await slackService.updateQueueMessage(
-          { ...item, status: 'failed' },
-          caseRow
-        );
+        if (!isRecoverableApproveError(err)) {
+          await db.updateFileSorterItem(itemId, { status: 'failed' });
+          await slackService.updateQueueMessage({ ...item, status: 'failed' }, caseRow);
+        } else {
+          const refreshed = await db.getFileSorterItem(itemId);
+          if (refreshed) {
+            await slackService.updateQueueMessage(refreshed, caseRow);
+          }
+        }
       }
       if (channelId) {
         try {
           await slackService.postEphemeral(
             channelId,
             userId,
-            `File Sorter error: ${message}`
+            `File Sorter error: ${userMessage}`
           );
         } catch {
           /* ignore */
