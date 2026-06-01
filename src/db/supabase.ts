@@ -67,6 +67,37 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+const TEMP_DOWNLOAD_TIMEOUT_MS = 120_000;
+
+async function downloadTempViaSignedUrl(
+  supabase: SupabaseClient,
+  path: string
+): Promise<Buffer> {
+  const { data, error } = await supabase.storage
+    .from(TEMP_BUCKET)
+    .createSignedUrl(path, 300);
+  if (error || !data?.signedUrl) {
+    throw new Error(error?.message ?? 'Could not create signed download URL');
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), TEMP_DOWNLOAD_TIMEOUT_MS);
+  try {
+    const res = await fetch(data.signedUrl, { signal: controller.signal });
+    if (!res.ok) {
+      throw new Error(`Signed download HTTP ${res.status}`);
+    }
+    return Buffer.from(await res.arrayBuffer());
+  } catch (err) {
+    if (err instanceof Error && err.name === 'AbortError') {
+      throw new Error('Temp download timed out');
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export async function downloadTempAttachment(
   itemId: string,
   filename: string,
@@ -78,13 +109,25 @@ export async function downloadTempAttachment(
   let lastMessage = 'unknown error';
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    const { data, error } = await supabase.storage.from(TEMP_BUCKET).download(path);
-    if (!error && data) {
-      return Buffer.from(await data.arrayBuffer());
+    try {
+      return await downloadTempViaSignedUrl(supabase, path);
+    } catch (signedErr) {
+      lastMessage =
+        signedErr instanceof Error ? signedErr.message : String(signedErr);
+
+      try {
+        const { data, error } = await supabase.storage.from(TEMP_BUCKET).download(path);
+        if (!error && data) {
+          return Buffer.from(await data.arrayBuffer());
+        }
+        lastMessage = error?.message ?? lastMessage;
+      } catch (directErr) {
+        lastMessage =
+          directErr instanceof Error ? directErr.message : String(directErr);
+      }
     }
 
-    lastMessage = error?.message ?? 'empty response';
-    const retryable = /timeout|timed out|ECONNRESET|fetch failed|502|503|504/i.test(
+    const retryable = /timeout|timed out|aborted|ECONNRESET|fetch failed|502|503|504/i.test(
       lastMessage
     );
     if (!retryable || attempt === maxAttempts) {
@@ -92,7 +135,7 @@ export async function downloadTempAttachment(
         `Temp download failed: ${lastMessage} (bucket "${TEMP_BUCKET}", path "${path}")`
       );
     }
-    await sleep(800 * attempt);
+    await sleep(1000 * attempt);
   }
 
   throw new Error(`Temp download failed: ${lastMessage}`);
