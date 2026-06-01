@@ -20,7 +20,7 @@ import {
   listCaseFolders,
   uploadFileToDropbox,
 } from './dropboxService.js';
-import { formatApproveError } from '../utils/approveErrors.js';
+import { FILE_ALREADY_IN_DROPBOX } from '../utils/approveErrors.js';
 import {
   parseCaseNumberFromDropboxFolder,
   RJL_STANDARD_SUBFOLDERS,
@@ -299,6 +299,7 @@ export async function handleApprove(
 
   const savedFiles: Array<{ filename: string; dropboxLink: string }> = [];
   const reviewedAt = new Date().toISOString();
+  let duplicateCount = 0;
 
   for (const batchItem of pending) {
     const folderPath = folderPathForBatchItem(batchItem, caseRow, threadFolderPath);
@@ -322,6 +323,7 @@ export async function handleApprove(
         { folderPath, filename: batchItem.attachment_filename },
         slackUserId
       );
+      duplicateCount++;
       continue;
     }
 
@@ -354,6 +356,7 @@ export async function handleApprove(
           { folderPath, filename: batchItem.attachment_filename, source: 'upload_409' },
           slackUserId
         );
+        duplicateCount++;
         continue;
       }
       logger.error('Dropbox upload failed', {
@@ -412,7 +415,10 @@ export async function handleApprove(
   });
 
   if (!savedFiles.length) {
-    throw new Error('No files were saved — duplicates or missing folders');
+    if (duplicateCount > 0) {
+      throw new Error(FILE_ALREADY_IN_DROPBOX);
+    }
+    throw new Error('No files were saved — check folder overrides in thread.');
   }
 
   logger.info('Approve completed', {

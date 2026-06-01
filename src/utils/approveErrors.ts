@@ -1,14 +1,18 @@
 import { isDropboxFileConflict } from '../services/dropboxService.js';
 
+export const FILE_ALREADY_IN_DROPBOX = 'File already in Dropbox.';
+
 /** User-facing Slack ephemeral text from Approve failures. */
 export function formatApproveError(err: unknown): string {
   const raw = err instanceof Error ? err.message : String(err);
 
-  if (isDropboxFileConflict(err) || /409/.test(raw)) {
-    return (
-      'This file already exists in that Dropbox folder. ' +
-      'Move or rename the existing file, choose another folder in thread, then Approve again.'
-    );
+  if (
+    isDropboxFileConflict(err) ||
+    /409/.test(raw) ||
+    raw === FILE_ALREADY_IN_DROPBOX ||
+    /file already in dropbox/i.test(raw)
+  ) {
+    return FILE_ALREADY_IN_DROPBOX;
   }
 
   if (/temp download failed/i.test(raw)) {
@@ -25,7 +29,7 @@ export function formatApproveError(err: unknown): string {
   }
 
   if (/no files were saved/i.test(raw)) {
-    return raw + ' Review duplicates or folder overrides in the thread.';
+    return 'No files were saved — check folder overrides in thread.';
   }
 
   if (/case must be set/i.test(raw)) {
@@ -40,6 +44,8 @@ export function isRecoverableApproveError(err: unknown): boolean {
   return (
     isDropboxFileConflict(err) ||
     /409/.test(raw) ||
+    /file already in dropbox/i.test(raw) ||
+    raw === FILE_ALREADY_IN_DROPBOX ||
     /temp download failed/i.test(raw) ||
     /no files were saved/i.test(raw) ||
     /duplicate/i.test(raw)
