@@ -3,6 +3,7 @@
  *
  * Deploy on the file-sorter@ mailbox (or a dedicated processing account).
  * Polls for emails with attachments (read or unread) that lack the processed label.
+ * By default only mail from the last hour is considered (LOOKBACK_HOURS).
  *
  * Setup:
  * 1. script.google.com → New project → paste this file
@@ -21,6 +22,8 @@ const SCRIPT_CONFIG = {
   MAX_ATTACHMENT_BYTES: 20 * 1024 * 1024,
   /** From addresses to skip (lowercase); still marked processed so they are not retried */
   IGNORED_SENDER_EMAILS: ['listsender-ttlaadvocates@lyris.ttla.com'],
+  /** Only process mail received within this many hours (keeps each run fast) */
+  LOOKBACK_HOURS: 1,
 };
 
 function setup() {
@@ -64,7 +67,20 @@ function debugInbox() {
 }
 
 function inboxQuery_() {
-  return 'has:attachment in:inbox -in:trash -label:' + SCRIPT_CONFIG.PROCESSED_LABEL;
+  var query =
+    'has:attachment in:inbox -in:trash -label:' + SCRIPT_CONFIG.PROCESSED_LABEL;
+  var hours = SCRIPT_CONFIG.LOOKBACK_HOURS;
+  if (hours && hours > 0) {
+    query += ' newer_than:' + hours + 'h';
+  }
+  return query;
+}
+
+function isWithinLookback_(message) {
+  var hours = SCRIPT_CONFIG.LOOKBACK_HOURS;
+  if (!hours || hours <= 0) return true;
+  var cutoff = new Date(Date.now() - hours * 60 * 60 * 1000);
+  return message.getDate() >= cutoff;
 }
 
 function createTrigger() {
@@ -109,6 +125,7 @@ function processThread_(thread) {
   const messages = thread.getMessages();
   messages.forEach(function (message) {
     if (message.isInTrash()) return;
+    if (!isWithinLookback_(message)) return;
     if (!message.getAttachments().length) return;
     if (hasLabel_(message, SCRIPT_CONFIG.PROCESSED_LABEL)) return;
 
