@@ -37,6 +37,32 @@ export function slackMrkdwnLink(url: string, label: string): string {
   return `<${safeUrl}|${safeLabel}>`;
 }
 
+/** Slack user mention mrkdwn — must not be passed through escapeSlackMrkdwn. */
+export function formatSlackUserMentions(userIds: string[]): string {
+  return userIds
+    .map((id) => id.trim())
+    .filter(Boolean)
+    .map((id) => `<@${id}>`)
+    .join(' ');
+}
+
+/** Section block with unescaped leading mentions (for channel topic staff tags). */
+export function slackSectionWithLeadingMentions(
+  mentionUserIds: string[],
+  body: string,
+  extras: string[],
+  max = SLACK_SECTION_TEXT_MAX
+): string {
+  const mentionLine = formatSlackUserMentions(mentionUserIds);
+  const content = slackSectionWithExtras(body, extras, max);
+  if (!mentionLine) return content;
+
+  const prefix = `${mentionLine}\n\n`;
+  const room = max - prefix.length;
+  if (room <= 0) return mentionLine;
+  return `${prefix}${slackSectionWithExtras(body, extras, room)}`;
+}
+
 /** Escaped body plus unescaped links/mentions appended (for section blocks). */
 export function slackSectionWithExtras(
   body: string,

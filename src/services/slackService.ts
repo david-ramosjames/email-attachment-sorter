@@ -12,8 +12,11 @@ import {
   slackMrkdwnLink,
   slackSectionText,
   slackSectionWithExtras,
+  formatSlackUserMentions,
+  slackSectionWithLeadingMentions,
 } from '../utils/slackText.js';
-import { getSlackChannelIdByNameMap, ensureBotInChannel } from './slackChannels.js';
+import { parseUserMentionsFromSlackTopic } from '../utils/slackCaseParser.js';
+import { getSlackChannelIdByNameMap, ensureBotInChannel, getConversationInfo } from './slackChannels.js';
 
 const SLACK_API = 'https://slack.com/api';
 
@@ -758,14 +761,38 @@ export const slackService = {
     );
 
     const dropboxLink = slackMrkdwnLink(opts.dropboxLink, 'Open in Dropbox');
-    const sectionText = slackSectionWithExtras(
+
+    let topicMentionIds: string[] = [];
+    try {
+      const convo = await getConversationInfo(channelId);
+      if (convo?.topic) {
+        topicMentionIds = parseUserMentionsFromSlackTopic(convo.topic);
+      }
+    } catch (err) {
+      logger.warn('Could not load channel topic for staff mentions', {
+        channelId,
+        caseNumber: opts.caseRow.case_number,
+        err: String(err),
+      });
+    }
+
+    const sectionBody =
       `:white_check_mark: *Document sorted to Dropbox*\n` +
-        `*${slackFieldText(opts.item.attachment_filename, 200)}*\n` +
-        `Case: #${opts.caseRow.slack_channel_name} · Folder: ${slackFieldText(folderName, 80)}\n` +
-        `From: ${slackFieldText(opts.item.from_email, 120)}\n` +
-        `Subject: ${slackFieldText(opts.item.subject ?? '—', 200)}`,
+      `*${slackFieldText(opts.item.attachment_filename, 200)}*\n` +
+      `Case: #${opts.caseRow.slack_channel_name} · Folder: ${slackFieldText(folderName, 80)}\n` +
+      `From: ${slackFieldText(opts.item.from_email, 120)}\n` +
+      `Subject: ${slackFieldText(opts.item.subject ?? '—', 200)}`;
+
+    const sectionText = slackSectionWithLeadingMentions(
+      topicMentionIds,
+      sectionBody,
       [`Sorted by: ${slackUserMention(opts.approvedByUserId)}`, dropboxLink]
     );
+
+    const mentionPrefix = formatSlackUserMentions(topicMentionIds);
+    const fallbackText = mentionPrefix
+      ? `${mentionPrefix} Document sorted to Dropbox: ${opts.item.attachment_filename}`
+      : `Document sorted to Dropbox: ${opts.item.attachment_filename}`;
 
     try {
       try {
@@ -776,7 +803,7 @@ export const slackService = {
 
       const postResult = await slackApi<{ ts: string }>('chat.postMessage', {
         channel: channelId,
-        text: `Document sorted to Dropbox: ${opts.item.attachment_filename}`,
+        text: fallbackText,
         blocks: [
           {
             type: 'section',
@@ -823,6 +850,7 @@ export const slackService = {
         channelId,
         filename: opts.item.attachment_filename,
         fileAttached,
+        topicMentions: topicMentionIds,
       });
       return true;
     } catch (err) {

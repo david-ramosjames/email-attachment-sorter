@@ -52,6 +52,22 @@ export function parseStatusFromTopic(topicText: string): string {
   return match?.[1]?.trim() ?? '';
 }
 
+/** User IDs from Slack topic mrkdwn, e.g. `<@U123>` or `<@U123|Jesus>`. */
+export function parseUserMentionsFromSlackTopic(topicText: string): string[] {
+  const seen = new Set<string>();
+  const ids: string[] = [];
+  const re = /<@(U[A-Z0-9]+)(?:\|[^>]*)?>/gi;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(topicText)) !== null) {
+    const id = match[1]!;
+    if (!seen.has(id)) {
+      seen.add(id);
+      ids.push(id);
+    }
+  }
+  return ids;
+}
+
 export function parseChannelAndTopic(data: {
   channelId: string;
   channelName: string;
