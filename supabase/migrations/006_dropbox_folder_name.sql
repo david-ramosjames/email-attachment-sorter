@@ -1,3 +1,4 @@
+-- Requires case_slack_channels (migration 003 or FRESH_PROJECT_SETUP.sql).
 -- Safe: adds optional Dropbox folder name to existing case_slack_channels rows.
 -- Example folder: "276. REGINA PEEK ETAL 3 (DOL 04-22-20)"
 

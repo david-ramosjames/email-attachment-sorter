@@ -1,3 +1,4 @@
+-- UPGRADE ONLY: run after old 009 (without hint_type). Fresh projects: use 009 or FRESH_PROJECT_SETUP.sql — do NOT run this file.
 -- Split matching hints into case matching vs document sorting
 
 ALTER TABLE public.matching_hints

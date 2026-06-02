@@ -50,11 +50,10 @@ supabase/migrations/
 
 ### 1. Supabase
 
-1. Create a Supabase project.
-2. Run `supabase/migrations/001_initial_schema.sql` in the SQL editor.
-3. Create storage bucket `file-sorter-temp` (private; see `supabase/migrations/007_file_sorter_temp_storage.sql`).
-4. **Recommended:** use a **dedicated Supabase project** for File Sorter so temp Storage + Postgres do not share connection limits with your other apps. Point Railway `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` at that project only.
-5. Seed `case_slack_channels` and run Dropbox sync (or your case index source).
+1. Create a **dedicated** Supabase project for File Sorter.
+2. In SQL Editor, run **`supabase/FRESH_PROJECT_SETUP.sql`** once (see `supabase/MIGRATIONS.md` — do not run `001`–`004` or `010` on a new project).
+3. Point Railway `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` at this project.
+4. After deploy, run Dropbox sync (`POST /admin/sync-dropbox-structure`) to populate `case_slack_channels`.
 
 ### 2. Slack app
 
