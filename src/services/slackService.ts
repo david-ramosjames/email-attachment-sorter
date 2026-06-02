@@ -13,7 +13,7 @@ import {
   slackSectionText,
   slackSectionWithExtras,
 } from '../utils/slackText.js';
-import { getSlackChannelIdByNameMap } from './slackChannels.js';
+import { getSlackChannelIdByNameMap, ensureBotInChannel } from './slackChannels.js';
 
 const SLACK_API = 'https://slack.com/api';
 
@@ -174,15 +174,41 @@ async function slackUploadFileToChannelWithFallback(opts: {
   mimeType?: string | null;
   initialComment?: string;
 }): Promise<void> {
+  const attempt = async () => {
+    try {
+      await slackUploadFileToChannel(opts);
+    } catch (err) {
+      logger.warn('Slack external file upload failed, trying legacy files.upload', {
+        filename: opts.filename,
+        err: String(err),
+      });
+      await slackUploadFileLegacy(opts);
+    }
+  };
+
+  await ensureBotInChannel(opts.channelId);
   try {
-    await slackUploadFileToChannel(opts);
+    await attempt();
   } catch (err) {
-    logger.warn('Slack external file upload failed, trying legacy files.upload', {
-      filename: opts.filename,
-      err: String(err),
-    });
-    await slackUploadFileLegacy(opts);
+    const msg = String(err);
+    if (!msg.includes('not_in_channel')) throw err;
+    const joined = await ensureBotInChannel(opts.channelId);
+    if (!joined) throw err;
+    await attempt();
   }
+}
+
+function slackFileUploadHint(err: string, channelName: string): string {
+  if (err.includes('not_in_channel')) {
+    return (
+      `Invite the bot to #${channelName} with /invite @RJL File Sorter — ` +
+      'required for file attachments (especially private channels).'
+    );
+  }
+  if (err.includes('missing_scope')) {
+    return 'Add files:write scope to the Slack app and reinstall to the workspace.';
+  }
+  return 'Check Slack app scopes (files:write) and that the bot is in the case channel.';
 }
 
 /** Form-encoded POST — required for some methods (e.g. conversations.replies). */
@@ -734,7 +760,9 @@ export const slackService = {
     );
 
     try {
-      await slackApi('chat.postMessage', {
+      await ensureBotInChannel(channelId);
+
+      const postResult = await slackApi<{ ts: string }>('chat.postMessage', {
         channel: channelId,
         text: `Document sorted to Dropbox: ${opts.item.attachment_filename}`,
         blocks: [
@@ -755,13 +783,27 @@ export const slackService = {
         });
         fileAttached = true;
       } catch (uploadErr) {
+        const errMsg = String(uploadErr);
+        const hint = slackFileUploadHint(errMsg, opts.caseRow.slack_channel_name);
         logger.error('Case channel file attachment failed', {
           caseNumber: opts.caseRow.case_number,
           channelId,
+          slackChannelName: opts.caseRow.slack_channel_name,
           filename: opts.item.attachment_filename,
-          err: String(uploadErr),
-          hint: 'Add files:write scope to the Slack app and reinstall to the workspace.',
+          err: errMsg,
+          hint,
         });
+        try {
+          await slackApi('chat.postMessage', {
+            channel: channelId,
+            thread_ts: postResult.ts,
+            text:
+              `:warning: *PDF not attached in Slack* — file is in Dropbox (link above).\n` +
+              `${hint}`,
+          });
+        } catch {
+          /* ignore follow-up failure */
+        }
       }
 
       logger.info('Cross-posted sorted document to case Slack channel', {

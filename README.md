@@ -58,13 +58,13 @@ supabase/migrations/
 ### 2. Slack app
 
 1. Create a Slack app at [api.slack.com](https://api.slack.com/apps).
-2. **OAuth scopes:** `chat:write`, `channels:read`, `channels:history`, `groups:read`, `groups:history`, `users:read`, `files:write`
+2. **OAuth scopes:** `chat:write`, `channels:read`, `channels:history`, `channels:join`, `groups:read`, `groups:history`, `users:read`, `files:write`
 3. Install to workspace; copy **Bot Token** → `SLACK_BOT_TOKEN`
 4. **Interactivity:** enable and set Request URL to:
    `https://<your-railway-domain>/webhooks/slack/interactions`
 5. Copy **Signing Secret** → `SLACK_SIGNING_SECRET`
 6. Create `#file-sorter-queue`; copy channel ID → `SLACK_FILE_SORTER_QUEUE_CHANNEL_ID`
-7. Invite the bot to the queue channel and all case channels.
+7. Invite the bot to the queue channel and **all case channels** (private channels require `/invite @RJL File Sorter` — the bot auto-joins public channels on cross-post).
 
 ### 3. Dropbox
 

@@ -75,6 +75,22 @@ export async function listAllSlackChannels(): Promise<SlackChannelSummary[]> {
   return channels;
 }
 
+/** Join a public channel so the bot can upload files. Private channels require /invite. */
+export async function ensureBotInChannel(channelId: string): Promise<boolean> {
+  try {
+    await slackApiForm<{ channel?: { id?: string } }>('conversations.join', {
+      channel: channelId,
+    });
+    logger.info('Bot joined Slack channel', { channelId });
+    return true;
+  } catch (err) {
+    const msg = String(err);
+    if (msg.includes('already_in_channel')) return true;
+    logger.warn('Could not join Slack channel', { channelId, err: msg });
+    return false;
+  }
+}
+
 export async function getConversationInfo(channelId: string): Promise<{
   id: string;
   name: string;
