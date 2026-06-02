@@ -96,10 +96,14 @@ export async function syncCasesFromSlack(): Promise<SlackCaseSyncResult> {
     if (getEnv().SLACK_AUTO_JOIN_PUBLIC_CHANNELS) {
       result.publicJoin = {
         publicChannels: channels.filter((c) => !c.isPrivate && !c.isArchived).length,
+        skippedNonCase: 0,
         alreadyMember: 0,
         joined: 0,
         failed: 0,
         failedChannelNames: [],
+        failedByError: {},
+        abortedEarly: false,
+        abortReason: null,
       };
     }
     logger.info('Slack case sync complete', { ...result, publicJoinStarted: Boolean(getEnv().SLACK_AUTO_JOIN_PUBLIC_CHANNELS) });

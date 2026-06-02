@@ -3,6 +3,18 @@ import { logger } from '../utils/logger.js';
 
 const SLACK_API = 'https://slack.com/api';
 
+/** Fatal Slack errors — remaining joins will fail the same way. */
+const FATAL_JOIN_ERRORS = new Set([
+  'missing_scope',
+  'not_allowed_token_type',
+  'invalid_auth',
+  'token_revoked',
+  'account_inactive',
+  'access_denied',
+]);
+
+const CASE_CHANNEL_NAME = /^(.*)-(\d+)$/;
+
 export interface SlackChannelSummary {
   id: string;
   name: string;
@@ -14,14 +26,38 @@ export interface SlackChannelSummary {
 
 export interface SlackPublicJoinResult {
   publicChannels: number;
+  /** Public channels skipped (non-case names when case-only mode is on). */
+  skippedNonCase: number;
   alreadyMember: number;
   joined: number;
   failed: number;
   failedChannelNames: string[];
+  failedByError: Record<string, number>;
+  abortedEarly: boolean;
+  abortReason: string | null;
+}
+
+export class SlackApiError extends Error {
+  readonly code: string;
+  readonly retryAfterSec: number | null;
+
+  constructor(method: string, code: string, retryAfterSec?: number | null) {
+    super(`Slack API ${method} failed: ${code}`);
+    this.name = 'SlackApiError';
+    this.code = code;
+    this.retryAfterSec = retryAfterSec ?? null;
+  }
 }
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function parseSlackError(method: string, data: { error?: string; retry_after?: number }): SlackApiError {
+  const code = data.error ?? 'unknown';
+  const retryAfter =
+    typeof data.retry_after === 'number' && data.retry_after > 0 ? data.retry_after : null;
+  return new SlackApiError(method, code, retryAfter);
 }
 
 async function slackApiForm<T>(
@@ -42,12 +78,31 @@ async function slackApiForm<T>(
     },
     body: body.toString(),
   });
-  const data = (await res.json()) as T & { ok: boolean; error?: string };
+  const data = (await res.json()) as T & {
+    ok: boolean;
+    error?: string;
+    retry_after?: number;
+  };
   if (!(data as { ok: boolean }).ok) {
-    throw new Error(`Slack API ${method} failed: ${(data as { error?: string }).error}`);
+    throw parseSlackError(method, data);
   }
   return data;
 }
+
+export function isLikelyCaseSlackChannel(name: string): boolean {
+  return CASE_CHANNEL_NAME.test(String(name || '').trim().toLowerCase());
+}
+
+function joinDelayMs(): number {
+  const fromEnv = process.env.SLACK_JOIN_DELAY_MS;
+  if (fromEnv) {
+    const n = Number(fromEnv);
+    if (Number.isFinite(n) && n >= 0) return n;
+  }
+  return 1500;
+}
+
+let joinInProgress = false;
 
 /** Paginated list of channels the bot can see (must be invited to private case channels). */
 export async function listAllSlackChannels(): Promise<SlackChannelSummary[]> {
@@ -90,72 +145,185 @@ export async function listAllSlackChannels(): Promise<SlackChannelSummary[]> {
   return channels;
 }
 
-/** Join a public channel so the bot can upload files. Private channels require /invite. */
-export async function ensureBotInChannel(channelId: string): Promise<boolean> {
-  try {
-    await slackApiForm<{ channel?: { id?: string } }>('conversations.join', {
-      channel: channelId,
-    });
-    return true;
-  } catch (err) {
-    const msg = String(err);
-    if (msg.includes('already_in_channel')) return true;
-    throw err;
+function slackJoinHint(code: string): string {
+  switch (code) {
+    case 'missing_scope':
+      return 'Add channels:join to the Slack app, reinstall to the workspace, then retry.';
+    case 'ratelimited':
+      return 'Slack rate limit — increase SLACK_JOIN_DELAY_MS (default 1500) and retry later.';
+    case 'restricted_action':
+      return 'Workspace policy may block bots from joining channels — ask a Slack admin.';
+    case 'method_not_supported_for_channel_type':
+      return 'Channel is not a joinable public channel (may be private or special type).';
+    default:
+      return 'Check Slack app scopes and workspace channel restrictions.';
   }
 }
 
+/** Join a public channel so the bot can upload files. Private channels require /invite. */
+export async function ensureBotInChannel(channelId: string): Promise<boolean> {
+  const maxAttempts = 4;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      await slackApiForm<{ channel?: { id?: string } }>('conversations.join', {
+        channel: channelId,
+      });
+      return true;
+    } catch (err) {
+      const slackErr = err instanceof SlackApiError ? err : null;
+      const code = slackErr?.code ?? 'unknown';
+
+      if (code === 'already_in_channel') return true;
+
+      if (code === 'ratelimited' && attempt < maxAttempts) {
+        const waitSec = slackErr?.retryAfterSec ?? 30;
+        logger.warn('Slack join rate limited — waiting before retry', {
+          channelId,
+          waitSec,
+          attempt,
+        });
+        await sleep(waitSec * 1000);
+        continue;
+      }
+
+      throw err;
+    }
+  }
+  return false;
+}
+
+function caseChannelsOnly(): boolean {
+  const val = process.env.SLACK_AUTO_JOIN_CASE_CHANNELS_ONLY;
+  if (val === 'false' || val === '0') return false;
+  return true;
+}
+
 /**
- * Join every public channel the bot can see (requires channels:join).
+ * Join public case channels the bot can see (requires channels:join).
  * Skips channels where is_member is already true. Rate-limited for Slack API tiers.
  */
 export async function joinAllPublicSlackChannels(
   channels?: SlackChannelSummary[],
-  opts?: { delayMs?: number }
+  opts?: { delayMs?: number; caseChannelsOnly?: boolean }
 ): Promise<SlackPublicJoinResult> {
-  const all = channels ?? (await listAllSlackChannels());
-  const delayMs = opts?.delayMs ?? 120;
-  const publicChannels = all.filter((ch) => !ch.isPrivate && !ch.isArchived);
-
-  let alreadyMember = 0;
-  let joined = 0;
-  let failed = 0;
-  const failedChannelNames: string[] = [];
-
-  for (const ch of publicChannels) {
-    if (ch.isMember) {
-      alreadyMember++;
-      continue;
-    }
-
-    try {
-      await ensureBotInChannel(ch.id);
-      joined++;
-    } catch (err) {
-      failed++;
-      if (failedChannelNames.length < 25) {
-        failedChannelNames.push(ch.name);
-      }
-      logger.warn('Failed to join public Slack channel', {
-        channelId: ch.id,
-        channelName: ch.name,
-        err: String(err),
-      });
-    }
-
-    if (delayMs > 0) {
-      await sleep(delayMs);
-    }
+  if (joinInProgress) {
+    logger.info('Skipping public Slack join — previous pass still running');
+    return {
+      publicChannels: 0,
+      skippedNonCase: 0,
+      alreadyMember: 0,
+      joined: 0,
+      failed: 0,
+      failedChannelNames: [],
+      failedByError: {},
+      abortedEarly: true,
+      abortReason: 'join_already_in_progress',
+    };
   }
 
-  const result: SlackPublicJoinResult = {
-    publicChannels: publicChannels.length,
-    alreadyMember,
-    joined,
-    failed,
-    failedChannelNames,
-  };
-  logger.info('Public Slack channel join pass complete', { ...result });
-  return result;
+  joinInProgress = true;
+  try {
+    const all = channels ?? (await listAllSlackChannels());
+    const delayMs = opts?.delayMs ?? joinDelayMs();
+    const onlyCaseChannels = opts?.caseChannelsOnly ?? caseChannelsOnly();
+    const queueChannelId = getEnv().SLACK_FILE_SORTER_QUEUE_CHANNEL_ID.trim();
+
+    let publicChannels = all.filter((ch) => !ch.isPrivate && !ch.isArchived);
+    let skippedNonCase = 0;
+
+    if (onlyCaseChannels) {
+      const before = publicChannels.length;
+      publicChannels = publicChannels.filter(
+        (ch) => ch.id !== queueChannelId && isLikelyCaseSlackChannel(ch.name)
+      );
+      skippedNonCase = before - publicChannels.length;
+    }
+
+    let alreadyMember = 0;
+    let joined = 0;
+    let failed = 0;
+    const failedChannelNames: string[] = [];
+    const failedByError: Record<string, number> = {};
+    let abortedEarly = false;
+    let abortReason: string | null = null;
+
+    logger.info('Starting public Slack channel join pass', {
+      publicChannels: publicChannels.length,
+      skippedNonCase,
+      delayMs,
+      caseChannelsOnly: onlyCaseChannels,
+    });
+
+    for (const ch of publicChannels) {
+      if (ch.isMember) {
+        alreadyMember++;
+        continue;
+      }
+
+      try {
+        await ensureBotInChannel(ch.id);
+        joined++;
+      } catch (err) {
+        failed++;
+        const code = err instanceof SlackApiError ? err.code : 'unknown';
+        failedByError[code] = (failedByError[code] ?? 0) + 1;
+
+        if (failedChannelNames.length < 25) {
+          failedChannelNames.push(ch.name);
+        }
+
+        if (failed === 1) {
+          logger.error('First public Slack join failure', {
+            channelId: ch.id,
+            channelName: ch.name,
+            slackError: code,
+            hint: slackJoinHint(code),
+            err: String(err),
+          });
+        } else if (failed <= 5) {
+          logger.warn('Failed to join public Slack channel', {
+            channelId: ch.id,
+            channelName: ch.name,
+            slackError: code,
+            err: String(err),
+          });
+        }
+
+        if (FATAL_JOIN_ERRORS.has(code)) {
+          abortedEarly = true;
+          abortReason = code;
+          logger.error('Aborting public Slack join pass — fatal Slack error', {
+            slackError: code,
+            hint: slackJoinHint(code),
+            joined,
+            failed,
+            remaining: publicChannels.length - alreadyMember - joined - failed,
+          });
+          break;
+        }
+      }
+
+      if (delayMs > 0) {
+        await sleep(delayMs);
+      }
+    }
+
+    const result: SlackPublicJoinResult = {
+      publicChannels: publicChannels.length,
+      skippedNonCase,
+      alreadyMember,
+      joined,
+      failed,
+      failedChannelNames,
+      failedByError,
+      abortedEarly,
+      abortReason,
+    };
+    logger.info('Public Slack channel join pass complete', { ...result });
+    return result;
+  } finally {
+    joinInProgress = false;
+  }
 }
 
 export async function getConversationInfo(channelId: string): Promise<{
