@@ -17,6 +17,7 @@ import { buildSmartBodyExcerpt } from '../utils/emailBodyExcerpt.js';
 import { caseMatchingHintsPromptSection, documentSortHintsPromptSection } from '../utils/matchingHints.js';
 import { getCaseById, getFoldersForCase } from '../db/supabase.js';
 import { caseMatchesClientIdentity, identityConflictsWithCase } from '../utils/caseNameMatch.js';
+import { clientIdentityIsUnknown, emailRequestsClientIdentification } from '../utils/emailClientSignals.js';
 import type { CaseFolder } from '../types/index.js';
 
 let openai: OpenAI | null = null;
@@ -142,6 +143,8 @@ Important:
 - Words like "signed", "authorization", or "contract" in a filename do NOT by themselves mean anything — read the content.
 - A signed employment authorization for an existing client is NOT a new retainer and NOT Pleadings.
 - A new Adobe Sign retainer for a brand-new client with no matching case in the list → suggested_case_number null, document_type needs_attention, low confidence.
+- If the sender asks RJL to name the client ("please let me know the name of your client"), the client is UNKNOWN — use suggested_case_number null and needs_attention even if a prior batch hint exists.
+- Property/crime-history ORR results for an address (APD CAD, Apex apartments, etc.) without a named PI client in the email → needs_attention, null case.
 - Partial surname matches are wrong (Israel Mejia ≠ javiermejias / Javier Mejias).
 - rule_match_score in older systems was unreliable — you decide from meaning.
 
@@ -213,7 +216,19 @@ ${buildCandidatePrompt(candidates)}`;
   let documentType = parsed.document_type as DocumentType | 'needs_attention';
   let confidence = parsed.confidence;
   let reason = `${parsed.email_summary} ${parsed.reason}`;
-  if (parsed.pi_client_full_name) {
+  let caseClearedForIdentity = false;
+
+  const clientUnknown = clientIdentityIsUnknown(ctx);
+  if (clientUnknown) {
+    suggestedCaseNumber = null;
+    documentType = 'needs_attention';
+    confidence = Math.min(confidence, 0.35);
+    reason = emailRequestsClientIdentification(
+      [ctx.subject, ctx.bodyExcerpt].filter(Boolean).join('\n')
+    )
+      ? `Sender is asking RJL to identify the client — case cannot be assigned yet. ${reason}`
+      : `No PI client named in this email (open records / property investigation). ${reason}`;
+  } else if (parsed.pi_client_full_name) {
     reason = `Client: ${parsed.pi_client_full_name}. ${reason}`;
   }
 
@@ -224,7 +239,7 @@ ${buildCandidatePrompt(candidates)}`;
     reason = 'AI returned case number not in candidate list — rejected';
   }
 
-  if (ctx.aiClientIdentity && suggestedCaseNumber) {
+  if (!clientUnknown && ctx.aiClientIdentity && suggestedCaseNumber) {
     const picked = candidates.find((c) => c.case.case_number === suggestedCaseNumber);
     if (
       picked &&
@@ -241,12 +256,13 @@ ${buildCandidatePrompt(candidates)}`;
         suggestedCaseNumber = null;
         documentType = 'needs_attention';
         confidence = Math.min(confidence, 0.4);
-        reason += ` (no case in list matches client ${ctx.aiClientIdentity.clientFullName})`;
+        caseClearedForIdentity = true;
+        reason += ` (no case in list matches client ${ctx.aiClientIdentity.clientFullName ?? 'unknown'})`;
       }
     }
   }
 
-  if (ctx.batchSharedCaseNumber) {
+  if (ctx.batchSharedCaseNumber && !caseClearedForIdentity && !clientUnknown) {
     const batchCase = candidates.find(
       (c) => c.case.case_number === ctx.batchSharedCaseNumber
     );
@@ -254,12 +270,15 @@ ${buildCandidatePrompt(candidates)}`;
       batchCase &&
       ctx.aiClientIdentity &&
       identityConflictsWithCase(batchCase.case, ctx.aiClientIdentity);
-    if (batchCase && !identityBlocks) {
+    const clientKnown = Boolean(ctx.aiClientIdentity?.clientFullName?.trim());
+    if (batchCase && !identityBlocks && clientKnown) {
+      const identityMatchesBatch =
+        ctx.aiClientIdentity &&
+        caseMatchesClientIdentity(batchCase.case, ctx.aiClientIdentity);
       const shouldUseBatch =
-        !suggestedCaseNumber ||
-        confidence < CONFIDENCE_THRESHOLD ||
-        (ctx.aiClientIdentity &&
-          caseMatchesClientIdentity(batchCase.case, ctx.aiClientIdentity));
+        suggestedCaseNumber === ctx.batchSharedCaseNumber ||
+        (identityMatchesBatch &&
+          (!suggestedCaseNumber || confidence < CONFIDENCE_THRESHOLD));
       if (shouldUseBatch && suggestedCaseNumber !== ctx.batchSharedCaseNumber) {
         suggestedCaseNumber = ctx.batchSharedCaseNumber;
         confidence = Math.max(confidence, 0.72);

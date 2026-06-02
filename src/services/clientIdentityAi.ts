@@ -83,7 +83,7 @@ From: sender, To/Cc, subject, body (including forwards), attachment filename, an
 2. What kind of document this is (brief document_kind label).
 3. Whether this looks like a brand-new client engagement with no case folder yet (is_new_client_intake) — decide from meaning, not keywords like "signed" alone.
 
-Read forwarded threads carefully: the client is often named in the original RJL message at the bottom.
+If the sender asks RJL to identify the client ("please let me know the name of your client"), set client_full_name to null — the client is unknown.
 
 Return strict JSON only.`;
 

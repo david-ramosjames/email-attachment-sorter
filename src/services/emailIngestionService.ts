@@ -25,6 +25,7 @@ import type {
 } from '../types/index.js';
 import { extractPatientNamesFromText } from '../utils/patientNameExtract.js';
 import { buildSmartBodyExcerpt } from '../utils/emailBodyExcerpt.js';
+import { clientIdentityIsUnknown } from '../utils/emailClientSignals.js';
 import { isIgnoredInboundSender } from '../constants/ignoredSenders.js';
 import { logger } from '../utils/logger.js';
 
@@ -221,7 +222,8 @@ async function processSingleAttachment(
   if (
     classification.suggestedCaseNumber &&
     classification.confidence >= 0.5 &&
-    (!classification.needsAttention || classification.confidence >= 0.65)
+    (!classification.needsAttention || classification.confidence >= 0.65) &&
+    !clientIdentityIsUnknown({ subject: payload.subject, bodyExcerpt: payload.bodyExcerpt, aiClientIdentity: matchContext.aiClientIdentity })
   ) {
     batch.sharedCaseNumber = classification.suggestedCaseNumber;
     batch.sharedConfidence = classification.confidence;
@@ -331,7 +333,11 @@ async function preflightEmailBatchCase(
 
   const candidates = await findCaseCandidates(matchContext);
   const top = candidates[0];
-  if (top && top.matchScore >= 40) {
+  if (
+    top &&
+    top.matchScore >= 40 &&
+    !clientIdentityIsUnknown({ ...matchContext, aiClientIdentity: matchContext.aiClientIdentity })
+  ) {
     batch.sharedCaseNumber = top.case.case_number;
     batch.sharedConfidence = 0.7;
     logger.info('Email preflight matched case for batch', {
