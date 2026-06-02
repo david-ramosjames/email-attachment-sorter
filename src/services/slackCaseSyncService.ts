@@ -60,11 +60,13 @@ export async function syncCasesFromSlack(): Promise<SlackCaseSyncResult> {
         error:
           channels.length === 0
             ? 'No Slack channels returned. Check SLACK_BOT_TOKEN and channels:read scope.'
-            : 'No case channels found. Channels need a case number in the name (e.g. javiermejias-etal-625 or 276-regina-peek). Invite the bot to private case channels.',
+            : 'No case channels found. Channels must end with -{caseNumber} (e.g. javiermejias-etal-625). Invite the bot to private case channels.',
       };
     }
 
-    const upserted = await batchUpsertCaseSlackChannels(cases);
+    const upserted = await batchUpsertCaseSlackChannels(cases, {
+      preserveDropboxFolder: true,
+    });
     clearSlackChannelNameCache();
     lastSyncAt = new Date();
 

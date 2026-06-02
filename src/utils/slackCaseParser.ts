@@ -4,33 +4,78 @@ export interface SlackChannelForCaseParse {
   id: string;
   name: string;
   isArchived: boolean;
+  topic?: string;
 }
 
 export interface ParsedSlackCase {
   case_number: string;
   slack_channel_name: string;
   slack_channel_id: string;
+  /** Client display name parsed from channel slug (e.g. "Regina Peek Etal 3") */
+  case_name: string;
   topic_stage: string | null;
   dropbox_folder_name: string | null;
 }
 
-const TRAILING_CASE_NUMBER = /-(\d{1,6})$/;
-const LEADING_CASE_NUMBER = /^(\d{1,6})-/;
+/** Same rule as the Google Apps Script: `clientname-etal-625` → case 625 */
+const CASE_CHANNEL_NAME = /^(.*)-(\d+)$/;
 
-/**
- * Case Slack channels are usually named like `javiermejias-etal-625` or `276-regina-peek`.
- */
-export function inferCaseNumberFromSlackChannel(channelName: string): string | null {
-  const name = channelName.trim().toLowerCase();
-  if (!name) return null;
+export function parseCaseFromChannelName(channelName: string): {
+  caseNumber: string;
+  caseName: string;
+} {
+  const normalized = String(channelName || '').trim().toLowerCase();
+  const match = normalized.match(CASE_CHANNEL_NAME);
 
-  const trailing = name.match(TRAILING_CASE_NUMBER);
-  if (trailing) return trailing[1]!;
+  if (!match) {
+    return { caseNumber: '', caseName: '' };
+  }
 
-  const leading = name.match(LEADING_CASE_NUMBER);
-  if (leading) return leading[1]!;
+  const rawName = match[1]!;
+  const caseNumber = match[2]!;
 
-  return null;
+  const caseName = toTitleCase(
+    rawName
+      .replace(/_+/g, ' ')
+      .replace(/-+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+  );
+
+  return { caseNumber, caseName };
+}
+
+/** Status text inside parentheses in the channel topic, e.g. "(Pre-Lit)". */
+export function parseStatusFromTopic(topicText: string): string {
+  const source = String(topicText || '').trim();
+  const match = source.match(/\(([^)]+)\)/);
+  return match?.[1]?.trim() ?? '';
+}
+
+export function parseChannelAndTopic(data: {
+  channelId: string;
+  channelName: string;
+  topic?: string;
+}): ParsedSlackCase | null {
+  const caseInfo = parseCaseFromChannelName(data.channelName);
+  if (!caseInfo.caseNumber) return null;
+
+  const status = parseStatusFromTopic(data.topic ?? '');
+
+  return {
+    case_number: caseInfo.caseNumber,
+    slack_channel_name: data.channelName,
+    slack_channel_id: data.channelId,
+    case_name: caseInfo.caseName,
+    topic_stage: status || null,
+    dropbox_folder_name: null,
+  };
+}
+
+function toTitleCase(str: string): string {
+  return String(str || '')
+    .toLowerCase()
+    .replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
 function excludedChannelNames(): Set<string> {
@@ -67,29 +112,25 @@ export function parseCasesFromSlackChannels(channels: SlackChannelForCaseParse[]
       continue;
     }
 
-    const caseNumber = inferCaseNumberFromSlackChannel(ch.name);
-    if (!caseNumber) {
+    const parsed = parseChannelAndTopic({
+      channelId: ch.id,
+      channelName: ch.name,
+      topic: ch.topic,
+    });
+
+    if (!parsed) {
       skippedChannels.push(ch.name);
       continue;
     }
 
-    const row: ParsedSlackCase = {
-      case_number: caseNumber,
-      slack_channel_name: ch.name,
-      slack_channel_id: ch.id,
-      topic_stage: null,
-      dropbox_folder_name: null,
-    };
-
-    const existing = byCaseNumber.get(caseNumber);
+    const existing = byCaseNumber.get(parsed.case_number);
     if (existing) {
-      duplicateCaseNumbers.push(caseNumber);
-      // Prefer the longer / more descriptive channel name
+      duplicateCaseNumbers.push(parsed.case_number);
       if (ch.name.length > existing.slack_channel_name.length) {
-        byCaseNumber.set(caseNumber, row);
+        byCaseNumber.set(parsed.case_number, parsed);
       }
     } else {
-      byCaseNumber.set(caseNumber, row);
+      byCaseNumber.set(parsed.case_number, parsed);
     }
   }
 

@@ -91,6 +91,7 @@ npm run build && npm start
 |--------|------|-------------|
 | GET | `/health` | Health check |
 | POST | `/webhooks/inbound-email` | Receive inbound email payloads |
+| POST | `/webhooks/slack/events` | Slack Events API — auto-update case index |
 | POST | `/webhooks/slack/interactions` | Slack button actions |
 | GET | `/admin/file-sorter-items` | List items (`?status=&limit=`) |
 | GET | `/admin/cases` | List cases |
@@ -177,9 +178,29 @@ If case channels follow a naming pattern with the matter number (e.g. `javiermej
 
 ### Requirements
 
-1. Bot has **`channels:read`** and **`groups:read`** (for private case channels).
+1. Bot has **`channels:read`**, **`groups:read`**, and **`channels:manage`** (for events) scopes.
 2. Bot is **invited to every case channel** (private channels are invisible otherwise).
-3. Channel names include the case number at the **start** (`276-…`) or **end** (`…-625`).
+3. Channel names end with **`-{caseNumber}`** (e.g. `javiermejias-etal-625`) — same rule as the legacy Google Sheet script.
+4. Optional status in channel topic inside parentheses, e.g. `Attorney: @ryan | (Pre-Lit)`.
+
+### Real-time updates (replaces Sheet webhook)
+
+In your Slack app → **Event Subscriptions**:
+
+1. Enable events.
+2. Request URL: `https://YOUR-APP.up.railway.app/webhooks/slack/events`
+3. Subscribe to bot events:
+   - `channel_created`
+   - `channel_rename`
+   - `member_joined_channel`
+   - `message.channels` (for topic/name changes)
+   - `message.groups` (private channels)
+
+When a case channel is created, renamed, or its topic changes, Supabase updates immediately (same events the Apps Script listened for).
+
+### Scheduled backfill
+
+Every **4 hours** (`SLACK_CASE_SYNC_INTERVAL_MINUTES=240`) the app re-lists all channels — same as `backfillExistingCaseChannels()` in the old script.
 
 ### Run sync
 

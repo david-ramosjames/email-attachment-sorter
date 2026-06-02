@@ -45,8 +45,8 @@ const envSchema = z.object({
   GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY: optionalString,
   /** How often to sync case_slack_channels from the sheet (minutes). 0 = manual only. */
   CASE_SHEET_SYNC_INTERVAL_MINUTES: z.coerce.number().default(0),
-  /** How often to sync cases from Slack channel list (minutes). 0 = manual only. */
-  SLACK_CASE_SYNC_INTERVAL_MINUTES: z.coerce.number().default(360),
+  /** How often to sync cases from Slack channel list (minutes). 0 = manual only. Default 4h like legacy sheet backfill. */
+  SLACK_CASE_SYNC_INTERVAL_MINUTES: z.coerce.number().default(240),
   /** Comma-separated Slack channel names to skip (lowercase, without #). */
   SLACK_CASE_CHANNEL_EXCLUDE_NAMES: z.string().default(''),
 });

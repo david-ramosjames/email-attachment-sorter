@@ -27,6 +27,21 @@ export function createApp(): Express {
     }
   );
 
+  app.use(
+    '/webhooks/slack/events',
+    express.raw({ type: 'application/json' }),
+    (req, _res, next) => {
+      const raw = req.body as Buffer;
+      (req as express.Request & { rawBody: string }).rawBody = raw.toString('utf8');
+      try {
+        req.body = JSON.parse((req as express.Request & { rawBody: string }).rawBody);
+      } catch {
+        req.body = {};
+      }
+      next();
+    }
+  );
+
   app.use(express.json({ limit: '50mb' }));
 
   app.use((req, res, next) => {

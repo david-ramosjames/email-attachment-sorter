@@ -711,16 +711,36 @@ export async function batchUpsertCaseSlackChannels(
     slack_channel_id?: string | null;
     topic_stage?: string | null;
     dropbox_folder_name?: string | null;
-  }>
+  }>,
+  options?: { preserveDropboxFolder?: boolean }
 ): Promise<number> {
   if (!rows.length) return 0;
   const now = new Date().toISOString();
+
+  let dropboxByCase = new Map<string, string | null>();
+  if (options?.preserveDropboxFolder) {
+    const caseNumbers = [...new Set(rows.map((r) => r.case_number))];
+    for (let i = 0; i < caseNumbers.length; i += 200) {
+      const chunk = caseNumbers.slice(i, i + 200);
+      const { data, error } = await getSupabase()
+        .from('case_slack_channels')
+        .select('case_number, dropbox_folder_name')
+        .in('case_number', chunk);
+      if (error) throw new Error(`Case lookup failed: ${error.message}`);
+      for (const row of data ?? []) {
+        dropboxByCase.set(row.case_number, row.dropbox_folder_name ?? null);
+      }
+    }
+  }
+
   const payload = rows.map((r) => ({
     case_number: r.case_number,
     slack_channel_name: r.slack_channel_name,
     slack_channel_id: r.slack_channel_id ?? null,
     topic_stage: r.topic_stage ?? null,
-    dropbox_folder_name: r.dropbox_folder_name ?? null,
+    dropbox_folder_name: options?.preserveDropboxFolder
+      ? (r.dropbox_folder_name ?? dropboxByCase.get(r.case_number) ?? null)
+      : (r.dropbox_folder_name ?? null),
     synced_at: now,
     updated_at: now,
   }));

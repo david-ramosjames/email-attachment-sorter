@@ -15,6 +15,7 @@ import {
 } from '../services/slackService.js';
 import { logger } from '../utils/logger.js';
 import { formatApproveError, isRecoverableApproveError } from '../utils/approveErrors.js';
+import { handleSlackEventsWebhook } from '../services/slackCaseEventService.js';
 
 export const webhooksRouter = Router();
 
@@ -168,4 +169,34 @@ webhooksRouter.post('/webhooks/slack/interactions', async (req, res) => {
       }
     }
   })();
+});
+
+webhooksRouter.post('/webhooks/slack/events', async (req, res) => {
+  const rawBody = (req as Request & { rawBody?: string }).rawBody ?? '';
+  const signature = req.headers['x-slack-signature'] as string | undefined;
+  const timestamp = req.headers['x-slack-request-timestamp'] as string | undefined;
+
+  if (
+    !verifySlackSignature(getEnv().SLACK_SIGNING_SECRET, signature, timestamp, rawBody)
+  ) {
+    res.status(401).send('Invalid signature');
+    return;
+  }
+
+  const body =
+    typeof req.body === 'object' && req.body !== null
+      ? (req.body as Record<string, unknown>)
+      : {};
+
+  try {
+    const result = await handleSlackEventsWebhook(body);
+    if (typeof result.body === 'string') {
+      res.status(result.status).send(result.body);
+    } else {
+      res.status(result.status).json(result.body);
+    }
+  } catch (err) {
+    logger.error('Slack events webhook failed', { err: String(err) });
+    res.status(200).send('error');
+  }
 });

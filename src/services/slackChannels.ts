@@ -8,6 +8,7 @@ export interface SlackChannelSummary {
   name: string;
   isPrivate: boolean;
   isArchived: boolean;
+  topic: string;
 }
 
 async function slackApiForm<T>(
@@ -47,11 +48,12 @@ export async function listAllSlackChannels(): Promise<SlackChannelSummary[]> {
         name?: string;
         is_private?: boolean;
         is_archived?: boolean;
+        topic?: { value?: string };
       }>;
       response_metadata?: { next_cursor?: string };
     }>('conversations.list', {
       types: 'public_channel,private_channel',
-      limit: 200,
+      limit: 500,
       exclude_archived: true,
       cursor,
     });
@@ -63,6 +65,7 @@ export async function listAllSlackChannels(): Promise<SlackChannelSummary[]> {
         name: ch.name,
         isPrivate: Boolean(ch.is_private),
         isArchived: Boolean(ch.is_archived),
+        topic: ch.topic?.value?.trim() ?? '',
       });
     }
     cursor = page.response_metadata?.next_cursor || undefined;
@@ -70,6 +73,29 @@ export async function listAllSlackChannels(): Promise<SlackChannelSummary[]> {
 
   logger.info('Slack channels listed', { count: channels.length });
   return channels;
+}
+
+export async function getConversationInfo(channelId: string): Promise<{
+  id: string;
+  name: string;
+  topic: string;
+} | null> {
+  const data = await slackApiForm<{
+    channel?: {
+      id?: string;
+      name?: string;
+      topic?: { value?: string };
+    };
+  }>('conversations.info', { channel: channelId });
+
+  const ch = data.channel;
+  if (!ch?.id || !ch.name) return null;
+
+  return {
+    id: ch.id,
+    name: ch.name,
+    topic: ch.topic?.value?.trim() ?? '',
+  };
 }
 
 let channelIdByName: Map<string, string> | null = null;
