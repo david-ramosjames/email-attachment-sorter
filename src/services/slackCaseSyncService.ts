@@ -2,7 +2,9 @@ import { batchUpsertCaseSlackChannels } from '../db/supabase.js';
 import { getEnv } from '../config/env.js';
 import {
   clearSlackChannelNameCache,
+  joinAllPublicSlackChannels,
   listAllSlackChannels,
+  type SlackPublicJoinResult,
 } from './slackChannels.js';
 import { parseCasesFromSlackChannels } from '../utils/slackCaseParser.js';
 import { logger } from '../utils/logger.js';
@@ -14,6 +16,7 @@ export interface SlackCaseSyncResult {
   skippedChannelCount: number;
   skippedChannels: string[];
   duplicateCaseNumbers: string[];
+  publicJoin?: SlackPublicJoinResult;
   syncedAt: string;
   skipped?: boolean;
   error?: string;
@@ -45,6 +48,17 @@ export async function syncCasesFromSlack(): Promise<SlackCaseSyncResult> {
   syncInProgress = true;
   try {
     const channels = await listAllSlackChannels();
+
+    if (getEnv().SLACK_AUTO_JOIN_PUBLIC_CHANNELS) {
+      void joinAllPublicSlackChannels(channels)
+        .then((joinResult) => {
+          logger.info('Background public Slack join finished', { ...joinResult });
+        })
+        .catch((err) => {
+          logger.error('Background public Slack join failed', { err: String(err) });
+        });
+    }
+
     const { cases, skippedChannels, duplicateCaseNumbers } =
       parseCasesFromSlackChannels(channels);
 
@@ -79,7 +93,16 @@ export async function syncCasesFromSlack(): Promise<SlackCaseSyncResult> {
       duplicateCaseNumbers,
       syncedAt: lastSyncAt.toISOString(),
     };
-    logger.info('Slack case sync complete', { ...result });
+    if (getEnv().SLACK_AUTO_JOIN_PUBLIC_CHANNELS) {
+      result.publicJoin = {
+        publicChannels: channels.filter((c) => !c.isPrivate && !c.isArchived).length,
+        alreadyMember: 0,
+        joined: 0,
+        failed: 0,
+        failedChannelNames: [],
+      };
+    }
+    logger.info('Slack case sync complete', { ...result, publicJoinStarted: Boolean(getEnv().SLACK_AUTO_JOIN_PUBLIC_CHANNELS) });
     return result;
   } catch (err) {
     logger.error('Slack case sync error', { err: String(err) });

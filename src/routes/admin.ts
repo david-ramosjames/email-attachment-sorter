@@ -169,6 +169,23 @@ adminRouter.get('/admin/slack-case-sync-status', (_req, res) => {
   res.json({ lastSyncAt: getLastSlackCaseSyncAt() });
 });
 
+/** Join all public Slack channels (for file cross-post). Runs synchronously — may take a few minutes. */
+adminRouter.post('/admin/join-public-slack-channels', async (_req, res) => {
+  try {
+    const { joinAllPublicSlackChannels, listAllSlackChannels, clearSlackChannelNameCache } =
+      await import('../services/slackChannels.js');
+    const channels = await listAllSlackChannels();
+    const result = await joinAllPublicSlackChannels(channels);
+    clearSlackChannelNameCache();
+    res.json(result);
+  } catch (err) {
+    logger.error('Admin join public Slack channels failed', { err: String(err) });
+    res.status(500).json({
+      error: err instanceof Error ? err.message : 'Join failed',
+    });
+  }
+});
+
 /** Sync case_slack_channels from the configured Google Sheet. */
 adminRouter.post('/admin/sync-cases-from-sheet', async (_req, res) => {
   try {

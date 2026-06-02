@@ -186,15 +186,23 @@ async function slackUploadFileToChannelWithFallback(opts: {
     }
   };
 
-  await ensureBotInChannel(opts.channelId);
+  try {
+    await ensureBotInChannel(opts.channelId);
+  } catch {
+    /* private channel — may still fail on upload */
+  }
+
   try {
     await attempt();
   } catch (err) {
     const msg = String(err);
     if (!msg.includes('not_in_channel')) throw err;
-    const joined = await ensureBotInChannel(opts.channelId);
-    if (!joined) throw err;
-    await attempt();
+    try {
+      await ensureBotInChannel(opts.channelId);
+      await attempt();
+    } catch {
+      throw err;
+    }
   }
 }
 
@@ -760,7 +768,11 @@ export const slackService = {
     );
 
     try {
-      await ensureBotInChannel(channelId);
+      try {
+        await ensureBotInChannel(channelId);
+      } catch {
+        /* public join may fail for private channels */
+      }
 
       const postResult = await slackApi<{ ts: string }>('chat.postMessage', {
         channel: channelId,

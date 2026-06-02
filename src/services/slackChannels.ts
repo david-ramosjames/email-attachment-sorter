@@ -8,7 +8,20 @@ export interface SlackChannelSummary {
   name: string;
   isPrivate: boolean;
   isArchived: boolean;
+  isMember: boolean;
   topic: string;
+}
+
+export interface SlackPublicJoinResult {
+  publicChannels: number;
+  alreadyMember: number;
+  joined: number;
+  failed: number;
+  failedChannelNames: string[];
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function slackApiForm<T>(
@@ -48,6 +61,7 @@ export async function listAllSlackChannels(): Promise<SlackChannelSummary[]> {
         name?: string;
         is_private?: boolean;
         is_archived?: boolean;
+        is_member?: boolean;
         topic?: { value?: string };
       }>;
       response_metadata?: { next_cursor?: string };
@@ -65,6 +79,7 @@ export async function listAllSlackChannels(): Promise<SlackChannelSummary[]> {
         name: ch.name,
         isPrivate: Boolean(ch.is_private),
         isArchived: Boolean(ch.is_archived),
+        isMember: Boolean(ch.is_member),
         topic: ch.topic?.value?.trim() ?? '',
       });
     }
@@ -81,14 +96,66 @@ export async function ensureBotInChannel(channelId: string): Promise<boolean> {
     await slackApiForm<{ channel?: { id?: string } }>('conversations.join', {
       channel: channelId,
     });
-    logger.info('Bot joined Slack channel', { channelId });
     return true;
   } catch (err) {
     const msg = String(err);
     if (msg.includes('already_in_channel')) return true;
-    logger.warn('Could not join Slack channel', { channelId, err: msg });
-    return false;
+    throw err;
   }
+}
+
+/**
+ * Join every public channel the bot can see (requires channels:join).
+ * Skips channels where is_member is already true. Rate-limited for Slack API tiers.
+ */
+export async function joinAllPublicSlackChannels(
+  channels?: SlackChannelSummary[],
+  opts?: { delayMs?: number }
+): Promise<SlackPublicJoinResult> {
+  const all = channels ?? (await listAllSlackChannels());
+  const delayMs = opts?.delayMs ?? 120;
+  const publicChannels = all.filter((ch) => !ch.isPrivate && !ch.isArchived);
+
+  let alreadyMember = 0;
+  let joined = 0;
+  let failed = 0;
+  const failedChannelNames: string[] = [];
+
+  for (const ch of publicChannels) {
+    if (ch.isMember) {
+      alreadyMember++;
+      continue;
+    }
+
+    try {
+      await ensureBotInChannel(ch.id);
+      joined++;
+    } catch (err) {
+      failed++;
+      if (failedChannelNames.length < 25) {
+        failedChannelNames.push(ch.name);
+      }
+      logger.warn('Failed to join public Slack channel', {
+        channelId: ch.id,
+        channelName: ch.name,
+        err: String(err),
+      });
+    }
+
+    if (delayMs > 0) {
+      await sleep(delayMs);
+    }
+  }
+
+  const result: SlackPublicJoinResult = {
+    publicChannels: publicChannels.length,
+    alreadyMember,
+    joined,
+    failed,
+    failedChannelNames,
+  };
+  logger.info('Public Slack channel join pass complete', { ...result });
+  return result;
 }
 
 export async function getConversationInfo(channelId: string): Promise<{

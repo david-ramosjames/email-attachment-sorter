@@ -200,7 +200,13 @@ When a case channel is created, renamed, or its topic changes, Supabase updates 
 
 ### Scheduled backfill
 
-Every **4 hours** (`SLACK_CASE_SYNC_INTERVAL_MINUTES=240`) the app re-lists all channels — same as `backfillExistingCaseChannels()` in the old script.
+Every **4 hours** (`SLACK_CASE_SYNC_INTERVAL_MINUTES=240`) the app re-lists all channels and **auto-joins every public channel** (`channels:join` scope required) so cross-post file uploads work. Private channels still need `/invite @RJL File Sorter`.
+
+One-time bulk join (may take a few minutes):
+
+```powershell
+Invoke-RestMethod -Method POST -Uri "https://YOUR-APP.up.railway.app/admin/join-public-slack-channels"
+```
 
 ### Run sync
 

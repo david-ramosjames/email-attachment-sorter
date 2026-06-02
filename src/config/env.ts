@@ -47,6 +47,9 @@ const envSchema = z.object({
   CASE_SHEET_SYNC_INTERVAL_MINUTES: z.coerce.number().default(0),
   /** How often to sync cases from Slack channel list (minutes). 0 = manual only. Default 4h like legacy sheet backfill. */
   SLACK_CASE_SYNC_INTERVAL_MINUTES: z.coerce.number().default(240),
+  /** Join all public Slack channels on each case sync (requires channels:join). */
+  SLACK_AUTO_JOIN_PUBLIC_CHANNELS: z
+    .preprocess((val) => val === 'false' || val === '0' ? false : val, z.boolean().default(true)),
   /** Comma-separated Slack channel names to skip (lowercase, without #). */
   SLACK_CASE_CHANNEL_EXCLUDE_NAMES: z.string().default(''),
 });
