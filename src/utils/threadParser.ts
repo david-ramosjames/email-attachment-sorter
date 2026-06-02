@@ -16,44 +16,63 @@ export interface ThreadOverride {
   sortHints?: string[];
 }
 
+/** Strip Slack code formatting (backticks) from a single line. */
+export function cleanThreadLine(line: string): string {
+  return line
+    .trim()
+    .replace(/^[`'*_\s]+|[`'*_\s]+$/g, '')
+    .trim();
+}
+
 /** "medical" → "Medical" when it matches a standard RJL subfolder */
 export function normalizeFolderOverrideLabel(label: string): string {
-  const trimmed = label.trim();
+  const trimmed = cleanThreadLine(label);
   const match = RJL_STANDARD_SUBFOLDERS.find(
     (f) => f.toLowerCase() === trimmed.toLowerCase()
   );
   return match ?? trimmed;
 }
 
+export function threadOverrideHasValues(override: ThreadOverride): boolean {
+  return Boolean(
+    override.caseName ||
+      override.folderLabel ||
+      override.caseHints?.length ||
+      override.sortHints?.length
+  );
+}
+
 export function parseThreadReply(text: string): ThreadOverride {
   const result: ThreadOverride = {};
   const lines = text.split('\n');
 
-  for (const line of lines) {
-    const trimmed = line.trim();
+  for (const rawLine of lines) {
+    const trimmed = cleanThreadLine(rawLine);
+    if (!trimmed) continue;
+
     const caseMatch = trimmed.match(/^case:\s*(.+)$/i);
     if (caseMatch) {
-      result.caseName = caseMatch[1].trim();
+      result.caseName = cleanThreadLine(caseMatch[1]!);
       continue;
     }
     const folderMatch = trimmed.match(/^folder:\s*(.+)$/i);
     if (folderMatch) {
-      result.folderLabel = normalizeFolderOverrideLabel(folderMatch[1]);
+      result.folderLabel = normalizeFolderOverrideLabel(folderMatch[1]!);
       continue;
     }
     const caseHintMatch = trimmed.match(/^case\s+hint:\s*(.+)$/i);
     if (caseHintMatch) {
-      result.caseHints = [...(result.caseHints ?? []), caseHintMatch[1].trim()];
+      result.caseHints = [...(result.caseHints ?? []), cleanThreadLine(caseHintMatch[1]!)];
       continue;
     }
     const sortHintMatch = trimmed.match(/^sort\s+hint:\s*(.+)$/i);
     if (sortHintMatch) {
-      result.sortHints = [...(result.sortHints ?? []), sortHintMatch[1].trim()];
+      result.sortHints = [...(result.sortHints ?? []), cleanThreadLine(sortHintMatch[1]!)];
       continue;
     }
     const legacyHintMatch = trimmed.match(/^hint:\s*(.+)$/i);
     if (legacyHintMatch) {
-      result.sortHints = [...(result.sortHints ?? []), legacyHintMatch[1].trim()];
+      result.sortHints = [...(result.sortHints ?? []), cleanThreadLine(legacyHintMatch[1]!)];
     }
   }
 

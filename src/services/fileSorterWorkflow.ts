@@ -32,6 +32,7 @@ import { parseThreadReplies } from '../utils/threadParser.js';
 import type { SlackThreadContext } from './slackService.js';
 import { logger } from '../utils/logger.js';
 import type { Case, FileSorterItem } from '../types/index.js';
+import { confirmThreadOverrides } from './queueThreadOverrideService.js';
 
 function slackThreadForItem(item: FileSorterItem, slackThread?: SlackThreadContext): SlackThreadContext | null {
   return (
@@ -81,13 +82,24 @@ async function resolveBatchCase(
     try {
       replies = await slackService.getThreadReplies(threadCtx);
     } catch (err) {
-      logger.warn('Could not load Slack thread overrides', {
+      logger.error('Could not load Slack thread overrides', {
         itemId,
+        channelId: threadCtx.channelId,
+        messageTs: threadCtx.messageTs,
         err: String(err),
+        hint: 'Add channels:history and groups:history to the Slack app, then reinstall.',
       });
     }
 
     const override = parseThreadReplies(replies);
+    logger.info('Thread overrides parsed for Approve', {
+      itemId,
+      replyCount: replies.length,
+      folder: override.folderLabel ?? null,
+      caseName: override.caseName ?? null,
+      sortHints: override.sortHints?.length ?? 0,
+      caseHints: override.caseHints?.length ?? 0,
+    });
     if (override.caseHints?.length) {
       threadCaseHints = override.caseHints;
     }
@@ -298,6 +310,15 @@ export async function handleApprove(
     threadFolderLabel,
   } = await resolveBatchCase(itemId, slackThread);
 
+  logger.info('Approve folder resolution', {
+    itemId,
+    caseNumber,
+    usedFolderOverride,
+    threadFolderLabel,
+    threadFolderPath: threadFolderPath ?? null,
+    aiSuggestedFolder: trigger.suggested_folder_path ?? null,
+  });
+
   const savedFiles: Array<{ filename: string; dropboxLink: string }> = [];
   const reviewedAt = new Date().toISOString();
   let duplicateCount = 0;
@@ -444,11 +465,20 @@ export async function handleApprove(
   });
 }
 
-export async function handleChange(itemId: string, slackUserId: string): Promise<void> {
+export async function handleChange(
+  itemId: string,
+  slackUserId: string,
+  slackThread?: SlackThreadContext
+): Promise<void> {
   const item = await getFileSorterItem(itemId);
   if (!item) throw new Error('Item not found');
   await slackService.postChangeInstructions(item);
   await auditService.log(itemId, 'thread_override', { action: 'change_requested' }, slackUserId);
+
+  const threadCtx = slackThreadForItem(item, slackThread);
+  if (threadCtx) {
+    await confirmThreadOverrides(threadCtx, item.suggested_case_number);
+  }
 }
 
 export async function handleNeedsAttention(

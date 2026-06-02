@@ -129,6 +129,16 @@ export async function handleSlackEventsWebhook(
     return { status: 200, body: 'mention_ignored' };
   }
 
+  try {
+    const { handleQueueThreadOverrideEvent } = await import('./queueThreadOverrideService.js');
+    if (await handleQueueThreadOverrideEvent(event)) {
+      markProcessedEvent(eventId);
+      return { status: 200, body: 'queue_thread_override' };
+    }
+  } catch (err) {
+    logger.error('Queue thread override handler failed', { err: String(err) });
+  }
+
   if (!isCaseIndexEvent(event)) {
     markProcessedEvent(eventId);
     return { status: 200, body: 'ignored_event' };

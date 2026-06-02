@@ -58,7 +58,7 @@ supabase/migrations/
 ### 2. Slack app
 
 1. Create a Slack app at [api.slack.com](https://api.slack.com/apps).
-2. **OAuth scopes:** `chat:write`, `channels:read`, `groups:read` (private channels), `users:read`, `files:write`
+2. **OAuth scopes:** `chat:write`, `channels:read`, `channels:history`, `groups:read`, `groups:history`, `users:read`, `files:write`
 3. Install to workspace; copy **Bot Token** → `SLACK_BOT_TOKEN`
 4. **Interactivity:** enable and set Request URL to:
    `https://<your-railway-domain>/webhooks/slack/interactions`

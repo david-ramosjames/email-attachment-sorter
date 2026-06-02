@@ -118,7 +118,7 @@ webhooksRouter.post('/webhooks/slack/interactions', async (req, res) => {
           await handleApprove(itemId, userId, slackThread);
           break;
         case 'change':
-          await handleChange(itemId, userId);
+          await handleChange(itemId, userId, slackThread);
           break;
         case 'needs_attention':
           await handleNeedsAttention(itemId, userId);

@@ -664,6 +664,22 @@ export async function getQueueBatchItems(item: FileSorterItem): Promise<FileSort
   return data as FileSorterItem[];
 }
 
+/** Pending queue items for a Slack thread (batch card root message). */
+export async function getPendingQueueItemsByThread(
+  channelId: string,
+  threadTs: string
+): Promise<FileSorterItem[]> {
+  const { data, error } = await getSupabase()
+    .from('file_sorter_items')
+    .select('*')
+    .eq('slack_queue_channel_id', channelId)
+    .eq('slack_queue_message_ts', threadTs)
+    .in('status', ['pending_review', 'approved', 'needs_attention', 'failed'])
+    .order('created_at', { ascending: true });
+  if (error) throw new Error(`Queue thread lookup failed: ${error.message}`);
+  return (data ?? []) as FileSorterItem[];
+}
+
 /** Items that still have staged files in Storage past the TTL window. */
 export async function listFileSorterItemsWithTempStorageOlderThan(
   hours: number

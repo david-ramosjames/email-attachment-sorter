@@ -61,6 +61,32 @@ export function slackActionType(actionId: string): SlackActionType | null {
   return null;
 }
 
+function extractSlackMessageText(message: Record<string, unknown>): string {
+  const text = typeof message.text === 'string' ? message.text.trim() : '';
+  if (text) return text;
+
+  const blocks = message.blocks;
+  if (!Array.isArray(blocks)) return '';
+
+  const parts: string[] = [];
+  for (const block of blocks) {
+    if (!block || typeof block !== 'object') continue;
+    const b = block as { type?: string; elements?: unknown[] };
+    if (b.type !== 'rich_text' || !Array.isArray(b.elements)) continue;
+    for (const el of b.elements) {
+      if (!el || typeof el !== 'object') continue;
+      const section = el as { type?: string; elements?: unknown[] };
+      if (section.type !== 'rich_text_section' || !Array.isArray(section.elements)) continue;
+      for (const sub of section.elements) {
+        if (!sub || typeof sub !== 'object') continue;
+        const piece = sub as { type?: string; text?: string };
+        if (piece.type === 'text' && piece.text) parts.push(piece.text);
+      }
+    }
+  }
+  return parts.join('').trim();
+}
+
 async function slackApi<T>(method: string, body: Record<string, unknown>): Promise<T> {
   const res = await fetch(`${SLACK_API}/${method}`, {
     method: 'POST',
@@ -620,7 +646,17 @@ export const slackService = {
       text:
         '*How to change case or folder before Approve:*\n' +
         threadOverrideHelpText() +
-        '\n\nReply in this thread with your values, then click Approve.',
+        '\n\nReply in this thread (plain text, no code blocks), then click Approve. I will confirm what I understood in this thread.',
+    });
+  },
+
+  extractSlackMessageText,
+
+  async postThreadReply(channelId: string, threadTs: string, text: string): Promise<void> {
+    await slackApi('chat.postMessage', {
+      channel: channelId,
+      thread_ts: threadTs,
+      text,
     });
   },
 
@@ -632,7 +668,7 @@ export const slackService = {
     }
 
     const result = await slackApiForm<{
-      messages: Array<{ text?: string; user?: string; bot_id?: string; subtype?: string }>;
+      messages: Array<Record<string, unknown>>;
     }>('conversations.replies', {
       channel: channelId,
       ts,
@@ -641,7 +677,7 @@ export const slackService = {
 
     return (result.messages ?? [])
       .filter((m) => !m.bot_id && m.subtype !== 'bot_message')
-      .map((m) => m.text ?? '')
+      .map((m) => extractSlackMessageText(m))
       .filter(Boolean);
   },
 
