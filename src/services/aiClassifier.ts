@@ -18,6 +18,7 @@ import { caseMatchingHintsPromptSection, documentSortHintsPromptSection } from '
 import { getCaseById, getFoldersForCase } from '../db/supabase.js';
 import { caseMatchesClientIdentity, identityConflictsWithCase } from '../utils/caseNameMatch.js';
 import { clientIdentityIsUnknown, emailRequestsClientIdentification } from '../utils/emailClientSignals.js';
+import { buildClassifierSystemPrompt } from '../constants/classifierSystemPrompt.js';
 import type { CaseFolder } from '../types/index.js';
 
 let openai: OpenAI | null = null;
@@ -42,38 +43,45 @@ function buildCandidatePrompt(candidates: CaseCandidate[]): string {
 const classificationSchema = {
   type: 'object' as const,
   properties: {
-    pi_client_full_name: {
-      type: ['string', 'null'] as const,
-      description:
-        'The Ramos James Law PI client this document belongs to (not the email sender unless they are the client)',
-    },
-    email_summary: {
+    summary: {
       type: 'string' as const,
-      description: 'One sentence: who emailed whom, and what this is about',
+      description: 'One sentence: who emailed whom and what this is about',
+    },
+    client_name: {
+      type: ['string', 'null'] as const,
+      description: 'PI client full name (injured party RJL represents), or null if unknown',
     },
     suggested_case_number: {
       type: ['string', 'null'] as const,
-      description: 'case_number from candidate list, or null if no case fits',
+      description: 'Exact case_number from candidate list, or null if no case fits',
     },
-    suggested_folder_label: {
+    folder: {
       type: ['string', 'null'] as const,
-      description: `RJL subfolder from candidate list: ${RJL_STANDARD_SUBFOLDERS.join(', ')}`,
+      description: `RJL Dropbox subfolder: ${RJL_STANDARD_SUBFOLDERS.join(', ')}`,
     },
     document_type: {
       type: 'string' as const,
       enum: [...DOCUMENT_TYPES, 'needs_attention'],
     },
     confidence: { type: 'number' as const, minimum: 0, maximum: 1 },
-    reason: { type: 'string' as const },
+    reasoning: {
+      type: 'string' as const,
+      description: 'Why this case, folder, and document type were chosen',
+    },
+    evidence: {
+      type: 'string' as const,
+      description: 'Specific facts from email/attachment supporting the decision; do not invent',
+    },
   },
   required: [
-    'pi_client_full_name',
-    'email_summary',
+    'summary',
+    'client_name',
     'suggested_case_number',
-    'suggested_folder_label',
+    'folder',
     'document_type',
     'confidence',
-    'reason',
+    'reasoning',
+    'evidence',
   ],
   additionalProperties: false,
 };
@@ -126,30 +134,7 @@ export async function classifyDocument(
     ? `\nPre-analysis hint (verify, do not trust blindly): client may be "${ctx.aiClientIdentity.clientFullName}" — ${ctx.aiClientIdentity.reason}`
     : '';
 
-  const systemPrompt = `You are the filing assistant for Ramos James Law (RJL), a personal injury law firm.
-
-Read the entire situation — who sent the email, who received it, the subject, body (including forwards), attachment filename, and attachment text — then decide how to file this document.
-
-Your job:
-1. Identify the PI CLIENT (injured party RJL represents) — usually NOT the person who sent the email.
-   - Senders are often vendors: medical records companies, Adobe Sign, HR departments, opposing counsel, fax services.
-   - In forwards, the client is usually in the original RJL request (e.g. Jorge @ramosjames.com asking for records on behalf of a named client).
-2. Summarize what this email is about in one sentence.
-3. Pick the best case_number from the candidate list ONLY if that case clearly belongs to this client (first AND last name should match slack_channel / dropbox_folder).
-4. Pick folder and document_type from the document's actual purpose (medical records → Medical; employment authorization → Lost Wages; court filing → Pleadings; new engagement contract with no case yet → needs_attention with null case).
-5. Calibrate confidence honestly — never use 0.9+ unless the client name clearly matches the chosen case channel.
-
-Important:
-- Words like "signed", "authorization", or "contract" in a filename do NOT by themselves mean anything — read the content.
-- A signed employment authorization for an existing client is NOT a new retainer and NOT Pleadings.
-- A new Adobe Sign retainer for a brand-new client with no matching case in the list → suggested_case_number null, document_type needs_attention, low confidence.
-- If the sender asks RJL to name the client ("please let me know the name of your client"), the client is UNKNOWN — use suggested_case_number null and needs_attention even if a prior batch hint exists.
-- Property/crime-history ORR results for an address (APD CAD, Apex apartments, etc.) without a named PI client in the email → needs_attention, null case.
-- Partial surname matches are wrong (Israel Mejia ≠ javiermejias / Javier Mejias).
-- rule_match_score in older systems was unreliable — you decide from meaning.
-
-Document types: ${DOCUMENT_TYPES.join(', ')}.
-Return strict JSON only.`;
+  const systemPrompt = buildClassifierSystemPrompt();
 
   const documentSection = ctx.documentExcerpt
     ? `\n\nAttachment text:\n${ctx.documentExcerpt.slice(0, MAX_DOCUMENT_TEXT_FOR_AI)}`
@@ -203,20 +188,28 @@ ${buildCandidatePrompt(candidates)}`;
   }
 
   const parsed = JSON.parse(content) as {
-    pi_client_full_name: string | null;
-    email_summary: string;
+    summary: string;
+    client_name: string | null;
     suggested_case_number: string | null;
-    suggested_folder_label: string | null;
+    folder: string | null;
     document_type: string;
     confidence: number;
-    reason: string;
+    reasoning: string;
+    evidence: string;
   };
 
   let suggestedCaseNumber = parsed.suggested_case_number;
   let documentType = parsed.document_type as DocumentType | 'needs_attention';
   let confidence = parsed.confidence;
-  let reason = `${parsed.email_summary} ${parsed.reason}`;
+  let reason = formatClassificationReason(parsed);
   let caseClearedForIdentity = false;
+
+  if (confidence < 0.6 && suggestedCaseNumber) {
+    suggestedCaseNumber = null;
+    documentType = 'needs_attention';
+    confidence = Math.min(confidence, 0.59);
+    reason += ' (confidence below 0.60 — case not assigned per filing rules)';
+  }
 
   const clientUnknown = clientIdentityIsUnknown(ctx);
   if (clientUnknown) {
@@ -228,8 +221,8 @@ ${buildCandidatePrompt(candidates)}`;
     )
       ? `Sender is asking RJL to identify the client — case cannot be assigned yet. ${reason}`
       : `No PI client named in this email (open records / property investigation). ${reason}`;
-  } else if (parsed.pi_client_full_name) {
-    reason = `Client: ${parsed.pi_client_full_name}. ${reason}`;
+  } else if (parsed.client_name) {
+    reason = `Client: ${parsed.client_name}. ${reason}`;
   }
 
   if (suggestedCaseNumber && !candidateNumbers.has(suggestedCaseNumber)) {
@@ -292,7 +285,7 @@ ${buildCandidatePrompt(candidates)}`;
     const resolved = resolveFolderForCase(
       suggestedCaseNumber,
       candidates,
-      parsed.suggested_folder_label,
+      parsed.folder,
       documentType
     );
     suggestedFolderPath = resolved.path;
@@ -356,4 +349,16 @@ function resolveFolderForCase(
   }
 
   return { path: null, reasonSuffix: '' };
+}
+
+function formatClassificationReason(parsed: {
+  summary: string;
+  reasoning: string;
+  evidence: string;
+}): string {
+  const parts = [parsed.summary.trim(), parsed.reasoning.trim()];
+  if (parsed.evidence?.trim()) {
+    parts.push(`Evidence: ${parsed.evidence.trim()}`);
+  }
+  return parts.filter(Boolean).join(' ');
 }
