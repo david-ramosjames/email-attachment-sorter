@@ -745,6 +745,7 @@ export const slackService = {
         ],
       });
 
+      let fileAttached = false;
       try {
         await slackUploadFileToChannelWithFallback({
           channelId,
@@ -752,13 +753,14 @@ export const slackService = {
           buffer: opts.fileBuffer,
           mimeType: opts.item.attachment_mime_type,
         });
+        fileAttached = true;
       } catch (uploadErr) {
         logger.error('Case channel file attachment failed', {
           caseNumber: opts.caseRow.case_number,
           channelId,
           filename: opts.item.attachment_filename,
           err: String(uploadErr),
-          hint: 'Ensure the bot has files:write scope and is in this channel.',
+          hint: 'Add files:write scope to the Slack app and reinstall to the workspace.',
         });
       }
 
@@ -766,6 +768,7 @@ export const slackService = {
         caseNumber: opts.caseRow.case_number,
         channelId,
         filename: opts.item.attachment_filename,
+        fileAttached,
       });
       return true;
     } catch (err) {
