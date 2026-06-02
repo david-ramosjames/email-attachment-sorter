@@ -31,6 +31,10 @@ const envSchema = z.object({
   /** How often to scan Dropbox for new case folders (minutes). 0 = disabled. */
   DROPBOX_SYNC_INTERVAL_MINUTES: z.coerce.number().default(60),
   INBOUND_EMAIL_WEBHOOK_SECRET: optionalString,
+  /** Delete staged attachments from Storage after this many hours (default 1). */
+  TEMP_STORAGE_TTL_HOURS: z.coerce.number().min(0).default(1),
+  /** How often to purge expired temp files (minutes). 0 = only on Approve / Do Not Sort. */
+  TEMP_STORAGE_CLEANUP_INTERVAL_MINUTES: z.coerce.number().default(15),
 });
 
 export type Env = z.infer<typeof envSchema>;

@@ -3,6 +3,7 @@ import { getEnv } from './config/env.js';
 import { dropboxAuthMode, ensureDropboxAccessToken } from './services/dropboxAuth.js';
 import { getDropboxConfigIssue } from './config/env.js';
 import { startDropboxSyncScheduler } from './services/dropboxSyncService.js';
+import { startTempStorageCleanupScheduler } from './services/tempStorageCleanupService.js';
 import { logger } from './utils/logger.js';
 
 process.on('unhandledRejection', (reason) => {
@@ -36,4 +37,6 @@ app.listen(env.PORT, () => {
       logger.error('Dropbox token warmup failed', { err: String(err) });
     });
   }
+
+  startTempStorageCleanupScheduler(env.TEMP_STORAGE_CLEANUP_INTERVAL_MINUTES);
 });

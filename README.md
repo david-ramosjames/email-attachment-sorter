@@ -52,8 +52,9 @@ supabase/migrations/
 
 1. Create a Supabase project.
 2. Run `supabase/migrations/001_initial_schema.sql` in the SQL editor.
-3. Create a **public** storage bucket named `file-sorter-temp` (for attachment staging).
-4. Seed `cases` and `case_folders` with your active matters.
+3. Create storage bucket `file-sorter-temp` (private; see `supabase/migrations/007_file_sorter_temp_storage.sql`).
+4. **Recommended:** use a **dedicated Supabase project** for File Sorter so temp Storage + Postgres do not share connection limits with your other apps. Point Railway `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` at that project only.
+5. Seed `case_slack_channels` and run Dropbox sync (or your case index source).
 
 ### 2. Slack app
 

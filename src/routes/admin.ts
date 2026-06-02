@@ -9,6 +9,7 @@ import {
 } from '../db/supabase.js';
 import type { FileSorterItemStatus, MatchingHintType } from '../types/index.js';
 import { reindexDropboxFoldersForCase } from '../services/fileSorterWorkflow.js';
+import { cleanupExpiredTempStorage } from '../services/tempStorageCleanupService.js';
 import {
   getLastDropboxSyncAt,
   syncDropboxStructure,
@@ -79,6 +80,18 @@ adminRouter.post('/admin/matching-hints', async (req, res) => {
     logger.error('Admin create matching hint failed', { err: String(err) });
     res.status(500).json({
       error: err instanceof Error ? err.message : 'Failed to create matching hint',
+    });
+  }
+});
+
+adminRouter.post('/admin/cleanup-temp-storage', async (_req, res) => {
+  try {
+    const result = await cleanupExpiredTempStorage();
+    res.json(result);
+  } catch (err) {
+    logger.error('Temp storage cleanup failed', { err: String(err) });
+    res.status(500).json({
+      error: err instanceof Error ? err.message : 'Cleanup failed',
     });
   }
 });

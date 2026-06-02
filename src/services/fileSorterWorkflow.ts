@@ -21,6 +21,7 @@ import {
   uploadFileToDropbox,
 } from './dropboxService.js';
 import { FILE_ALREADY_IN_DROPBOX } from '../utils/approveErrors.js';
+import { clearTempStorageForItem, clearTempStorageForItems } from './tempStorageCleanupService.js';
 import {
   parseCaseNumberFromDropboxFolder,
   RJL_STANDARD_SUBFOLDERS,
@@ -389,6 +390,8 @@ export async function handleApprove(
 
     savedFiles.push({ filename: batchItem.attachment_filename, dropboxLink: permalink });
 
+    await clearTempStorageForItem(saved);
+
     const crossPosted = await slackService.postCaseChannelConfirmation({
       caseRow,
       item: saved,
@@ -484,6 +487,8 @@ export async function handleDoNotSort(itemId: string, slackUserId: string): Prom
   const batch = await getQueueBatchItems(trigger);
   const reviewedAt = new Date().toISOString();
 
+  const toClear: FileSorterItem[] = [];
+
   for (const batchItem of batch) {
     if (['saved', 'ignored'].includes(batchItem.status)) continue;
     await updateFileSorterItem(batchItem.id, {
@@ -492,7 +497,10 @@ export async function handleDoNotSort(itemId: string, slackUserId: string): Prom
       reviewed_at: reviewedAt,
     });
     await auditService.log(batchItem.id, 'ignored', { batch: true }, slackUserId);
+    toClear.push({ ...batchItem, status: 'ignored' });
   }
+
+  await clearTempStorageForItems(toClear);
 
   const primary = batch[0] ?? trigger;
   const caseRow = primary.suggested_case_number

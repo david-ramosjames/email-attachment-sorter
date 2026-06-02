@@ -141,6 +141,15 @@ export async function downloadTempAttachment(
   throw new Error(`Temp download failed: ${lastMessage}`);
 }
 
+export async function deleteTempAttachment(itemId: string, filename: string): Promise<void> {
+  const supabase = getSupabase();
+  const path = `${itemId}/${filename}`;
+  const { error } = await supabase.storage.from(TEMP_BUCKET).remove([path]);
+  if (error) {
+    throw new Error(`Temp delete failed: ${error.message} (path "${path}")`);
+  }
+}
+
 export async function searchCases(query: {
   caseNumber?: string;
   keywords?: string[];
@@ -653,6 +662,22 @@ export async function getQueueBatchItems(item: FileSorterItem): Promise<FileSort
     .order('created_at', { ascending: true });
   if (error || !data?.length) return [item];
   return data as FileSorterItem[];
+}
+
+/** Items that still have staged files in Storage past the TTL window. */
+export async function listFileSorterItemsWithTempStorageOlderThan(
+  hours: number
+): Promise<FileSorterItem[]> {
+  const cutoff = new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
+  const { data, error } = await getSupabase()
+    .from('file_sorter_items')
+    .select('*')
+    .not('temp_storage_url', 'is', null)
+    .lt('created_at', cutoff)
+    .order('created_at', { ascending: true })
+    .limit(500);
+  if (error) throw new Error(`List stale temp items failed: ${error.message}`);
+  return (data ?? []) as FileSorterItem[];
 }
 
 export async function listFileSorterItems(opts?: {
