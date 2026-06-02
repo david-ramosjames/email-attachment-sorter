@@ -93,8 +93,8 @@ function extractLabeledCaseNumber(text: string): string | null {
 }
 
 /**
- * Extract RJL case number references — never from phone/fax digit strings.
- * 3-digit case IDs (e.g. 512) only from folder-style "512. Client Name" or labeled refs.
+ * Explicit case number references only — labeled ("case 1448") or Dropbox folder style ("1448. Name").
+ * Bare digits in addresses, zips, etc. are left for the AI classifier to interpret.
  */
 function extractNumericCaseRefs(
   text: string,
@@ -109,13 +109,6 @@ function extractNumericCaseRefs(
   const labeled = extractLabeledCaseNumber(text);
   if (labeled && /^\d{2,5}$/.test(labeled) && !isPhoneLikeNumber(labeled)) {
     refs.add(labeled);
-  }
-
-  const masked = maskPhoneAndFaxNumbers(text);
-
-  // Bare 4–5 digit case numbers (e.g. 1321, 2760) after phones removed
-  for (const m of masked.matchAll(/\b(\d{4,5})\b/g)) {
-    refs.add(m[1]);
   }
 
   // 3-digit: only when already in Dropbox folder form (e.g. "512. NAME")

@@ -18,8 +18,9 @@ import { caseMatchingHintsPromptSection, documentSortHintsPromptSection } from '
 import { getCaseById, getFoldersForCase } from '../db/supabase.js';
 import { caseMatchesClientIdentity, identityConflictsWithCase } from '../utils/caseNameMatch.js';
 import { clientIdentityIsUnknown, emailRequestsClientIdentification } from '../utils/emailClientSignals.js';
+import { tokensFromPersonName } from '../utils/patientNameExtract.js';
 import { buildClassifierSystemPrompt } from '../constants/classifierSystemPrompt.js';
-import type { CaseFolder } from '../types/index.js';
+import type { CaseFolder, ClientIdentity } from '../types/index.js';
 
 let openai: OpenAI | null = null;
 
@@ -28,6 +29,28 @@ function getOpenAI(): OpenAI {
     openai = new OpenAI({ apiKey: getEnv().OPENAI_API_KEY });
   }
   return openai;
+}
+
+function effectiveClientIdentity(
+  ctx: MatchContext,
+  parsedClientName: string | null
+): ClientIdentity | null {
+  if (ctx.aiClientIdentity?.clientFullName?.trim()) {
+    return ctx.aiClientIdentity;
+  }
+  if (!parsedClientName?.trim()) {
+    return ctx.aiClientIdentity ?? null;
+  }
+  return {
+    clientFullName: parsedClientName.trim(),
+    nameTokens: tokensFromPersonName(parsedClientName),
+    caseNumberHint: null,
+    slackChannelHint: null,
+    documentKind: null,
+    isNewClientIntake: false,
+    confidence: 0.7,
+    reason: 'Classifier identified client name in document',
+  };
 }
 
 function buildCandidatePrompt(candidates: CaseCandidate[]): string {
@@ -204,6 +227,8 @@ ${buildCandidatePrompt(candidates)}`;
   let reason = formatClassificationReason(parsed);
   let caseClearedForIdentity = false;
 
+  const clientIdentity = effectiveClientIdentity(ctx, parsed.client_name);
+
   if (confidence < 0.6 && suggestedCaseNumber) {
     suggestedCaseNumber = null;
     documentType = 'needs_attention';
@@ -232,16 +257,14 @@ ${buildCandidatePrompt(candidates)}`;
     reason = 'AI returned case number not in candidate list — rejected';
   }
 
-  if (!clientUnknown && ctx.aiClientIdentity && suggestedCaseNumber) {
+  if (!clientUnknown && clientIdentity && suggestedCaseNumber) {
     const picked = candidates.find((c) => c.case.case_number === suggestedCaseNumber);
     if (
       picked &&
-      (identityConflictsWithCase(picked.case, ctx.aiClientIdentity) ||
-        !caseMatchesClientIdentity(picked.case, ctx.aiClientIdentity))
+      (identityConflictsWithCase(picked.case, clientIdentity) ||
+        !caseMatchesClientIdentity(picked.case, clientIdentity))
     ) {
-      const better = candidates.find((c) =>
-        caseMatchesClientIdentity(c.case, ctx.aiClientIdentity!)
-      );
+      const better = candidates.find((c) => caseMatchesClientIdentity(c.case, clientIdentity));
       if (better) {
         suggestedCaseNumber = better.case.case_number;
         reason += ` (matched case ${better.case.slack_channel_name})`;
@@ -250,7 +273,7 @@ ${buildCandidatePrompt(candidates)}`;
         documentType = 'needs_attention';
         confidence = Math.min(confidence, 0.4);
         caseClearedForIdentity = true;
-        reason += ` (no case in list matches client ${ctx.aiClientIdentity.clientFullName ?? 'unknown'})`;
+        reason += ` (no case in list matches client ${clientIdentity.clientFullName ?? 'unknown'})`;
       }
     }
   }
@@ -261,13 +284,12 @@ ${buildCandidatePrompt(candidates)}`;
     );
     const identityBlocks =
       batchCase &&
-      ctx.aiClientIdentity &&
-      identityConflictsWithCase(batchCase.case, ctx.aiClientIdentity);
-    const clientKnown = Boolean(ctx.aiClientIdentity?.clientFullName?.trim());
+      clientIdentity &&
+      identityConflictsWithCase(batchCase.case, clientIdentity);
+    const clientKnown = Boolean(clientIdentity?.clientFullName?.trim());
     if (batchCase && !identityBlocks && clientKnown) {
       const identityMatchesBatch =
-        ctx.aiClientIdentity &&
-        caseMatchesClientIdentity(batchCase.case, ctx.aiClientIdentity);
+        clientIdentity && caseMatchesClientIdentity(batchCase.case, clientIdentity);
       const shouldUseBatch =
         suggestedCaseNumber === ctx.batchSharedCaseNumber ||
         (identityMatchesBatch &&

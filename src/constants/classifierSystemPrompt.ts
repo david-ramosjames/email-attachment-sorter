@@ -101,6 +101,8 @@ Do NOT assign based on:
 * Police report number
 * Claim number
 * Address
+* Street number (e.g. "1448 Wild Basin Ledge" is an address — NOT case 1448)
+* Zip code (78746 is not a case number)
 * Investigator name
 * Attorney name
 * Partial surname match
@@ -119,6 +121,12 @@ Israel Mejia → Israel Mejia
 
 INCORRECT:
 Israel Mejia → Javier Mejias
+
+INCORRECT:
+1448 Wild Basin Ledge (billing address) → case 1448
+
+CORRECT:
+1448 Wild Basin Ledge → client identified by name only; if no name match in candidate list, suggested_case_number = null
 
 Choose suggested_case_number ONLY from the candidate list in the user message (exact case_number string).
 
