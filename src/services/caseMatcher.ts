@@ -6,7 +6,7 @@ import {
   listAllCases,
   searchCases,
 } from '../db/supabase.js';
-import { MAX_AI_CANDIDATES } from '../constants/classification.js';
+import { MAX_AI_CANDIDATES, MIN_EXTRACTED_TEXT_CHARS } from '../constants/classification.js';
 import type { Case, CaseCandidate, MatchContext } from '../types/index.js';
 import {
   clientTokensFromFilename,
@@ -456,6 +456,77 @@ async function widenCandidatesForAi(
       terms,
       added: widened.map((c) => c.case.case_number),
     });
+  }
+
+  return widened;
+}
+
+/** Last-resort case search from vision/OCR attachment text before document-only AI classification. */
+export async function widenCandidatesFromDocument(
+  ctx: MatchContext
+): Promise<CaseCandidate[]> {
+  if ((ctx.documentExcerpt?.trim().length ?? 0) < MIN_EXTRACTED_TEXT_CHARS) {
+    return [];
+  }
+
+  let widened = await widenCandidatesForAi(ctx, []);
+  if (widened.length) return widened;
+
+  const docText = ctx.documentExcerpt ?? '';
+  const tokens = [
+    ...new Set(
+      docText
+        .toLowerCase()
+        .split(/[^a-z]+/)
+        .map((w) => w.trim())
+        .filter(
+          (w) =>
+            w.length >= 3 &&
+            w.length <= 24 &&
+            !SEARCH_STOPWORDS.has(w) &&
+            !isPhoneLikeNumber(w) &&
+            !/^\d+$/.test(w)
+        )
+    ),
+  ].slice(0, 15);
+
+  const seen = new Set<string>();
+  for (const term of tokens) {
+    const rows = await searchCases({ keywords: [term] });
+    for (const caseRow of rows) {
+      if (seen.has(caseRow.case_number)) continue;
+      seen.add(caseRow.case_number);
+      const folders = await getFoldersForCase(caseRow.case_number);
+      widened.push({
+        case: caseRow,
+        folders,
+        matchScore: 1,
+        matchReasons: [`Document text search: "${term}" matched case index`],
+      });
+      if (widened.length >= MAX_AI_CANDIDATES) break;
+    }
+    if (widened.length >= MAX_AI_CANDIDATES) break;
+  }
+
+  if (widened.length) {
+    logger.info('Document-driven case candidate widen', {
+      attachmentFilename: ctx.attachmentFilename,
+      terms: tokens.slice(0, 8),
+      cases: widened.map((c) => c.case.slack_channel_name),
+    });
+  }
+
+  if (ctx.aiClientIdentity && widened.length) {
+    const before = widened.length;
+    widened = widened.filter(
+      (c) => !identityConflictsWithCase(c.case, ctx.aiClientIdentity!)
+    );
+    if (widened.length < before) {
+      logger.info('Document widen removed conflicting cases', {
+        client: ctx.aiClientIdentity.clientFullName,
+        removed: before - widened.length,
+      });
+    }
   }
 
   return widened;

@@ -11,7 +11,6 @@ import {
   uploadTempAttachment,
 } from '../db/supabase.js';
 import { extractClientIdentity } from './clientIdentityAi.js';
-import { findCaseCandidates } from './caseMatcher.js';
 import { classifyDocument } from './aiClassifier.js';
 import { extractDocumentExcerpt } from './documentExtractor.js';
 import { postEmailItemsToSlack, type QueuedInboundItem } from './emailBatchSlack.js';
@@ -109,7 +108,7 @@ export async function processInboundEmail(
     sharedConfidence: 0,
   };
 
-  await preflightEmailBatchCase(payloadWithLinks, batch, forwardedEmailContext);
+  await preflightEmailBatchNames(payloadWithLinks, batch);
 
   const attachments = [...payloadWithLinks.attachments].sort(attachmentSortRank);
 
@@ -247,8 +246,15 @@ async function processSingleAttachment(
     batch.patientNames = [...new Set([...batch.patientNames, matchContext.aiClientIdentity.clientFullName])];
   }
 
-  const candidates = await findCaseCandidates(matchContext);
-  let classification = await classifyDocument(matchContext, candidates);
+  let classification = await classifyDocument(matchContext);
+
+  logger.info('Classification complete', {
+    itemId,
+    documentExcerptChars: matchContext.documentExcerpt?.length ?? 0,
+    client: classification.reason.slice(0, 120),
+    confidence: classification.confidence,
+    suggestedCase: classification.suggestedCaseNumber,
+  });
 
   if (isExternalLink) {
     classification = {
@@ -256,27 +262,12 @@ async function processSingleAttachment(
       needsAttention: true,
       reason: `${classification.reason} (Google Drive / external link — download manually; cannot auto-file to Dropbox)`,
     };
-    if (forwardedEmailContext) {
-      classification = {
-        ...classification,
-        reason: `Original request: ${forwardedEmailContext}. ${classification.reason}`,
-      };
-    }
   } else if (forwardedEmailContext && !classification.reason.includes(forwardedEmailContext.slice(0, 40))) {
     classification = {
       ...classification,
       reason: `Original request: ${forwardedEmailContext}. ${classification.reason}`,
     };
   }
-
-  logger.info('Classification complete', {
-    itemId,
-    candidateCount: candidates.length,
-    candidateCases: candidates.map((c) => c.case.slack_channel_name),
-    client: classification.reason.slice(0, 120),
-    confidence: classification.confidence,
-    suggestedCase: classification.suggestedCaseNumber,
-  });
 
   if (
     classification.suggestedCaseNumber &&
@@ -341,7 +332,6 @@ async function processSingleAttachment(
     suggestedCaseNumber: classification.suggestedCaseNumber,
     confidence: classification.confidence,
     reason: classification.reason,
-    candidateCount: candidates.length,
     documentExtraction,
     aiClientIdentity: matchContext.aiClientIdentity,
   });
@@ -363,51 +353,16 @@ function attachmentSortRank(a: InboundAttachment): number {
   return 1;
 }
 
-/** Resolve likely case from subject/body before any attachment is classified. */
-async function preflightEmailBatchCase(
+/** Seed batch patient names from subject/body before attachments are classified. */
+function preflightEmailBatchNames(
   payload: InboundEmailPayload,
-  batch: EmailBatchState,
-  forwardedEmailContext: string | null
-): Promise<void> {
-  const primaryFilename =
-    payload.attachments.find((a) => /\.(docx?|pdf)$/i.test(a.filename))?.filename ??
-    payload.attachments[0]?.filename ??
-    '';
-
-  const matchContext: MatchContext = {
-    fromEmail: payload.fromEmail,
-    toEmails: payload.toEmails,
-    ccEmails: payload.ccEmails,
-    subject: payload.subject,
-    bodyExcerpt: payload.bodyExcerpt,
-    attachmentFilename: primaryFilename,
-    emailPatientNames: batch.patientNames,
-    siblingAttachmentFilenames: payload.attachments.map((a) => a.filename),
-    forwardedEmailContext: forwardedEmailContext ?? undefined,
-  };
-
-  matchContext.aiClientIdentity = await extractClientIdentity(matchContext);
-  if (matchContext.aiClientIdentity.clientFullName) {
-    batch.patientNames = [
-      ...new Set([...batch.patientNames, matchContext.aiClientIdentity.clientFullName]),
-    ];
-    matchContext.emailPatientNames = batch.patientNames;
-  }
-
-  const candidates = await findCaseCandidates(matchContext);
-  const top = candidates[0];
-  if (
-    top &&
-    top.matchScore >= 40 &&
-    !clientIdentityIsUnknown({ ...matchContext, aiClientIdentity: matchContext.aiClientIdentity })
-  ) {
-    batch.sharedCaseNumber = top.case.case_number;
-    batch.sharedConfidence = 0.7;
-    logger.info('Email preflight matched case for batch', {
-      caseNumber: top.case.case_number,
-      slackChannel: top.case.slack_channel_name,
-      score: top.matchScore,
-    });
+  batch: EmailBatchState
+): void {
+  const fromSubjectBody = extractPatientNamesFromText(
+    [payload.subject, payload.bodyExcerpt].join('\n')
+  );
+  if (fromSubjectBody.length) {
+    batch.patientNames = [...new Set([...batch.patientNames, ...fromSubjectBody])];
   }
 }
 

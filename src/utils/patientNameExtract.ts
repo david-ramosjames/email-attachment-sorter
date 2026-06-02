@@ -29,6 +29,17 @@ export function extractPatientNamesFromText(text: string): string[] {
     add(m[1]);
   }
 
+  for (const m of text.matchAll(
+    /(?:Patient\s*Name|Pt\.?\s*Name|(?:^|\n)\s*RE)\s*:?\s*([A-Za-z][A-Za-z\s.'-]{3,60})/gi
+  )) {
+    add(m[1]);
+  }
+
+  for (const m of text.matchAll(/(?:For|Regarding|Re)\s*:\s*([A-Za-z][A-Za-z\s.'-]{3,60})/gi)) {
+    const name = m[1].trim();
+    if (!/^(?:your|the|a|an|records|billing|fax)\b/i.test(name)) add(name);
+  }
+
   const attachedAre = text.match(
     /Attached are\s+(.+?)\s+records?\s+and\s+billing/i
   );

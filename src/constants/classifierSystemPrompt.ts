@@ -83,7 +83,18 @@ Stronger evidence always overrides weaker evidence.
 
 ---
 
-## CASE MATCHING RULES
+## CASE INDEX MATCHING
+
+You receive the full RJL case index: each row has case_number and client (Slack channel slug + Dropbox folder name).
+
+Match the PI client named in the **attachment text** (or email body) to the correct row:
+
+* Compare first AND last name to the client label (e.g. "javiermejias-etal-625" → Javier Mejias)
+* Dropbox folder often includes the client name (e.g. "625. Javier Mejias")
+* Do not match on street numbers, zip codes, phone numbers, or fax IDs in the document
+* If the client clearly appears in attachment text but no index row fits, return suggested_case_number = null
+
+---
 
 A case may ONLY be assigned when:
 
