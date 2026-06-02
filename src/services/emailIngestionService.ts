@@ -26,6 +26,12 @@ import type {
 import { extractPatientNamesFromText } from '../utils/patientNameExtract.js';
 import { buildSmartBodyExcerpt } from '../utils/emailBodyExcerpt.js';
 import { clientIdentityIsUnknown } from '../utils/emailClientSignals.js';
+import {
+  extractExternalFileLinks,
+  externalLinkToAttachment,
+  isExternalLinkAttachment,
+} from '../utils/externalFileLinks.js';
+import { extractForwardedEmailContext } from '../utils/forwardedEmailContext.js';
 import { isIgnoredInboundSender } from '../constants/ignoredSenders.js';
 import { logger } from '../utils/logger.js';
 
@@ -67,15 +73,32 @@ export async function processInboundEmail(
     return { processed: 0, skipped: 1 };
   }
 
-  if (!payload.attachments.length) {
-    logger.info('Skipping email with no attachments', {
+  const rawBody = payload.bodyExcerpt;
+  const externalLinks = extractExternalFileLinks(rawBody);
+  const linkAttachments = externalLinks.map(externalLinkToAttachment);
+  const bodyExcerpt = buildSmartBodyExcerpt(rawBody);
+  const enrichedPayload = { ...payload, bodyExcerpt };
+  const forwardedEmailContext = extractForwardedEmailContext(rawBody);
+
+  const allAttachments = [...payload.attachments, ...linkAttachments];
+
+  if (externalLinks.length) {
+    logger.info('External file links found in email', {
+      gmailMessageId: payload.gmailMessageId,
+      fileAttachmentCount: payload.attachments.length,
+      externalLinkCount: externalLinks.length,
+      urls: externalLinks.map((l) => l.url),
+    });
+  }
+
+  if (!allAttachments.length) {
+    logger.info('Skipping email with no attachments or external file links', {
       gmailMessageId: payload.gmailMessageId,
     });
     return { processed: 0, skipped: 1 };
   }
 
-  const bodyExcerpt = buildSmartBodyExcerpt(payload.bodyExcerpt);
-  const enrichedPayload = { ...payload, bodyExcerpt };
+  const payloadWithLinks = { ...enrichedPayload, attachments: allAttachments };
 
   const patientNames = extractPatientNamesFromText(
     [enrichedPayload.subject, bodyExcerpt].join('\n')
@@ -86,14 +109,19 @@ export async function processInboundEmail(
     sharedConfidence: 0,
   };
 
-  await preflightEmailBatchCase(enrichedPayload, batch);
+  await preflightEmailBatchCase(payloadWithLinks, batch, forwardedEmailContext);
 
-  const attachments = [...enrichedPayload.attachments].sort(attachmentSortRank);
+  const attachments = [...payloadWithLinks.attachments].sort(attachmentSortRank);
 
   const queued: QueuedInboundItem[] = [];
   let skipped = 0;
   for (const attachment of attachments) {
-    const outcome = await processSingleAttachment(enrichedPayload, attachment, batch);
+    const outcome = await processSingleAttachment(
+      payloadWithLinks,
+      attachment,
+      batch,
+      forwardedEmailContext
+    );
     if (outcome === 'skipped') {
       skipped++;
     } else {
@@ -102,7 +130,7 @@ export async function processInboundEmail(
   }
 
   if (queued.length > 0) {
-    await postEmailItemsToSlack(enrichedPayload, queued, batch.sharedCaseNumber);
+    await postEmailItemsToSlack(payloadWithLinks, queued, batch.sharedCaseNumber);
   }
 
   return { processed: queued.length, skipped };
@@ -111,7 +139,8 @@ export async function processInboundEmail(
 async function processSingleAttachment(
   payload: InboundEmailPayload,
   attachment: InboundAttachment,
-  batch: EmailBatchState
+  batch: EmailBatchState,
+  forwardedEmailContext: string | null
 ): Promise<QueuedInboundItem | 'skipped'> {
   const existing = await getFileSorterItemByGmailAttachment(
     payload.gmailMessageId,
@@ -128,22 +157,29 @@ async function processSingleAttachment(
   }
 
   const itemId = randomUUID();
-  const buffer = await resolveAttachmentBuffer(itemId, attachment);
+  const isExternalLink = isExternalLinkAttachment(attachment);
 
   let tempStorageUrl: string | null = null;
-  try {
-    tempStorageUrl = await uploadTempAttachment(
-      itemId,
-      attachment.filename,
-      buffer,
-      attachment.mimeType
-    );
-  } catch (err) {
-    logger.warn('Temp storage upload failed; Approve will fail until bucket exists', {
-      itemId,
-      filename: attachment.filename,
-      err: err instanceof Error ? err.message : String(err),
-    });
+  let fileBuffer: Buffer | null = null;
+
+  if (isExternalLink) {
+    tempStorageUrl = attachment.downloadUrl?.trim() ?? null;
+  } else {
+    fileBuffer = await resolveAttachmentBuffer(itemId, attachment);
+    try {
+      tempStorageUrl = await uploadTempAttachment(
+        itemId,
+        attachment.filename,
+        fileBuffer,
+        attachment.mimeType
+      );
+    } catch (err) {
+      logger.warn('Temp storage upload failed; Approve will fail until bucket exists', {
+        itemId,
+        filename: attachment.filename,
+        err: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 
   const senderPriorCaseNumbers = await getSenderHistory(payload.fromEmail);
@@ -163,36 +199,40 @@ async function processSingleAttachment(
     emailPatientNames: batch.patientNames,
     siblingAttachmentFilenames: payload.attachments.map((a) => a.filename),
     batchSharedCaseNumber: batch.sharedCaseNumber ?? undefined,
+    externalFileUrl: isExternalLink ? attachment.downloadUrl : undefined,
+    forwardedEmailContext: forwardedEmailContext ?? undefined,
   };
 
   let documentExtraction: { method: string; excerptLength: number } | null = null;
 
-  const isFilingDocument =
-    /\.(pdf|docx?)$/i.test(attachment.filename) ||
-    attachment.mimeType.includes('pdf') ||
-    attachment.mimeType.includes('word') ||
-    attachment.mimeType.includes('msword') ||
-    attachment.mimeType.startsWith('image/');
+  if (!isExternalLink && fileBuffer) {
+    const isFilingDocument =
+      /\.(pdf|docx?)$/i.test(attachment.filename) ||
+      attachment.mimeType.includes('pdf') ||
+      attachment.mimeType.includes('word') ||
+      attachment.mimeType.includes('msword') ||
+      attachment.mimeType.startsWith('image/');
 
-  if (isFilingDocument) {
-    const extracted = await extractDocumentExcerpt(
-      buffer,
-      attachment.mimeType,
-      attachment.filename
-    );
-    if (extracted?.excerpt) {
-      matchContext.documentExcerpt = extracted.excerpt;
-      const fromDoc = extractPatientNamesFromText(extracted.excerpt);
-      if (fromDoc.length) {
-        matchContext.emailPatientNames = [
-          ...new Set([...(matchContext.emailPatientNames ?? []), ...fromDoc]),
-        ];
-        batch.patientNames = [...new Set([...batch.patientNames, ...fromDoc])];
+    if (isFilingDocument) {
+      const extracted = await extractDocumentExcerpt(
+        fileBuffer,
+        attachment.mimeType,
+        attachment.filename
+      );
+      if (extracted?.excerpt) {
+        matchContext.documentExcerpt = extracted.excerpt;
+        const fromDoc = extractPatientNamesFromText(extracted.excerpt);
+        if (fromDoc.length) {
+          matchContext.emailPatientNames = [
+            ...new Set([...(matchContext.emailPatientNames ?? []), ...fromDoc]),
+          ];
+          batch.patientNames = [...new Set([...batch.patientNames, ...fromDoc])];
+        }
+        documentExtraction = {
+          method: extracted.method,
+          excerptLength: extracted.excerpt.length,
+        };
       }
-      documentExtraction = {
-        method: extracted.method,
-        excerptLength: extracted.excerpt.length,
-      };
     }
   }
 
@@ -208,7 +248,26 @@ async function processSingleAttachment(
   }
 
   const candidates = await findCaseCandidates(matchContext);
-  const classification = await classifyDocument(matchContext, candidates);
+  let classification = await classifyDocument(matchContext, candidates);
+
+  if (isExternalLink) {
+    classification = {
+      ...classification,
+      needsAttention: true,
+      reason: `${classification.reason} (Google Drive / external link — download manually; cannot auto-file to Dropbox)`,
+    };
+    if (forwardedEmailContext) {
+      classification = {
+        ...classification,
+        reason: `Original request: ${forwardedEmailContext}. ${classification.reason}`,
+      };
+    }
+  } else if (forwardedEmailContext && !classification.reason.includes(forwardedEmailContext.slice(0, 40))) {
+    classification = {
+      ...classification,
+      reason: `Original request: ${forwardedEmailContext}. ${classification.reason}`,
+    };
+  }
 
   logger.info('Classification complete', {
     itemId,
@@ -229,7 +288,8 @@ async function processSingleAttachment(
     batch.sharedConfidence = classification.confidence;
   }
 
-  const status = classification.needsAttention ? 'needs_attention' : 'pending_review';
+  const status =
+    classification.needsAttention || isExternalLink ? 'needs_attention' : 'pending_review';
 
   const { item, created } = await createFileSorterItemIfNew({
     id: itemId,
@@ -295,8 +355,9 @@ async function processSingleAttachment(
   return { item, caseRow };
 }
 
-/** Process documents with extractable text before generic email signature images. */
+/** Process documents with extractable text before generic email signature images; links last. */
 function attachmentSortRank(a: InboundAttachment): number {
+  if (isExternalLinkAttachment(a)) return 3;
   if (/\.(docx?|pdf)$/i.test(a.filename)) return 0;
   if (/\.(jpe?g|png|gif|webp|tiff?)$/i.test(a.filename)) return 2;
   return 1;
@@ -305,7 +366,8 @@ function attachmentSortRank(a: InboundAttachment): number {
 /** Resolve likely case from subject/body before any attachment is classified. */
 async function preflightEmailBatchCase(
   payload: InboundEmailPayload,
-  batch: EmailBatchState
+  batch: EmailBatchState,
+  forwardedEmailContext: string | null
 ): Promise<void> {
   const primaryFilename =
     payload.attachments.find((a) => /\.(docx?|pdf)$/i.test(a.filename))?.filename ??
@@ -321,6 +383,7 @@ async function preflightEmailBatchCase(
     attachmentFilename: primaryFilename,
     emailPatientNames: batch.patientNames,
     siblingAttachmentFilenames: payload.attachments.map((a) => a.filename),
+    forwardedEmailContext: forwardedEmailContext ?? undefined,
   };
 
   matchContext.aiClientIdentity = await extractClientIdentity(matchContext);

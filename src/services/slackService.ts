@@ -15,6 +15,10 @@ import {
   formatSlackUserMentions,
   slackSectionWithLeadingMentions,
 } from '../utils/slackText.js';
+import {
+  externalLinkUrlFromItem,
+  isExternalLinkItem,
+} from '../utils/externalFileLinks.js';
 import { parseUserMentionsFromSlackTopic } from '../utils/slackCaseParser.js';
 import { getSlackChannelIdByNameMap, ensureBotInChannel, getConversationInfo } from './slackChannels.js';
 
@@ -333,9 +337,23 @@ function formatAttachmentList(items: FileSorterItem[]): string {
         ? folderLabelFromPath(i.suggested_folder_path)
         : null;
       const folderNote = folder && folder !== '—' ? ` → ${folder}` : '';
-      return `• \`${i.attachment_filename}\`${folderNote}`;
+      const external = isExternalLinkItem(i) ? ' _(external link)_' : '';
+      return `• ${i.attachment_filename}${external}${folderNote}`;
     })
     .join('\n');
+}
+
+function formatExternalLinksSection(items: FileSorterItem[]): string | null {
+  const links = items
+    .map((i) => {
+      const url = externalLinkUrlFromItem(i);
+      return url ? slackMrkdwnLink(url, i.attachment_filename) : null;
+    })
+    .filter(Boolean);
+  if (!links.length) return null;
+  return (
+    `:link: *External files (not attached — download manually):*\n` + links.map((l) => `• ${l}`).join('\n')
+  );
 }
 
 function formatConfidenceRange(items: FileSorterItem[]): string {
@@ -433,7 +451,11 @@ function buildQueueBlocks(
   const toLine = [...item.to_emails, ...item.cc_emails].filter(Boolean).join(', ') || '—';
   const attachmentDisplay = batch
     ? formatAttachmentList(items)
-    : item.attachment_filename;
+    : isExternalLinkItem(item)
+      ? `${item.attachment_filename} (external link)`
+      : item.attachment_filename;
+
+  const externalLinksBlock = formatExternalLinksSection(items);
 
   const headerText = buildQueueHeaderText(status, batch, items.length);
 
@@ -483,6 +505,25 @@ function buildQueueBlocks(
       },
     },
   ];
+
+  if (externalLinksBlock) {
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: externalLinksBlock },
+    });
+  }
+
+  if (items.some(isExternalLinkItem)) {
+    blocks.push({
+      type: 'context',
+      elements: [
+        {
+          type: 'mrkdwn',
+          text: '_External links cannot be auto-filed — open the link, download, and file to the suggested folder._',
+        },
+      ],
+    });
+  }
 
   if (status === 'saved') {
     const successExtras = [

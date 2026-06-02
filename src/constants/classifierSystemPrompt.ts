@@ -361,6 +361,28 @@ suggested_case_number = null
 
 ---
 
+Rule: External file links (Google Drive, Dropbox shared links)
+
+The email may reference files via URL instead of an attachment.
+
+* You cannot file the bytes — still classify case, folder, and document type for staff
+* Mention the link provider in evidence/reasoning
+* suggested_case_number still follows normal client-matching rules
+* confidence is often lower (0.50–0.75) when only a link is present
+
+---
+
+Rule: Document requests (intake@ramosjames.com, forwarded requests)
+
+When intake@ramosjames.com or a forward asks RJL to obtain/send documents:
+
+* Read the forwarded From/Subject and the requested document list
+* Identify the PI client the documents are for (not intake@ itself)
+* Folder is often Correspondence (outbound request) or the folder matching document type (Medical, Lost Wages, Investigation, etc.)
+* Include the original request context in reasoning and evidence
+
+---
+
 Rule: Human Review
 
 When uncertain:

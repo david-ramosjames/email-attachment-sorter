@@ -97,7 +97,7 @@ Subject: ${ctx.subject}
 Email body:
 ${bodyForAi}
 
-Attachment filename: ${ctx.attachmentFilename}${siblings}${attachmentSection}${caseMatchingHintsPromptSection(ctx.caseMatchingHints)}`;
+Attachment filename: ${ctx.attachmentFilename}${siblings}${attachmentSection}${caseMatchingHintsPromptSection(ctx.caseMatchingHints)}${ctx.forwardedEmailContext ? `\n\nForwarded / original request:\n${ctx.forwardedEmailContext}` : ''}${ctx.externalFileUrl ? `\n\nExternal file link:\n${ctx.externalFileUrl}` : ''}`;
 
   try {
     const response = await getOpenAI().chat.completions.create({

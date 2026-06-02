@@ -99,6 +99,10 @@ export interface MatchContext {
   caseMatchingHints?: MatchingHint[];
   /** How to classify/file mail from this sender or provider */
   documentSortHints?: MatchingHint[];
+  /** Google Drive / cloud link — no file bytes to upload */
+  externalFileUrl?: string;
+  /** Parsed from forwarded thread (e.g. intake@ request) */
+  forwardedEmailContext?: string;
 }
 
 export type MatchingHintType = 'case' | 'sort';

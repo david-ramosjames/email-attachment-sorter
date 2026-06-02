@@ -16,6 +16,10 @@ export function buildSmartBodyExcerpt(body: string, maxChars = 8000): string {
     /authorize[\s\S]{0,300}?employment\s+records/gi,
     /Forwarded message[\s\S]{0,400}/gi,
     /From:\s*Jorge[^\n]*/gi,
+    /From:\s*[^\n]*intake@ramosjames\.com[^\n]*/gi,
+    /intake@ramosjames\.com[\s\S]{0,400}/gi,
+    /(?:requesting|please provide|please send)[^\n]{0,200}/gi,
+    /https?:\/\/(?:drive|docs)\.google\.com\/[^\s<>"']+/gi,
   ];
 
   for (const pattern of signalPatterns) {

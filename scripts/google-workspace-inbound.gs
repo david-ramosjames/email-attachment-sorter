@@ -68,7 +68,7 @@ function debugInbox() {
 
 function inboxQuery_() {
   var query =
-    'has:attachment in:inbox -in:trash -label:' + SCRIPT_CONFIG.PROCESSED_LABEL;
+    '(has:attachment OR "drive.google.com") in:inbox -in:trash -label:' + SCRIPT_CONFIG.PROCESSED_LABEL;
   var hours = SCRIPT_CONFIG.LOOKBACK_HOURS;
   if (hours && hours > 0) {
     query += ' newer_than:' + hours + 'h';
@@ -126,10 +126,10 @@ function processThread_(thread) {
   messages.forEach(function (message) {
     if (message.isInTrash()) return;
     if (!isWithinLookback_(message)) return;
-    if (!message.getAttachments().length) return;
+    if (!message.getAttachments().length && !hasDriveLinksInBody_(message)) return;
     if (hasLabel_(message, SCRIPT_CONFIG.PROCESSED_LABEL)) return;
 
-    if (!hasProcessableAttachments_(message)) {
+    if (!hasProcessableContent_(message)) {
       markProcessed_(message);
       Logger.log('Skipped (calendar invite only): %s (%s)', message.getSubject(), message.getId());
       return;
@@ -173,8 +173,8 @@ function postMessageToWebhook_(message) {
     });
   });
 
-  if (!payloadAttachments.length) {
-    throw new Error('No attachments within size limit');
+  if (!payloadAttachments.length && !hasDriveLinksInBody_(message)) {
+    throw new Error('No attachments within size limit and no Google Drive links in body');
   }
 
   const payload = {
@@ -183,10 +183,7 @@ function postMessageToWebhook_(message) {
     toEmails: parseAddressList_(message.getTo()),
     ccEmails: parseAddressList_(message.getCc()),
     subject: message.getSubject() || '',
-    bodyExcerpt: (message.getPlainBody() || message.getBody() || '')
-      .replace(/\s+/g, ' ')
-      .trim()
-      .slice(0, SCRIPT_CONFIG.MAX_BODY_CHARS),
+    bodyExcerpt: buildBodyExcerpt_(message),
     receivedAt: message.getDate().toISOString(),
     attachments: payloadAttachments,
   };
@@ -229,6 +226,43 @@ function hasProcessableAttachments_(message) {
     if (att.getSize() > SCRIPT_CONFIG.MAX_ATTACHMENT_BYTES) return false;
     return true;
   });
+}
+
+function buildBodyExcerpt_(message) {
+  var plain = (message.getPlainBody() || '').replace(/\r\n/g, '\n').trim();
+  var html = message.getBody() || '';
+  var parts = [plain];
+
+  var driveRe = /https?:\/\/(?:drive|docs)\.google\.com\/[^\s"'<>]+/gi;
+  var hrefRe = /href=["'](https?:\/\/(?:drive|docs)\.google\.com[^"']+)["']/gi;
+  var seen = {};
+  var match;
+
+  while ((match = driveRe.exec(plain)) !== null) {
+    seen[match[0]] = true;
+  }
+  while ((match = driveRe.exec(html)) !== null) {
+    if (!seen[match[0]]) parts.push(match[0]);
+    seen[match[0]] = true;
+  }
+  while ((match = hrefRe.exec(html)) !== null) {
+    var href = match[1];
+    if (href && !seen[href]) {
+      parts.push(href);
+      seen[href] = true;
+    }
+  }
+
+  return parts.join('\n').replace(/\s+/g, ' ').trim().slice(0, SCRIPT_CONFIG.MAX_BODY_CHARS);
+}
+
+function hasDriveLinksInBody_(message) {
+  var body = message.getPlainBody() || message.getBody() || '';
+  return /drive\.google\.com\/file\/d\//i.test(body) || /docs\.google\.com\//i.test(body);
+}
+
+function hasProcessableContent_(message) {
+  return hasProcessableAttachments_(message) || hasDriveLinksInBody_(message);
 }
 
 function markProcessed_(message) {

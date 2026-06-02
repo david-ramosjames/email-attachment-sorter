@@ -28,6 +28,7 @@ import {
 } from '../constants/rjlFolders.js';
 import { slackService } from './slackService.js';
 import { auditService } from './auditService.js';
+import { isExternalLinkItem } from '../utils/externalFileLinks.js';
 import { parseThreadReplies } from '../utils/threadParser.js';
 import type { SlackThreadContext } from './slackService.js';
 import { logger } from '../utils/logger.js';
@@ -322,8 +323,14 @@ export async function handleApprove(
   const savedFiles: Array<{ filename: string; dropboxLink: string }> = [];
   const reviewedAt = new Date().toISOString();
   let duplicateCount = 0;
+  let externalLinkCount = 0;
 
   for (const batchItem of pending) {
+    if (isExternalLinkItem(batchItem)) {
+      externalLinkCount++;
+      continue;
+    }
+
     const folderPath = folderPathForBatchItem(batchItem, caseRow, threadFolderPath);
     if (!folderPath) {
       throw new Error(
@@ -441,6 +448,11 @@ export async function handleApprove(
   if (!savedFiles.length) {
     if (duplicateCount > 0) {
       throw new Error(FILE_ALREADY_IN_DROPBOX);
+    }
+    if (externalLinkCount > 0) {
+      throw new Error(
+        'External file links (Google Drive, etc.) cannot be auto-filed — open the links in the queue card, download, and file manually.'
+      );
     }
     throw new Error('No files were saved — check folder overrides in thread.');
   }

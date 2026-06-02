@@ -20,6 +20,7 @@ import { caseMatchesClientIdentity, identityConflictsWithCase } from '../utils/c
 import { clientIdentityIsUnknown, emailRequestsClientIdentification } from '../utils/emailClientSignals.js';
 import { tokensFromPersonName } from '../utils/patientNameExtract.js';
 import { buildClassifierSystemPrompt } from '../constants/classifierSystemPrompt.js';
+import { extractForwardedEmailContext } from '../utils/forwardedEmailContext.js';
 import type { CaseFolder, ClientIdentity } from '../types/index.js';
 
 let openai: OpenAI | null = null;
@@ -175,6 +176,16 @@ export async function classifyDocument(
     ? `\nEarlier attachment in this email was filed to case_number="${ctx.batchSharedCaseNumber}" — use same case unless this document is clearly for a different client.`
     : '';
 
+  const forwardedText =
+    ctx.forwardedEmailContext?.trim() || extractForwardedEmailContext(ctx.bodyExcerpt);
+  const forwardedBlock = forwardedText
+    ? `\nForwarded / original request context:\n${forwardedText}`
+    : '';
+
+  const externalLinkSection = ctx.externalFileUrl
+    ? `\nExternal file link (not attached — staff must download manually): ${ctx.externalFileUrl}`
+    : '';
+
   const userPrompt = `From (sender): ${ctx.fromEmail}
 To: ${ctx.toEmails.join(', ') || '(not provided)'}
 Cc: ${ctx.ccEmails.join(', ') || '(none)'}
@@ -183,7 +194,7 @@ Subject: ${ctx.subject}
 Email body:
 ${bodyForAi}
 
-Attachment filename: ${ctx.attachmentFilename}${identityHint}${caseMatchingHintsPromptSection(ctx.caseMatchingHints)}${documentSortHintsPromptSection(ctx.documentSortHints)}${siblingSection}${batchSection}${senderSection}${documentSection}
+Attachment filename: ${ctx.attachmentFilename}${identityHint}${caseMatchingHintsPromptSection(ctx.caseMatchingHints)}${documentSortHintsPromptSection(ctx.documentSortHints)}${siblingSection}${batchSection}${forwardedBlock}${externalLinkSection}${senderSection}${documentSection}
 
 Candidate cases (choose ONLY from this list, exact case_number):
 ${buildCandidatePrompt(candidates)}`;
