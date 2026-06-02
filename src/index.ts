@@ -2,6 +2,8 @@ import { createApp } from './app.js';
 import { getEnv } from './config/env.js';
 import { dropboxAuthMode, ensureDropboxAccessToken } from './services/dropboxAuth.js';
 import { getDropboxConfigIssue } from './config/env.js';
+import { startCaseSheetSyncScheduler } from './services/caseSheetSyncService.js';
+import { startSlackCaseSyncScheduler } from './services/slackCaseSyncService.js';
 import { startDropboxSyncScheduler } from './services/dropboxSyncService.js';
 import { startTempStorageCleanupScheduler } from './services/tempStorageCleanupService.js';
 import { logger } from './utils/logger.js';
@@ -39,4 +41,6 @@ app.listen(env.PORT, () => {
   }
 
   startTempStorageCleanupScheduler(env.TEMP_STORAGE_CLEANUP_INTERVAL_MINUTES);
+  startCaseSheetSyncScheduler(env.CASE_SHEET_SYNC_INTERVAL_MINUTES);
+  startSlackCaseSyncScheduler(env.SLACK_CASE_SYNC_INTERVAL_MINUTES);
 });

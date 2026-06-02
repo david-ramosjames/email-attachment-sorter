@@ -8,7 +8,7 @@ Run **one file** in the SQL editor:
 
 Then skip `001`–`010`.
 
-Populate cases via Railway `POST /admin/sync-dropbox-structure` (or copy `case_slack_channels` from your old project).
+Populate cases via Slack sync (`POST /admin/sync-cases-from-slack`) or Google Sheet (`POST /admin/sync-cases-from-sheet`), then Dropbox sync (`POST /admin/sync-dropbox-structure`).
 
 ---
 

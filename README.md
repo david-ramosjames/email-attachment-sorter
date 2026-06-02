@@ -53,12 +53,12 @@ supabase/migrations/
 1. Create a **dedicated** Supabase project for File Sorter.
 2. In SQL Editor, run **`supabase/FRESH_PROJECT_SETUP.sql`** once (see `supabase/MIGRATIONS.md` — do not run `001`–`004` or `010` on a new project).
 3. Point Railway `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` at this project.
-4. After deploy, run Dropbox sync (`POST /admin/sync-dropbox-structure`) to populate `case_slack_channels`.
+4. Run [Slack case sync](#slack-case-index) (`POST /admin/sync-cases-from-slack`) or [Google Sheets](#google-sheets-case-index), then `POST /admin/sync-dropbox-structure` to link Dropbox folder names.
 
 ### 2. Slack app
 
 1. Create a Slack app at [api.slack.com](https://api.slack.com/apps).
-2. **OAuth scopes:** `chat:write`, `channels:read`, `users:read`
+2. **OAuth scopes:** `chat:write`, `channels:read`, `groups:read` (private channels), `users:read`, `files:write`
 3. Install to workspace; copy **Bot Token** → `SLACK_BOT_TOKEN`
 4. **Interactivity:** enable and set Request URL to:
    `https://<your-railway-domain>/webhooks/slack/interactions`
@@ -94,7 +94,12 @@ npm run build && npm start
 | POST | `/webhooks/slack/interactions` | Slack button actions |
 | GET | `/admin/file-sorter-items` | List items (`?status=&limit=`) |
 | GET | `/admin/cases` | List cases |
-| POST | `/admin/reindex-dropbox-folders` | Sync Dropbox folders → `case_folders` |
+| POST | `/admin/sync-cases-from-slack` | Sync `case_slack_channels` from Slack channels |
+| GET | `/admin/slack-case-sync-status` | Last Slack case sync time |
+| POST | `/admin/sync-cases-from-sheet` | Sync `case_slack_channels` from Google Sheet (optional) |
+| GET | `/admin/case-sheet-sync-status` | Last sheet sync time / config status |
+| POST | `/admin/sync-dropbox-structure` | Link Dropbox folder names + index subfolders |
+| POST | `/admin/reindex-dropbox-folders` | Reindex one case’s Dropbox subfolders |
 
 ### Inbound email webhook
 
@@ -164,6 +169,78 @@ SLACK_SIGNING_SECRET=
 SLACK_FILE_SORTER_QUEUE_CHANNEL_ID=
 DROPBOX_ACCESS_TOKEN=
 INBOUND_EMAIL_WEBHOOK_SECRET=
+```
+
+## Slack case index (recommended)
+
+If case channels follow a naming pattern with the matter number (e.g. `javiermejias-etal-625` or `276-regina-peek`), the bot can build the case index from Slack — **no Google Sheet required**.
+
+### Requirements
+
+1. Bot has **`channels:read`** and **`groups:read`** (for private case channels).
+2. Bot is **invited to every case channel** (private channels are invisible otherwise).
+3. Channel names include the case number at the **start** (`276-…`) or **end** (`…-625`).
+
+### Run sync
+
+```powershell
+Invoke-RestMethod -Method POST -Uri "https://YOUR-APP.up.railway.app/admin/sync-cases-from-slack"
+```
+
+Then Dropbox structure sync. By default this runs every 6 hours (`SLACK_CASE_SYNC_INTERVAL_MINUTES=360`).
+
+Skipped channels (no case number in name, `#file-sorter-queue`, `general`, `random`) are listed in the response under `skippedChannels`.
+
+---
+
+## Google Sheets case index (optional)
+
+Use this if you already maintain a spreadsheet or need fields Slack does not have. The app reads the sheet and upserts into `case_slack_channels`. Dropbox sync only adds `dropbox_folder_name` for rows that already exist.
+
+### 1. Google Cloud service account
+
+1. [Google Cloud Console](https://console.cloud.google.com/) → create or select a project.
+2. Enable **Google Sheets API**.
+3. **IAM → Service Accounts** → Create → Keys → **Add key → JSON**.
+4. Copy the JSON into Railway as `GOOGLE_SERVICE_ACCOUNT_JSON` (single line), or set `GOOGLE_SERVICE_ACCOUNT_EMAIL` + `GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY`.
+
+### 2. Share the spreadsheet
+
+Open the case sheet → **Share** → add the service account email (from the JSON `client_email`) as **Viewer**.
+
+### 3. Railway variables
+
+```
+GOOGLE_SHEETS_SPREADSHEET_ID=   # from the sheet URL: /d/THIS_PART/edit
+GOOGLE_SHEETS_RANGE=Cases!A:F   # tab name + columns
+GOOGLE_SERVICE_ACCOUNT_JSON=    # full JSON, one line
+CASE_SHEET_SYNC_INTERVAL_MINUTES=360
+```
+
+### 4. Sheet columns
+
+First row should be **headers**. Recognized names (any of these):
+
+| Field | Example header names |
+|-------|----------------------|
+| Case number | `Case Number`, `Case #`, `case_number` |
+| Slack channel / client name | `Slack Channel`, `Channel Name`, `Client`, `Case Name` |
+| Slack channel ID | `Channel ID`, `slack_channel_id` (optional) |
+| Stage | `Stage`, `Topic`, `topic_stage` (optional) |
+| Dropbox folder | `Dropbox Folder`, `dropbox` (optional) |
+
+If there is no header row, columns are read as: **A** = case number, **B** = channel name, **C** = channel ID, **D** = stage, **E** = Dropbox folder.
+
+### 5. Run sync
+
+```powershell
+Invoke-RestMethod -Method POST -Uri "https://YOUR-APP.up.railway.app/admin/sync-cases-from-sheet"
+```
+
+Then run Dropbox structure sync so folder names link:
+
+```powershell
+Invoke-RestMethod -Method POST -Uri "https://YOUR-APP.up.railway.app/admin/sync-dropbox-structure"
 ```
 
 ## Google Workspace email routing

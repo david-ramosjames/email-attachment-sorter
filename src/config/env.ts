@@ -35,6 +35,20 @@ const envSchema = z.object({
   TEMP_STORAGE_TTL_HOURS: z.coerce.number().min(0).default(1),
   /** How often to purge expired temp files (minutes). 0 = only on Approve / Do Not Sort. */
   TEMP_STORAGE_CLEANUP_INTERVAL_MINUTES: z.coerce.number().default(15),
+  /** Google Sheet that lists cases ↔ Slack channels (service account must have Viewer access). */
+  GOOGLE_SHEETS_SPREADSHEET_ID: optionalString,
+  /** A1 notation range, e.g. Cases!A:F */
+  GOOGLE_SHEETS_RANGE: z.string().default('Cases!A:F'),
+  /** Full JSON key file contents (preferred on Railway), or use email + private key below */
+  GOOGLE_SERVICE_ACCOUNT_JSON: optionalString,
+  GOOGLE_SERVICE_ACCOUNT_EMAIL: optionalString,
+  GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY: optionalString,
+  /** How often to sync case_slack_channels from the sheet (minutes). 0 = manual only. */
+  CASE_SHEET_SYNC_INTERVAL_MINUTES: z.coerce.number().default(0),
+  /** How often to sync cases from Slack channel list (minutes). 0 = manual only. */
+  SLACK_CASE_SYNC_INTERVAL_MINUTES: z.coerce.number().default(360),
+  /** Comma-separated Slack channel names to skip (lowercase, without #). */
+  SLACK_CASE_CHANNEL_EXCLUDE_NAMES: z.string().default(''),
 });
 
 export type Env = z.infer<typeof envSchema>;
@@ -77,4 +91,20 @@ export function getDropboxConfigIssue(): string | null {
     );
   }
   return `Dropbox refresh auth incomplete — missing: ${missing.join(', ')}`;
+}
+
+/** Human-readable hint when Google Sheets case sync is not configured. */
+export function getGoogleSheetsConfigIssue(): string | null {
+  const env = getEnv();
+  if (!env.GOOGLE_SHEETS_SPREADSHEET_ID) {
+    return 'GOOGLE_SHEETS_SPREADSHEET_ID is not set.';
+  }
+  if (env.GOOGLE_SERVICE_ACCOUNT_JSON) return null;
+  if (env.GOOGLE_SERVICE_ACCOUNT_EMAIL && env.GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY) {
+    return null;
+  }
+  return (
+    'Google Sheets auth not configured. Set GOOGLE_SERVICE_ACCOUNT_JSON (recommended) or ' +
+    'GOOGLE_SERVICE_ACCOUNT_EMAIL + GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY.'
+  );
 }

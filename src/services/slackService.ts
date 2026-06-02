@@ -13,11 +13,9 @@ import {
   slackSectionText,
   slackSectionWithExtras,
 } from '../utils/slackText.js';
+import { getSlackChannelIdByNameMap } from './slackChannels.js';
 
 const SLACK_API = 'https://slack.com/api';
-
-/** channel name (lowercase) → channel id; refreshed on first lookup per process */
-let slackChannelIdByName: Map<string, string> | null = null;
 
 /** action_id must be unique per message; value carries item UUID for the handler. */
 const ACTION_PREFIX = {
@@ -534,31 +532,7 @@ async function resolveCaseSlackChannelId(caseRow: Case): Promise<string | null> 
   const channelName = caseRow.slack_channel_name.trim().toLowerCase();
   if (!channelName) return null;
 
-  if (!slackChannelIdByName) {
-    slackChannelIdByName = new Map();
-    let cursor: string | undefined;
-    do {
-      const page = await slackApiForm<{
-        channels: Array<{ id?: string; name?: string }>;
-        response_metadata?: { next_cursor?: string };
-      }>('conversations.list', {
-        types: 'public_channel,private_channel',
-        limit: 200,
-        exclude_archived: true,
-        cursor,
-      });
-      for (const ch of page.channels ?? []) {
-        if (ch.id && ch.name) {
-          slackChannelIdByName.set(ch.name.toLowerCase(), ch.id);
-        }
-      }
-      cursor = page.response_metadata?.next_cursor || undefined;
-    } while (cursor);
-    logger.info('Slack channel list loaded for case cross-post', {
-      count: slackChannelIdByName.size,
-    });
-  }
-
+  const slackChannelIdByName = await getSlackChannelIdByNameMap();
   const resolved = slackChannelIdByName.get(channelName) ?? null;
   if (resolved) {
     try {

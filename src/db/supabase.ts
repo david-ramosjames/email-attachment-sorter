@@ -704,6 +704,40 @@ export async function listCases(): Promise<Case[]> {
   return (data ?? []).map((row) => mapSlackChannelToCase(row as CaseSlackChannel));
 }
 
+export async function batchUpsertCaseSlackChannels(
+  rows: Array<{
+    case_number: string;
+    slack_channel_name: string;
+    slack_channel_id?: string | null;
+    topic_stage?: string | null;
+    dropbox_folder_name?: string | null;
+  }>
+): Promise<number> {
+  if (!rows.length) return 0;
+  const now = new Date().toISOString();
+  const payload = rows.map((r) => ({
+    case_number: r.case_number,
+    slack_channel_name: r.slack_channel_name,
+    slack_channel_id: r.slack_channel_id ?? null,
+    topic_stage: r.topic_stage ?? null,
+    dropbox_folder_name: r.dropbox_folder_name ?? null,
+    synced_at: now,
+    updated_at: now,
+  }));
+
+  const CHUNK = 200;
+  let total = 0;
+  for (let i = 0; i < payload.length; i += CHUNK) {
+    const chunk = payload.slice(i, i + CHUNK);
+    const { error } = await getSupabase()
+      .from('case_slack_channels')
+      .upsert(chunk, { onConflict: 'case_number' });
+    if (error) throw new Error(`Batch upsert cases failed: ${error.message}`);
+    total += chunk.length;
+  }
+  return total;
+}
+
 export async function batchUpsertCaseFolders(
   rows: Array<{ case_number: string; folder_label: string; dropbox_path: string }>
 ): Promise<number> {

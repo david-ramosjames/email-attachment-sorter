@@ -11,9 +11,18 @@ import type { FileSorterItemStatus, MatchingHintType } from '../types/index.js';
 import { reindexDropboxFoldersForCase } from '../services/fileSorterWorkflow.js';
 import { cleanupExpiredTempStorage } from '../services/tempStorageCleanupService.js';
 import {
+  getLastCaseSheetSyncAt,
+  syncCasesFromGoogleSheet,
+} from '../services/caseSheetSyncService.js';
+import {
+  getLastSlackCaseSyncAt,
+  syncCasesFromSlack,
+} from '../services/slackCaseSyncService.js';
+import {
   getLastDropboxSyncAt,
   syncDropboxStructure,
 } from '../services/dropboxSyncService.js';
+import { getGoogleSheetsConfigIssue } from '../config/env.js';
 import { getDropboxAuthStatus } from '../services/dropboxAuth.js';
 import { discoverCasesRoot, getCasesRootPath, verifyDropboxConnection } from '../services/dropboxService.js';
 import { logger } from '../utils/logger.js';
@@ -133,6 +142,60 @@ adminRouter.post('/admin/reindex-dropbox-folders', async (req, res) => {
       error: err instanceof Error ? err.message : 'Reindex failed',
     });
   }
+});
+
+/** Sync case_slack_channels from Slack channels the bot can see. */
+adminRouter.post('/admin/sync-cases-from-slack', async (_req, res) => {
+  try {
+    const result = await syncCasesFromSlack();
+    if (result.skipped) {
+      res.status(409).json(result);
+      return;
+    }
+    if (result.error && result.casesUpserted === 0) {
+      res.status(result.channelsListed > 0 ? 422 : 500).json(result);
+      return;
+    }
+    res.json(result);
+  } catch (err) {
+    logger.error('Slack case sync failed', { err: String(err) });
+    res.status(500).json({
+      error: err instanceof Error ? err.message : 'Slack case sync failed',
+    });
+  }
+});
+
+adminRouter.get('/admin/slack-case-sync-status', (_req, res) => {
+  res.json({ lastSyncAt: getLastSlackCaseSyncAt() });
+});
+
+/** Sync case_slack_channels from the configured Google Sheet. */
+adminRouter.post('/admin/sync-cases-from-sheet', async (_req, res) => {
+  try {
+    const result = await syncCasesFromGoogleSheet();
+    if (result.skipped) {
+      res.status(409).json(result);
+      return;
+    }
+    if (result.error && result.casesUpserted === 0) {
+      res.status(result.rowsRead > 0 ? 422 : 500).json(result);
+      return;
+    }
+    res.json(result);
+  } catch (err) {
+    logger.error('Case sheet sync failed', { err: String(err) });
+    res.status(500).json({
+      error: err instanceof Error ? err.message : 'Case sheet sync failed',
+    });
+  }
+});
+
+adminRouter.get('/admin/case-sheet-sync-status', (_req, res) => {
+  res.json({
+    lastSyncAt: getLastCaseSheetSyncAt(),
+    configured: getGoogleSheetsConfigIssue() === null,
+    configIssue: getGoogleSheetsConfigIssue(),
+  });
 });
 
 /** Scan Dropbox for all case folders and index standard subfolders. */
