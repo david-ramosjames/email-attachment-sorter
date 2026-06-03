@@ -31,9 +31,11 @@ const envSchema = z.object({
   /** How often to scan Dropbox for new case folders (minutes). 0 = disabled. */
   DROPBOX_SYNC_INTERVAL_MINUTES: z.coerce.number().default(60),
   INBOUND_EMAIL_WEBHOOK_SECRET: optionalString,
-  /** Delete staged attachments from Storage after this many hours (default 1). */
-  TEMP_STORAGE_TTL_HOURS: z.coerce.number().min(0).default(1),
-  /** How often to purge expired temp files (minutes). 0 = only on Approve / Do Not Sort. */
+  /** Delete staged files this many minutes after successful routing (Dropbox save). */
+  TEMP_STORAGE_ROUTED_DELETE_AFTER_MINUTES: z.coerce.number().min(0).default(1),
+  /** Keep unrouted queue items in temp storage this many hours (weekend backlog). */
+  TEMP_STORAGE_UNROUTED_TTL_HOURS: z.coerce.number().min(0).default(72),
+  /** How often to purge expired temp files (minutes). 0 = scheduled deletes only on Approve. */
   TEMP_STORAGE_CLEANUP_INTERVAL_MINUTES: z.coerce.number().default(15),
   /** Google Sheet that lists cases ↔ Slack channels (service account must have Viewer access). */
   GOOGLE_SHEETS_SPREADSHEET_ID: optionalString,

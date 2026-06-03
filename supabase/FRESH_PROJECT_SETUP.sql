@@ -42,6 +42,8 @@ CREATE TABLE IF NOT EXISTS public.file_sorter_items (
   suggested_folder_path TEXT,
   suggested_document_type TEXT,
   ai_confidence NUMERIC(4, 3),
+  ai_case_confidence NUMERIC(4, 3),
+  ai_folder_confidence NUMERIC(4, 3),
   ai_reason TEXT,
   status TEXT NOT NULL DEFAULT 'pending_review',
   final_case_number TEXT,

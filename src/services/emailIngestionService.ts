@@ -5,6 +5,7 @@ import {
   downloadTempAttachment,
   getCaseById,
   getCaseHintsForSender,
+  getCaseHintsForCauseNumbers,
   getSortHintsForSender,
   getSenderHistory,
   updateFileSorterItem,
@@ -17,6 +18,9 @@ import { postEmailItemsToSlack, type QueuedInboundItem } from './emailBatchSlack
 import { auditService } from './auditService.js';
 import { parseInboundEmail } from './emailIngestion/index.js';
 import { syncDropboxStructureIfStale } from './dropboxSyncService.js';
+import { CASE_REVIEW_THRESHOLD } from '../constants/classification.js';
+import { extractCauseNumbersFromTexts } from '../utils/causeNumbers.js';
+import { mergeMatchingHints } from '../utils/matchingHints.js';
 import type {
   InboundAttachment,
   InboundEmailPayload,
@@ -184,6 +188,10 @@ async function processSingleAttachment(
   const senderPriorCaseNumbers = await getSenderHistory(payload.fromEmail);
   const senderCaseHints = await getCaseHintsForSender(payload.fromEmail);
   const senderSortHints = await getSortHintsForSender(payload.fromEmail);
+  const causeNumbers = extractCauseNumbersFromTexts(payload.subject, payload.bodyExcerpt);
+  const causeHints = causeNumbers.length
+    ? await getCaseHintsForCauseNumbers(causeNumbers)
+    : [];
 
   const matchContext: MatchContext = {
     fromEmail: payload.fromEmail,
@@ -193,7 +201,7 @@ async function processSingleAttachment(
     bodyExcerpt: payload.bodyExcerpt,
     attachmentFilename: attachment.filename,
     senderPriorCaseNumbers,
-    caseMatchingHints: senderCaseHints,
+    caseMatchingHints: mergeMatchingHints(senderCaseHints, causeHints),
     documentSortHints: senderSortHints,
     emailPatientNames: batch.patientNames,
     siblingAttachmentFilenames: payload.attachments.map((a) => a.filename),
@@ -231,6 +239,15 @@ async function processSingleAttachment(
           method: extracted.method,
           excerptLength: extracted.excerpt.length,
         };
+        const fromDocCauseHints = await getCaseHintsForCauseNumbers(
+          extractCauseNumbersFromTexts(extracted.excerpt)
+        );
+        if (fromDocCauseHints.length) {
+          matchContext.caseMatchingHints = mergeMatchingHints(
+            matchContext.caseMatchingHints,
+            fromDocCauseHints
+          );
+        }
       }
     }
   }
@@ -252,7 +269,9 @@ async function processSingleAttachment(
     itemId,
     documentExcerptChars: matchContext.documentExcerpt?.length ?? 0,
     client: classification.reason.slice(0, 120),
-    confidence: classification.confidence,
+    caseConfidence: classification.caseConfidence,
+    folderConfidence: classification.folderConfidence,
+    overallConfidence: classification.confidence,
     suggestedCase: classification.suggestedCaseNumber,
   });
 
@@ -271,12 +290,15 @@ async function processSingleAttachment(
 
   if (
     classification.suggestedCaseNumber &&
-    classification.confidence >= 0.5 &&
-    (!classification.needsAttention || classification.confidence >= 0.65) &&
-    !clientIdentityIsUnknown({ subject: payload.subject, bodyExcerpt: payload.bodyExcerpt, aiClientIdentity: matchContext.aiClientIdentity })
+    classification.caseConfidence >= CASE_REVIEW_THRESHOLD &&
+    !clientIdentityIsUnknown({
+      subject: payload.subject,
+      bodyExcerpt: payload.bodyExcerpt,
+      aiClientIdentity: matchContext.aiClientIdentity,
+    })
   ) {
     batch.sharedCaseNumber = classification.suggestedCaseNumber;
-    batch.sharedConfidence = classification.confidence;
+    batch.sharedConfidence = classification.caseConfidence;
   }
 
   const status =
@@ -300,6 +322,8 @@ async function processSingleAttachment(
       classification.documentType === 'needs_attention'
         ? null
         : classification.documentType,
+    ai_case_confidence: classification.caseConfidence,
+    ai_folder_confidence: classification.folderConfidence,
     ai_confidence: classification.confidence,
     ai_reason: classification.reason,
     status,
@@ -330,7 +354,9 @@ async function processSingleAttachment(
 
   await auditService.log(item.id, 'classification_complete', {
     suggestedCaseNumber: classification.suggestedCaseNumber,
-    confidence: classification.confidence,
+    caseConfidence: classification.caseConfidence,
+    folderConfidence: classification.folderConfidence,
+    overallConfidence: classification.confidence,
     reason: classification.reason,
     documentExtraction,
     aiClientIdentity: matchContext.aiClientIdentity,

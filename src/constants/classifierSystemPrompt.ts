@@ -1,7 +1,7 @@
 import { RJL_STANDARD_SUBFOLDERS } from './rjlFolders.js';
 import { DOCUMENT_TYPES } from '../types/index.js';
 
-/** System prompt for OpenAI document classification (structured JSON output). */
+/** @deprecated Replaced by caseIdentificationPrompt.ts + folderClassificationPrompt.ts (two-pass AI). */
 export function buildClassifierSystemPrompt(): string {
   const folders = RJL_STANDARD_SUBFOLDERS.join(', ');
   const docTypes = DOCUMENT_TYPES.join(', ');
@@ -379,7 +379,7 @@ The email may reference files via URL instead of an attachment.
 * You cannot file the bytes — still classify case, folder, and document type for staff
 * Mention the link provider in evidence/reasoning
 * suggested_case_number still follows normal client-matching rules
-* confidence is often lower (0.50–0.75) when only a link is present
+* case_confidence and overall_confidence are often lower (0.50–0.75) when only a link is present
 
 ---
 
@@ -406,30 +406,25 @@ A human reviewer can always file it later.
 
 ## CONFIDENCE SCORING
 
-0.95 - 1.00
+Return THREE separate scores (each 0 to 1):
 
-Explicit client name found.
-Exact case match.
-Strong supporting evidence.
+**case_confidence** — how sure you are that suggested_case_number is the correct case
+* 0.95–1.00: PI client name in attachment; exact match to case index
+* 0.80–0.94: client clearly identified; minor ambiguity only
+* 0.60–0.79: likely client; some uncertainty
+* below 0.60: do not assign a case (suggested_case_number = null)
 
-0.80 - 0.94
+**folder_confidence** — how sure you are that folder and document_type are correct
+* High when document content clearly matches folder rules (Medical, Investigation, LOP, etc.)
+* Lower when type is ambiguous or folder could plausibly be Correspondence vs another category
 
-Client clearly identified.
-Minor ambiguity only.
+**overall_confidence** — combined filing readiness (case + folder + document type together)
+* Use for human review: below 0.75 overall often means Needs Human Review
+* Can be lower than case_confidence when folder is uncertain, or lower than folder_confidence when case is unknown
 
-0.60 - 0.79
+Never auto-file a case when case_confidence is below 0.60.
 
-Likely client.
-Some uncertainty.
-
-0.00 - 0.59
-
-Client uncertain.
-
-Use:
-suggested_case_number = null
-
-Never auto-file a document below 0.60 confidence.
+External file links only (no attachment text): case_confidence and overall_confidence are often 0.50–0.75.
 
 ---
 
@@ -457,7 +452,9 @@ Return strict JSON only with these fields:
 * suggested_case_number — exact case_number from candidate list, or null
 * folder — one RJL subfolder label from the list above, or null if case is null
 * document_type — one of: ${docTypes}, or needs_attention
-* confidence — number 0 to 1
+* case_confidence — number 0 to 1 (confidence in suggested_case_number)
+* folder_confidence — number 0 to 1 (confidence in folder and document_type)
+* overall_confidence — number 0 to 1 (combined filing readiness)
 * reasoning — why you chose case/folder/type
 * evidence — specific facts from the email/attachment used (do not invent)
 

@@ -38,10 +38,10 @@ export async function buildOverrideConfirmationText(
   }
 
   for (const hint of override.caseHints ?? []) {
-    lines.push(`• Case hint noted: _${hint.slice(0, 120)}${hint.length > 120 ? '…' : ''}_`);
+    lines.push(`• Teach Case noted: _${hint.slice(0, 120)}${hint.length > 120 ? '…' : ''}_`);
   }
   for (const hint of override.sortHints ?? []) {
-    lines.push(`• Sort hint noted: _${hint.slice(0, 120)}${hint.length > 120 ? '…' : ''}_`);
+    lines.push(`• Teach Folder noted: _${hint.slice(0, 120)}${hint.length > 120 ? '…' : ''}_`);
   }
 
   lines.push('\nClick *Approve* on the card above to file with these settings.');

@@ -1,7 +1,9 @@
 import OpenAI from 'openai';
 import { getEnv } from '../config/env.js';
 import {
-  CONFIDENCE_THRESHOLD,
+  CASE_ASSIGNMENT_THRESHOLD,
+  CASE_REVIEW_THRESHOLD,
+  computeOverallConfidence,
   MAX_DOCUMENT_TEXT_FOR_AI,
 } from '../constants/classification.js';
 import {
@@ -16,9 +18,11 @@ import { buildSmartBodyExcerpt } from '../utils/emailBodyExcerpt.js';
 import { caseMatchingHintsPromptSection, documentSortHintsPromptSection } from '../utils/matchingHints.js';
 import { getCaseById } from '../db/supabase.js';
 import { clientIdentityIsUnknown, emailRequestsClientIdentification } from '../utils/emailClientSignals.js';
-import { buildClassifierSystemPrompt } from '../constants/classifierSystemPrompt.js';
+import { buildCaseIdentificationPrompt } from '../constants/caseIdentificationPrompt.js';
+import { buildFolderClassificationPrompt } from '../constants/folderClassificationPrompt.js';
 import { extractForwardedEmailContext } from '../utils/forwardedEmailContext.js';
 import { foldersForCaseNumber, loadCaseCatalogForAi } from './caseCatalogForAi.js';
+import type { CaseCatalogForAi } from './caseCatalogForAi.js';
 import type { CaseFolder } from '../types/index.js';
 import { logger } from '../utils/logger.js';
 
@@ -31,7 +35,7 @@ function getOpenAI(): OpenAI {
   return openai;
 }
 
-const classificationSchema = {
+const caseIdentificationSchema = {
   type: 'object' as const,
   properties: {
     summary: {
@@ -46,6 +50,41 @@ const classificationSchema = {
       type: ['string', 'null'] as const,
       description: 'Exact case_number from the case index, or null if no case fits',
     },
+    case_confidence: {
+      type: 'number' as const,
+      minimum: 0,
+      maximum: 1,
+      description: 'Confidence that suggested_case_number is the correct case (0–1)',
+    },
+    names_compared: {
+      type: 'string' as const,
+      description:
+        'Which index clients were compared; near-miss names rejected and why, or "none"',
+    },
+    reasoning: {
+      type: 'string' as const,
+      description: 'Case matching logic only — not folder or document type',
+    },
+    evidence: {
+      type: 'string' as const,
+      description: 'Specific facts from email/attachment supporting the case decision',
+    },
+  },
+  required: [
+    'summary',
+    'client_name',
+    'suggested_case_number',
+    'case_confidence',
+    'names_compared',
+    'reasoning',
+    'evidence',
+  ],
+  additionalProperties: false,
+};
+
+const folderClassificationSchema = {
+  type: 'object' as const,
+  properties: {
     folder: {
       type: ['string', 'null'] as const,
       description: `RJL Dropbox subfolder: ${RJL_STANDARD_SUBFOLDERS.join(', ')}`,
@@ -54,62 +93,56 @@ const classificationSchema = {
       type: 'string' as const,
       enum: [...DOCUMENT_TYPES, 'needs_attention'],
     },
-    confidence: { type: 'number' as const, minimum: 0, maximum: 1 },
+    folder_confidence: {
+      type: 'number' as const,
+      minimum: 0,
+      maximum: 1,
+      description: 'Confidence in folder and document_type (case already decided)',
+    },
     reasoning: {
       type: 'string' as const,
-      description: 'Why this case, folder, and document type were chosen',
+      description: 'Why this folder and document type',
     },
     evidence: {
       type: 'string' as const,
-      description: 'Specific facts from email/attachment supporting the decision; do not invent',
+      description: 'Facts from the document/email supporting folder choice',
     },
   },
-  required: [
-    'summary',
-    'client_name',
-    'suggested_case_number',
-    'folder',
-    'document_type',
-    'confidence',
-    'reasoning',
-    'evidence',
-  ],
+  required: ['folder', 'document_type', 'folder_confidence', 'reasoning', 'evidence'],
   additionalProperties: false,
 };
 
-/**
- * OpenAI reads email + attachment text and the full case index to decide case, folder, and type.
- * Rule-based pre-filtering is intentionally avoided — the model matches client names in the
- * document to slack_channel / dropbox_folder labels in the index.
- */
-export async function classifyDocument(ctx: MatchContext): Promise<ClassificationResult> {
-  const catalog = await loadCaseCatalogForAi();
+interface CaseIdentificationResult {
+  summary: string;
+  client_name: string | null;
+  suggested_case_number: string | null;
+  case_confidence: number;
+  names_compared: string;
+  reasoning: string;
+  evidence: string;
+}
 
-  if (!catalog.caseNumbers.size) {
-    return {
-      suggestedCaseNumber: null,
-      suggestedFolderPath: null,
-      documentType: 'needs_attention',
-      confidence: 0,
-      reason: 'Case index is empty — sync cases from Slack, then re-file',
-      needsAttention: true,
-    };
-  }
+interface FolderClassificationResult {
+  folder: string | null;
+  document_type: string;
+  folder_confidence: number;
+  reasoning: string;
+  evidence: string;
+}
 
+function buildSharedUserPrompt(ctx: MatchContext, catalog: CaseCatalogForAi): string {
   const bodyForAi = buildSmartBodyExcerpt(ctx.bodyExcerpt, 8000);
 
   const identityHint = ctx.aiClientIdentity?.clientFullName
     ? `\nOptional hint (verify against attachment text): client may be "${ctx.aiClientIdentity.clientFullName}" — ${ctx.aiClientIdentity.reason}`
     : '';
 
-  const systemPrompt = buildClassifierSystemPrompt();
-
   const documentSection = ctx.documentExcerpt
-    ? `\n\nAttachment text (primary evidence — match PI client name here to case index):\n${ctx.documentExcerpt.slice(0, MAX_DOCUMENT_TEXT_FOR_AI)}`
-    : '\n\n(No attachment text extracted — use email body and filename)';
+    ? `\n\nAttachment text (PRIMARY evidence for case matching — read carefully):\n${ctx.documentExcerpt.slice(0, MAX_DOCUMENT_TEXT_FOR_AI)}`
+    : '\n\n(No attachment text extracted — case matching is harder; prefer null over guessing)';
 
   const senderSection = ctx.senderPriorCaseNumbers?.length
-    ? `\nSender has previously filed to case(s): ${ctx.senderPriorCaseNumbers.join(', ')} (weak hint only)`
+    ? `\nSender has previously filed to case(s): ${ctx.senderPriorCaseNumbers.join(', ')} (weak hint only — never override attachment name evidence)`
     : '';
 
   const siblingSection = ctx.siblingAttachmentFilenames?.length
@@ -117,7 +150,7 @@ export async function classifyDocument(ctx: MatchContext): Promise<Classificatio
     : '';
 
   const batchSection = ctx.batchSharedCaseNumber
-    ? `\nEarlier attachment in this email was filed to case_number="${ctx.batchSharedCaseNumber}" — use same case unless this document is clearly for a different client.`
+    ? `\nEarlier attachment in this email matched case_number="${ctx.batchSharedCaseNumber}" — use same case only if this document is for the same PI client.`
     : '';
 
   const forwardedText =
@@ -130,7 +163,7 @@ export async function classifyDocument(ctx: MatchContext): Promise<Classificatio
     ? `\nExternal file link (not attached — staff must download manually): ${ctx.externalFileUrl}`
     : '';
 
-  const userPrompt = `From (sender): ${ctx.fromEmail}
+  return `From (sender): ${ctx.fromEmail}
 To: ${ctx.toEmails.join(', ') || '(not provided)'}
 Cc: ${ctx.ccEmails.join(', ') || '(none)'}
 Subject: ${ctx.subject}
@@ -140,14 +173,47 @@ ${bodyForAi}
 
 Attachment filename: ${ctx.attachmentFilename}${identityHint}${caseMatchingHintsPromptSection(ctx.caseMatchingHints)}${documentSortHintsPromptSection(ctx.documentSortHints)}${siblingSection}${batchSection}${forwardedBlock}${externalLinkSection}${senderSection}${documentSection}
 
-Case index (${catalog.caseNumbers.size} cases — choose ONLY suggested_case_number from this list):
+Case index (${catalog.caseNumbers.size} cases — suggested_case_number MUST be an exact case_number from this list, or null):
 ${catalog.catalogPrompt}`;
+}
 
-  logger.info('AI classification request', {
-    attachmentFilename: ctx.attachmentFilename,
-    caseIndexSize: catalog.caseNumbers.size,
-    documentExcerptChars: ctx.documentExcerpt?.length ?? 0,
+async function identifyCase(
+  ctx: MatchContext,
+  catalog: CaseCatalogForAi
+): Promise<CaseIdentificationResult> {
+  const response = await getOpenAI().chat.completions.create({
+    model: getEnv().OPENAI_MODEL,
+    temperature: 0,
+    response_format: {
+      type: 'json_schema',
+      json_schema: {
+        name: 'case_identification',
+        strict: true,
+        schema: caseIdentificationSchema,
+      },
+    },
+    messages: [
+      { role: 'system', content: buildCaseIdentificationPrompt() },
+      { role: 'user', content: buildSharedUserPrompt(ctx, catalog) },
+    ],
   });
+
+  const content = response.choices[0]?.message?.content;
+  if (!content) {
+    throw new Error('Empty AI case identification response');
+  }
+
+  return JSON.parse(content) as CaseIdentificationResult;
+}
+
+async function classifyFolder(
+  ctx: MatchContext,
+  catalog: CaseCatalogForAi,
+  caseResult: CaseIdentificationResult
+): Promise<FolderClassificationResult> {
+  const caseContext = caseResult.suggested_case_number
+    ? `Assigned case (DO NOT CHANGE): case_number="${caseResult.suggested_case_number}", client="${caseResult.client_name ?? 'unknown'}", case_confidence=${caseResult.case_confidence}`
+    : 'Assigned case: none (suggested_case_number is null — folder may be Intake or null)';
 
   const response = await getOpenAI().chat.completions.create({
     model: getEnv().OPENAI_MODEL,
@@ -155,87 +221,137 @@ ${catalog.catalogPrompt}`;
     response_format: {
       type: 'json_schema',
       json_schema: {
-        name: 'document_classification',
+        name: 'folder_classification',
         strict: true,
-        schema: classificationSchema,
+        schema: folderClassificationSchema,
       },
     },
     messages: [
-      { role: 'system', content: systemPrompt },
-      { role: 'user', content: userPrompt },
+      { role: 'system', content: buildFolderClassificationPrompt() },
+      {
+        role: 'user',
+        content: `${caseContext}\n\n${buildSharedUserPrompt(ctx, catalog)}`,
+      },
     ],
   });
 
   const content = response.choices[0]?.message?.content;
   if (!content) {
-    throw new Error('Empty AI classification response');
+    throw new Error('Empty AI folder classification response');
   }
 
-  const parsed = JSON.parse(content) as {
-    summary: string;
-    client_name: string | null;
-    suggested_case_number: string | null;
-    folder: string | null;
-    document_type: string;
-    confidence: number;
-    reasoning: string;
-    evidence: string;
-  };
+  return JSON.parse(content) as FolderClassificationResult;
+}
 
-  let suggestedCaseNumber = parsed.suggested_case_number;
-  let documentType = parsed.document_type as DocumentType | 'needs_attention';
-  let confidence = parsed.confidence;
-  let reason = formatClassificationReason(parsed);
+/**
+ * Two-pass classification: dedicated case identification, then folder/type.
+ * Case correctness is prioritized — review flags and overall score weight case heavily.
+ */
+export async function classifyDocument(ctx: MatchContext): Promise<ClassificationResult> {
+  const catalog = await loadCaseCatalogForAi();
 
-  if (confidence < 0.6 && suggestedCaseNumber) {
+  if (!catalog.caseNumbers.size) {
+    return {
+      suggestedCaseNumber: null,
+      suggestedFolderPath: null,
+      documentType: 'needs_attention',
+      caseConfidence: 0,
+      folderConfidence: 0,
+      confidence: 0,
+      reason: 'Case index is empty — sync cases from Slack, then re-file',
+      needsAttention: true,
+    };
+  }
+
+  logger.info('AI case identification request', {
+    attachmentFilename: ctx.attachmentFilename,
+    caseIndexSize: catalog.caseNumbers.size,
+    documentExcerptChars: ctx.documentExcerpt?.length ?? 0,
+  });
+
+  const caseParsed = await identifyCase(ctx, catalog);
+
+  let suggestedCaseNumber = caseParsed.suggested_case_number;
+  let caseConfidence = caseParsed.case_confidence;
+  let reason = formatCaseReason(caseParsed);
+
+  if (caseConfidence < CASE_ASSIGNMENT_THRESHOLD && suggestedCaseNumber) {
     suggestedCaseNumber = null;
-    documentType = 'needs_attention';
-    confidence = Math.min(confidence, 0.59);
-    reason += ' (confidence below 0.60 — case not assigned per filing rules)';
+    caseConfidence = Math.min(caseConfidence, CASE_ASSIGNMENT_THRESHOLD - 0.01);
+    reason += ` (case confidence below ${CASE_ASSIGNMENT_THRESHOLD} — case not assigned)`;
   }
 
   const clientUnknown = clientIdentityIsUnknown(ctx);
   if (clientUnknown) {
     suggestedCaseNumber = null;
-    documentType = 'needs_attention';
-    confidence = Math.min(confidence, 0.35);
+    caseConfidence = Math.min(caseConfidence, 0.35);
     reason = emailRequestsClientIdentification(
       [ctx.subject, ctx.bodyExcerpt].filter(Boolean).join('\n')
     )
       ? `Sender is asking RJL to identify the client — case cannot be assigned yet. ${reason}`
       : `No PI client named in this email (open records / property investigation). ${reason}`;
-  } else if (parsed.client_name) {
-    reason = `Client: ${parsed.client_name}. ${reason}`;
+  } else if (caseParsed.client_name) {
+    reason = `Client: ${caseParsed.client_name}. ${reason}`;
   }
 
   if (suggestedCaseNumber && !catalog.caseNumbers.has(suggestedCaseNumber)) {
     suggestedCaseNumber = null;
-    documentType = 'needs_attention';
-    confidence = 0;
+    caseConfidence = 0;
     reason = 'AI returned case number not in case index — rejected';
+  }
+
+  logger.info('AI folder classification request', {
+    attachmentFilename: ctx.attachmentFilename,
+    suggestedCase: suggestedCaseNumber,
+    caseConfidence,
+  });
+
+  const folderParsed = await classifyFolder(ctx, catalog, {
+    ...caseParsed,
+    suggested_case_number: suggestedCaseNumber,
+    case_confidence: caseConfidence,
+  });
+
+  let documentType = folderParsed.document_type as DocumentType | 'needs_attention';
+  let folderConfidence = folderParsed.folder_confidence;
+  reason += ` Folder: ${folderParsed.reasoning.trim()}`;
+  if (folderParsed.evidence?.trim()) {
+    reason += ` Folder evidence: ${folderParsed.evidence.trim()}`;
+  }
+
+  if (!suggestedCaseNumber) {
+    folderConfidence = Math.min(folderConfidence, caseConfidence);
   }
 
   let suggestedFolderPath: string | null = null;
   if (suggestedCaseNumber && documentType !== 'needs_attention') {
     const caseRow = await getCaseById(suggestedCaseNumber);
     const folders = await foldersForCaseNumber(suggestedCaseNumber);
-    const resolved = resolveFolderForCase(caseRow, folders, parsed.folder, documentType);
+    const resolved = resolveFolderForCase(caseRow, folders, folderParsed.folder, documentType);
     suggestedFolderPath = resolved.path;
     if (resolved.reasonSuffix) reason += resolved.reasonSuffix;
-  } else if (parsed.folder?.trim()) {
-    suggestedFolderPath = parsed.folder.trim();
+  } else if (folderParsed.folder?.trim()) {
+    suggestedFolderPath = folderParsed.folder.trim();
   }
 
+  const overallConfidence = computeOverallConfidence(
+    caseConfidence,
+    folderConfidence,
+    Boolean(suggestedCaseNumber)
+  );
+
   const needsAttention =
-    documentType === 'needs_attention' ||
     !suggestedCaseNumber ||
-    confidence < CONFIDENCE_THRESHOLD;
+    caseConfidence < CASE_REVIEW_THRESHOLD ||
+    documentType === 'needs_attention';
 
   return {
     suggestedCaseNumber,
     suggestedFolderPath,
     documentType: needsAttention ? 'needs_attention' : (documentType as DocumentType),
-    confidence,
+    caseConfidence,
+    folderConfidence,
+    confidence: overallConfidence,
     reason,
     needsAttention,
   };
@@ -288,12 +404,11 @@ function resolveFolderForCase(
   return { path: null, reasonSuffix: '' };
 }
 
-function formatClassificationReason(parsed: {
-  summary: string;
-  reasoning: string;
-  evidence: string;
-}): string {
+function formatCaseReason(parsed: CaseIdentificationResult): string {
   const parts = [parsed.summary.trim(), parsed.reasoning.trim()];
+  if (parsed.names_compared?.trim() && parsed.names_compared.toLowerCase() !== 'none') {
+    parts.push(`Compared: ${parsed.names_compared.trim()}`);
+  }
   if (parsed.evidence?.trim()) {
     parts.push(`Evidence: ${parsed.evidence.trim()}`);
   }

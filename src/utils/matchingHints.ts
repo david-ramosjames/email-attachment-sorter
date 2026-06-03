@@ -19,7 +19,7 @@ export function formatCaseMatchingHintsForAi(hints: MatchingHint[] | undefined):
   });
 
   return (
-    'Staff case-matching context (who is the PI client — use to pick the case, not folder/type):\n' +
+    'Staff Teach Case context (PI client identity, Cause numbers → case — use for suggested_case_number):\n' +
     lines.join('\n')
   );
 }

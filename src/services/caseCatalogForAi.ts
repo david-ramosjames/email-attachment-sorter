@@ -14,9 +14,10 @@ function clientLabelFromCase(caseRow: Case): string {
 }
 
 function buildCatalogLines(cases: Case[]): string[] {
-  return cases.map(
-    (c) => `case_number="${c.case_number}" client="${clientLabelFromCase(c)}"`
-  );
+  return cases.map((c) => {
+    const stage = c.topic_stage?.trim() ? ` stage="${c.topic_stage.trim()}"` : '';
+    return `case_number="${c.case_number}" client="${clientLabelFromCase(c)}"${stage}`;
+  });
 }
 
 export interface CaseCatalogForAi {

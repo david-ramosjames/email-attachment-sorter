@@ -1,6 +1,10 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { getEnv } from '../config/env.js';
 import { getCasesRootPath } from '../services/dropboxService.js';
+import {
+  formatCauseNumberCaseHint,
+  hintTextContainsCauseNumber,
+} from '../utils/causeNumbers.js';
 import type {
   AuditEvent,
   Case,
@@ -433,6 +437,72 @@ export async function addCaseOnlyHint(params: {
   if (error) throw new Error(`Insert case-only hint failed: ${error.message}`);
 }
 
+/** Case hints that mention extracted Cause numbers (litigation matching). */
+export async function getCaseHintsForCauseNumbers(causeNumbers: string[]): Promise<MatchingHint[]> {
+  const unique = [...new Set(causeNumbers.map((c) => c.trim().toUpperCase()).filter(Boolean))];
+  if (!unique.length) return [];
+
+  const merged: MatchingHint[] = [];
+  const seen = new Set<string>();
+
+  for (const causeNumber of unique) {
+    const { data, error } = await getSupabase()
+      .from('matching_hints')
+      .select(MATCHING_HINT_COLUMNS)
+      .eq('hint_type', 'case')
+      .ilike('hint_text', `%${causeNumber}%`);
+
+    if (error) {
+      if (isMissingMatchingHintsTable(error)) return [];
+      throw new Error(`Cause hint lookup failed: ${error.message}`);
+    }
+
+    for (const row of data ?? []) {
+      const hint = mapMatchingHintRow(row);
+      const key = `${hint.caseNumber ?? ''}|${hint.hintText}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      merged.push(hint);
+    }
+  }
+
+  return merged;
+}
+
+/** Save a Teach Case hint linking a Cause number to a case (idempotent). Returns true if inserted. */
+export async function upsertCauseNumberCaseHint(params: {
+  caseNumber: string;
+  causeNumber: string;
+  source: string;
+  createdBy?: string;
+}): Promise<boolean> {
+  const hintText = formatCauseNumberCaseHint(params.causeNumber, params.caseNumber);
+  const { data: existing, error: listError } = await getSupabase()
+    .from('matching_hints')
+    .select('id, hint_text')
+    .eq('hint_type', 'case')
+    .eq('case_number', params.caseNumber)
+    .is('sender_email', null);
+
+  if (listError) {
+    if (isMissingMatchingHintsTable(listError)) return false;
+    throw new Error(`Cause hint lookup failed: ${listError.message}`);
+  }
+
+  const duplicate = (existing ?? []).some((row) =>
+    hintTextContainsCauseNumber(String(row.hint_text ?? ''), params.causeNumber)
+  );
+  if (duplicate) return false;
+
+  await addCaseOnlyHint({
+    caseNumber: params.caseNumber,
+    hintText,
+    source: params.source,
+    createdBy: params.createdBy,
+  });
+  return true;
+}
+
 async function upsertMatchingHint(params: {
   hintType: MatchingHint['hintType'];
   caseNumber: string | null;
@@ -680,19 +750,43 @@ export async function getPendingQueueItemsByThread(
   return (data ?? []) as FileSorterItem[];
 }
 
-/** Items that still have staged files in Storage past the TTL window. */
-export async function listFileSorterItemsWithTempStorageOlderThan(
-  hours: number
+const UNROUTED_TEMP_STATUSES: FileSorterItemStatus[] = [
+  'pending_review',
+  'approved',
+  'needs_attention',
+  'failed',
+];
+
+/** Routed items ready to drop from temp (reviewed_at past grace window). */
+export async function listRoutedTempStorageReadyForDeletion(
+  minutesAfterRouted: number
 ): Promise<FileSorterItem[]> {
+  const cutoff = new Date(Date.now() - minutesAfterRouted * 60 * 1000).toISOString();
+  const { data, error } = await getSupabase()
+    .from('file_sorter_items')
+    .select('*')
+    .eq('status', 'saved')
+    .not('temp_storage_url', 'is', null)
+    .not('reviewed_at', 'is', null)
+    .lt('reviewed_at', cutoff)
+    .order('reviewed_at', { ascending: true })
+    .limit(500);
+  if (error) throw new Error(`List routed temp items failed: ${error.message}`);
+  return (data ?? []) as FileSorterItem[];
+}
+
+/** Unrouted queue items past retention (e.g. weekend backlog). */
+export async function listUnroutedTempStorageExpired(hours: number): Promise<FileSorterItem[]> {
   const cutoff = new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
   const { data, error } = await getSupabase()
     .from('file_sorter_items')
     .select('*')
+    .in('status', UNROUTED_TEMP_STATUSES)
     .not('temp_storage_url', 'is', null)
     .lt('created_at', cutoff)
     .order('created_at', { ascending: true })
     .limit(500);
-  if (error) throw new Error(`List stale temp items failed: ${error.message}`);
+  if (error) throw new Error(`List unrouted temp items failed: ${error.message}`);
   return (data ?? []) as FileSorterItem[];
 }
 

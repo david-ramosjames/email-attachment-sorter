@@ -307,18 +307,25 @@ function slackReceivedAt(iso: string | null | undefined): string {
 }
 
 function threadOverrideHelpText(): string {
-  const folderList = RJL_STANDARD_SUBFOLDERS.join(', ');
   return (
-    '_Optional — reply in thread before Approve (use your own values):_\n' +
-    '• `case: 1277` (case number) or `case: First Last` (client name)\n' +
-    `• \`folder: <name>\` — ${folderList} (applies to all files in this email)\n` +
-    '• `case hint: Client is Juan Garcia — sender is his daughter Maria` (who the client is)\n' +
-    '• `sort hint: Law360 newsletters from this sender — Do Not Sort` (how to file by provider/sender)'
+    'If correct, click *Approve*.\n\n' +
+    'If wrong, reply before approving:\n\n' +
+    'Case: 1277\n' +
+    'Folder: Medical\n\n' +
+    'Optional — teach the AI for next time:\n\n' +
+    "Teach Case: Maria Garcia is Juan Garcia's daughter.\n" +
+    'Teach Case: Cause number DC-24-12345 belongs to case 1277.\n\n' +
+    'Teach Folder: MoveDocs records belong in Medical.\n' +
+    'Teach Folder: Law360 newsletters should not be sorted.\n' +
+    'Teach Folder: Photos from this sender belong in Photos.\n\n' +
+    'Then click *Approve*.'
   );
 }
 
 function pickPrimaryQueueItem(items: FileSorterItem[]): FileSorterItem {
-  const sorted = [...items].sort((a, b) => (b.ai_confidence ?? 0) - (a.ai_confidence ?? 0));
+  const sorted = [...items].sort(
+    (a, b) => (b.ai_case_confidence ?? b.ai_confidence ?? 0) - (a.ai_case_confidence ?? a.ai_confidence ?? 0)
+  );
   return sorted.find((i) => i.suggested_case_number) ?? sorted[0]!;
 }
 
@@ -356,15 +363,34 @@ function formatExternalLinksSection(items: FileSorterItem[]): string | null {
   );
 }
 
-function formatConfidenceRange(items: FileSorterItem[]): string {
-  const values = items
-    .map((i) => i.ai_confidence)
-    .filter((c): c is number => c != null);
-  if (!values.length) return '—';
-  const min = Math.min(...values);
-  const max = Math.max(...values);
-  if (min === max) return `${(min * 100).toFixed(0)}%`;
-  return `${(min * 100).toFixed(0)}%–${(max * 100).toFixed(0)}%`;
+function formatPct(confidence: number | null | undefined): string {
+  if (confidence == null) return '—';
+  return `${(confidence * 100).toFixed(0)}%`;
+}
+
+function formatConfidenceScores(item: FileSorterItem): string {
+  return [
+    `Case: ${formatPct(item.ai_case_confidence)}`,
+    `Folder: ${formatPct(item.ai_folder_confidence)}`,
+    `Overall: ${formatPct(item.ai_confidence)}`,
+  ].join('\n');
+}
+
+function formatConfidenceRange(values: Array<number | null | undefined>): string {
+  const nums = values.filter((c): c is number => c != null);
+  if (!nums.length) return '—';
+  const min = Math.min(...nums);
+  const max = Math.max(...nums);
+  if (min === max) return formatPct(min);
+  return `${formatPct(min)}–${formatPct(max)}`;
+}
+
+function formatConfidenceScoresBatch(items: FileSorterItem[]): string {
+  return [
+    `Case: ${formatConfidenceRange(items.map((i) => i.ai_case_confidence))}`,
+    `Folder: ${formatConfidenceRange(items.map((i) => i.ai_folder_confidence))}`,
+    `Overall: ${formatConfidenceRange(items.map((i) => i.ai_confidence))}`,
+  ].join('\n');
 }
 
 function queueCardEmoji(status: string): string {
@@ -493,7 +519,7 @@ function buildQueueBlocks(
         },
         {
           type: 'mrkdwn',
-          text: `*Confidence:*\n${batch ? formatConfidenceRange(items) : item.ai_confidence != null ? `${(item.ai_confidence * 100).toFixed(0)}%` : '—'}`,
+          text: `*Confidence:*\n${batch ? formatConfidenceScoresBatch(items) : formatConfidenceScores(item)}`,
         },
       ],
     },
@@ -721,10 +747,7 @@ export const slackService = {
     await slackApi('chat.postMessage', {
       channel: item.slack_queue_channel_id,
       thread_ts: item.slack_queue_message_ts,
-      text:
-        '*How to change case or folder before Approve:*\n' +
-        threadOverrideHelpText() +
-        '\n\nReply in this thread (plain text, no code blocks), then click Approve. I will confirm what I understood in this thread.',
+      text: threadOverrideHelpText(),
     });
   },
 

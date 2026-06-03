@@ -45,9 +45,11 @@ export async function postEmailItemsToSlack(
     });
   }
 
-  const primaryId = items.reduce((best, cur) =>
-    (cur.ai_confidence ?? 0) > (best.ai_confidence ?? 0) ? cur : best
-  ).id;
+  const primaryId = items.reduce((best, cur) => {
+    const curScore = cur.ai_case_confidence ?? cur.ai_confidence ?? 0;
+    const bestScore = best.ai_case_confidence ?? best.ai_confidence ?? 0;
+    return curScore > bestScore ? cur : best;
+  }).id;
   const updatedPrimary = (await getFileSorterItem(primaryId)) ?? items[0]!;
   await slackService.updateQueueMessage(updatedPrimary, caseRow);
 

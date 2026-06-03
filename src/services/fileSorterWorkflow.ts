@@ -11,6 +11,7 @@ import {
   upsertSenderCaseHint,
   upsertSenderSortHint,
   addCaseOnlyHint,
+  upsertCauseNumberCaseHint,
 } from '../db/supabase.js';
 import {
   getCasesRootPath,
@@ -21,7 +22,15 @@ import {
   uploadFileToDropbox,
 } from './dropboxService.js';
 import { FILE_ALREADY_IN_DROPBOX } from '../utils/approveErrors.js';
-import { clearTempStorageForItem, clearTempStorageForItems } from './tempStorageCleanupService.js';
+import {
+  extractCauseNumbersFromTexts,
+  formatCauseNumberCaseHint,
+} from '../utils/causeNumbers.js';
+import { extractDocumentExcerpt } from './documentExtractor.js';
+import {
+  clearTempStorageForItems,
+  scheduleTempStorageDeletionAfterRouted,
+} from './tempStorageCleanupService.js';
 import {
   parseCaseNumberFromDropboxFolder,
   RJL_STANDARD_SUBFOLDERS,
@@ -184,6 +193,7 @@ async function persistMatchingHintsFromApproval(opts: {
   usedFolderOverride: boolean;
   threadFolderLabel: string | null;
   slackUserId: string;
+  documentTextsForCauseLearning?: string[];
 }): Promise<void> {
   const {
     trigger,
@@ -196,6 +206,7 @@ async function persistMatchingHintsFromApproval(opts: {
     usedFolderOverride,
     threadFolderLabel,
     slackUserId,
+    documentTextsForCauseLearning = [],
   } = opts;
 
   const aiMissedCase = batch.some(
@@ -277,6 +288,46 @@ async function persistMatchingHintsFromApproval(opts: {
       logger.warn('Could not auto-learn sort hint', { err: String(err) });
     }
   }
+
+  const causeNumbers = extractCauseNumbersFromTexts(
+    trigger.subject,
+    trigger.body_excerpt,
+    ...batch.map((i) => i.ai_reason),
+    ...documentTextsForCauseLearning
+  );
+
+  for (const causeNumber of causeNumbers) {
+    try {
+      const created = await upsertCauseNumberCaseHint({
+        caseNumber,
+        causeNumber,
+        source: 'auto_learned',
+        createdBy: slackUserId,
+      });
+      if (created) {
+        const hintText = formatCauseNumberCaseHint(causeNumber, caseNumber);
+        await auditService.log(
+          trigger.id,
+          'matching_hint_saved',
+          {
+            hintType: 'case',
+            caseNumber,
+            hintText: hintText.slice(0, 200),
+            autoLearned: 'cause_number',
+            causeNumber,
+          },
+          slackUserId
+        );
+        logger.info('Auto-learned Cause number case hint', { caseNumber, causeNumber });
+      }
+    } catch (err) {
+      logger.warn('Could not auto-learn Cause number hint', {
+        caseNumber,
+        causeNumber,
+        err: String(err),
+      });
+    }
+  }
 }
 
 export async function handleApprove(
@@ -324,6 +375,7 @@ export async function handleApprove(
   const reviewedAt = new Date().toISOString();
   let duplicateCount = 0;
   let externalLinkCount = 0;
+  const documentTextsForCauseLearning: string[] = [];
 
   for (const batchItem of pending) {
     if (isExternalLinkItem(batchItem)) {
@@ -366,6 +418,19 @@ export async function handleApprove(
         err: String(err),
       });
       throw err;
+    }
+
+    try {
+      const extracted = await extractDocumentExcerpt(
+        buffer,
+        batchItem.attachment_mime_type ?? '',
+        batchItem.attachment_filename
+      );
+      if (extracted?.excerpt) {
+        documentTextsForCauseLearning.push(extracted.excerpt);
+      }
+    } catch {
+      /* optional — email text still used for Cause extraction */
     }
 
     let upload: { path: string; id: string; folderCreated: boolean };
@@ -418,7 +483,7 @@ export async function handleApprove(
 
     savedFiles.push({ filename: batchItem.attachment_filename, dropboxLink: permalink });
 
-    await clearTempStorageForItem(saved);
+    scheduleTempStorageDeletionAfterRouted(saved);
 
     const crossPosted = await slackService.postCaseChannelConfirmation({
       caseRow,
@@ -474,6 +539,7 @@ export async function handleApprove(
     usedFolderOverride,
     threadFolderLabel,
     slackUserId,
+    documentTextsForCauseLearning,
   });
 }
 

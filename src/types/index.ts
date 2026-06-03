@@ -51,6 +51,9 @@ export interface FileSorterItem {
   suggested_case_number: string | null;
   suggested_folder_path: string | null;
   suggested_document_type: string | null;
+  ai_case_confidence: number | null;
+  ai_folder_confidence: number | null;
+  /** Overall filing confidence (case + folder + document type combined). */
   ai_confidence: number | null;
   ai_reason: string | null;
   status: FileSorterItemStatus;
@@ -173,6 +176,9 @@ export interface ClassificationResult {
   suggestedCaseNumber: string | null;
   suggestedFolderPath: string | null;
   documentType: DocumentType | 'needs_attention';
+  caseConfidence: number;
+  folderConfidence: number;
+  /** Overall filing confidence (case + folder + document type combined). */
   confidence: number;
   reason: string;
   needsAttention: boolean;

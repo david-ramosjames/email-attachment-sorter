@@ -6,8 +6,9 @@ import { RJL_STANDARD_SUBFOLDERS } from '../constants/rjlFolders.js';
  *   case: 1277
  *   case: First Last
  *   folder: Medical
- *   case hint: Client is Juan Garcia — sender is his daughter Maria
- *   sort hint: Law360 newsletters from this list — Do Not Sort
+ *   Teach Case: Maria Garcia is Juan Garcia's daughter
+ *   Teach Folder: Law360 newsletters should not be sorted
+ * Legacy: case hint:, sort hint:, hint:
  */
 export interface ThreadOverride {
   caseName?: string;
@@ -65,9 +66,19 @@ export function parseThreadReply(text: string): ThreadOverride {
       result.caseHints = [...(result.caseHints ?? []), cleanThreadLine(caseHintMatch[1]!)];
       continue;
     }
+    const teachCaseMatch = trimmed.match(/^teach\s+case:\s*(.+)$/i);
+    if (teachCaseMatch) {
+      result.caseHints = [...(result.caseHints ?? []), cleanThreadLine(teachCaseMatch[1]!)];
+      continue;
+    }
     const sortHintMatch = trimmed.match(/^sort\s+hint:\s*(.+)$/i);
     if (sortHintMatch) {
       result.sortHints = [...(result.sortHints ?? []), cleanThreadLine(sortHintMatch[1]!)];
+      continue;
+    }
+    const teachFolderMatch = trimmed.match(/^teach\s+folder:\s*(.+)$/i);
+    if (teachFolderMatch) {
+      result.sortHints = [...(result.sortHints ?? []), cleanThreadLine(teachFolderMatch[1]!)];
       continue;
     }
     const legacyHintMatch = trimmed.match(/^hint:\s*(.+)$/i);
