@@ -28,6 +28,7 @@ import {
 import { parseUserMentionsFromSlackTopic } from '../utils/slackCaseParser.js';
 import {
   getSlackChannelIdByNameMap,
+  clearSlackChannelNameCache,
   ensureBotCanUploadToChannel,
   getConversationInfo,
   slackJoinHint,
@@ -136,7 +137,7 @@ async function slackUploadFileToChannel(opts: {
 }): Promise<void> {
   const mime = opts.mimeType?.trim() || 'application/octet-stream';
 
-  const uploadStart = await slackApi<{
+  const uploadStart = await slackApiForm<{
     upload_url: string;
     file_id: string;
   }>('files.getUploadURLExternal', {
@@ -153,8 +154,8 @@ async function slackUploadFileToChannel(opts: {
     throw new Error(`Slack file byte upload failed: HTTP ${byteUpload.status}`);
   }
 
-  await slackApi('files.completeUploadExternal', {
-    files: [{ id: uploadStart.file_id, title: opts.filename }],
+  await slackApiForm('files.completeUploadExternal', {
+    files: JSON.stringify([{ id: uploadStart.file_id, title: opts.filename }]),
     channel_id: opts.channelId,
     initial_comment: opts.initialComment,
   });
@@ -251,6 +252,9 @@ function slackFileUploadHint(
   }
   if (err.includes('missing_scope')) {
     return 'Add files:write scope to the Slack app and reinstall to the workspace.';
+  }
+  if (err.includes('invalid_arguments')) {
+    return 'Slack file upload misconfigured — check Railway logs; the app should retry with legacy upload.';
   }
   return 'Check Slack app scopes (files:write, channels:join) and that the bot is in the case channel.';
 }
@@ -699,11 +703,33 @@ function buildQueueBlocks(
 async function resolveCaseSlackChannelId(caseRow: Case): Promise<string | null> {
   const mapping = await getSlackChannelForCase(caseRow.case_number);
   const storedId = mapping?.slack_channel_id ?? caseRow.slack_channel_id;
-  if (storedId?.trim()) return storedId.trim();
+  const expectedName = caseRow.slack_channel_name.trim().toLowerCase();
 
-  const channelName = caseRow.slack_channel_name.trim().toLowerCase();
+  if (storedId?.trim()) {
+    try {
+      const info = await getConversationInfo(storedId.trim());
+      if (info && (!expectedName || info.name.toLowerCase() === expectedName)) {
+        return info.id;
+      }
+      logger.warn('Stored slack_channel_id does not match case channel name — re-resolving', {
+        caseNumber: caseRow.case_number,
+        storedId: storedId.trim(),
+        slackName: info?.name,
+        expectedName,
+      });
+    } catch (err) {
+      logger.warn('Stored slack_channel_id could not be loaded — re-resolving by name', {
+        caseNumber: caseRow.case_number,
+        storedId: storedId.trim(),
+        err: String(err),
+      });
+    }
+  }
+
+  const channelName = expectedName;
   if (!channelName) return null;
 
+  clearSlackChannelNameCache();
   const slackChannelIdByName = await getSlackChannelIdByNameMap();
   const resolved = slackChannelIdByName.get(channelName) ?? null;
   if (resolved) {
@@ -942,6 +968,7 @@ export const slackService = {
           filename: opts.item.attachment_filename,
           err: errMsg,
           hint,
+          uploadAccess,
         });
         try {
           await slackApi('chat.postMessage', {

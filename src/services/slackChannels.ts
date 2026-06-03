@@ -317,7 +317,10 @@ export async function joinAllPublicSlackChannels(
       abortedEarly,
       abortReason,
     };
-    logger.info('Public Slack channel join pass complete', { ...result });
+    logger.info('Public Slack channel join pass complete', {
+      ...result,
+      summary: `caseChannels=${publicChannels.length} joined=${joined} alreadyMember=${alreadyMember} failed=${failed}`,
+    });
     return result;
   } finally {
     joinInProgress = false;
@@ -397,14 +400,32 @@ export async function ensureBotCanUploadToChannel(
 
   try {
     await ensureBotInChannel(channelId);
-    logger.info('Joined Slack case channel for file upload', { channelId, channelName });
+    const after = await getConversationInfo(channelId);
+    if (after?.isMember) {
+      logger.info('Joined Slack case channel for file upload', {
+        channelId,
+        channelName: after.name,
+      });
+      return {
+        channelId,
+        channelName: after.name,
+        isMember: true,
+        isPrivate: after.isPrivate,
+        joinedNow: true,
+        slackError: null,
+      };
+    }
+    logger.warn('Slack join returned ok but bot is still not a channel member', {
+      channelId,
+      channelName,
+    });
     return {
       channelId,
       channelName,
-      isMember: true,
+      isMember: false,
       isPrivate,
-      joinedNow: true,
-      slackError: null,
+      joinedNow: false,
+      slackError: 'not_in_channel',
     };
   } catch (err) {
     const slackError = err instanceof SlackApiError ? err.code : 'unknown';
