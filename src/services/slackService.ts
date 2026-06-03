@@ -19,6 +19,12 @@ import {
   externalLinkUrlFromItem,
   isExternalLinkItem,
 } from '../utils/externalFileLinks.js';
+import {
+  isIntakeNoCaseItem,
+  queueCaseLabel,
+  queueDocumentTypeLabel,
+  queueFolderLabel,
+} from '../utils/intakeDocumentSignals.js';
 import { parseUserMentionsFromSlackTopic } from '../utils/slackCaseParser.js';
 import { getSlackChannelIdByNameMap, ensureBotInChannel, getConversationInfo } from './slackChannels.js';
 
@@ -369,6 +375,13 @@ function formatPct(confidence: number | null | undefined): string {
 }
 
 function formatConfidenceScores(item: FileSorterItem): string {
+  if (isIntakeNoCaseItem(item)) {
+    return [
+      'Case: N/A (new client intake)',
+      `Folder: ${formatPct(item.ai_folder_confidence)}`,
+      `Overall: ${formatPct(item.ai_confidence)}`,
+    ].join('\n');
+  }
   return [
     `Case: ${formatPct(item.ai_case_confidence)}`,
     `Folder: ${formatPct(item.ai_folder_confidence)}`,
@@ -410,7 +423,7 @@ function queueCardEmoji(status: string): string {
   }
 }
 
-function buildQueueHeaderText(status: string, batch: boolean, batchCount: number): string {
+function buildQueueHeaderText(status: string, batch: boolean, batchCount: number, items?: FileSorterItem[]): string {
   const emoji = queueCardEmoji(status);
   const batchSuffix = batch
     ? status === 'needs_attention' || status === 'saved' || status === 'failed'
@@ -425,6 +438,10 @@ function buildQueueHeaderText(status: string, batch: boolean, batchCount: number
     return `${emoji} Not sorted`;
   }
   if (status === 'needs_attention') {
+    const intakeBatch = items?.some(isIntakeNoCaseItem);
+    if (intakeBatch && !batch) {
+      return `${emoji} New intake — no case folder yet`;
+    }
     return `${emoji} New File Sorter Item — Needs Human Review${batchSuffix}`;
   }
   if (status === 'failed') {
@@ -450,9 +467,7 @@ function buildQueueBlocks(
   const disabled = options?.disabled ?? false;
   const status = options?.statusOverride ?? (batch ? aggregateBatchStatus(items) : item.status);
   const reviewedBy = options?.reviewedByUserId?.trim();
-  const caseLabel = caseRow
-    ? `${caseRow.slack_channel_name} (${caseRow.case_number})`
-    : item.suggested_case_number ?? '—';
+  const caseLabel = queueCaseLabel(item, caseRow);
 
   const folderLabels = [
     ...new Set(
@@ -461,18 +476,22 @@ function buildQueueBlocks(
         .filter((f) => f !== '—')
     ),
   ];
-  const folderDisplay =
-    folderLabels.length === 0
-      ? '—'
+  const folderDisplay = batch
+    ? folderLabels.length === 0
+      ? items.some(isIntakeNoCaseItem)
+        ? 'Intake'
+        : '—'
       : folderLabels.length === 1
         ? folderLabels[0]!
-        : `Multiple (${folderLabels.join(', ')})`;
+        : `Multiple (${folderLabels.join(', ')})`
+    : queueFolderLabel(item, folderLabelFromPath(item.suggested_folder_path));
 
   const docTypes = [
     ...new Set(items.map((i) => i.suggested_document_type).filter(Boolean)),
   ] as string[];
-  const documentTypeDisplay =
-    docTypes.length === 0 ? '—' : docTypes.length === 1 ? docTypes[0]! : docTypes.join(', ');
+  const documentTypeDisplay = batch
+    ? queueDocumentTypeLabel(item, docTypes)
+    : queueDocumentTypeLabel(item, item.suggested_document_type ? [item.suggested_document_type] : docTypes);
 
   const toLine = [...item.to_emails, ...item.cc_emails].filter(Boolean).join(', ') || '—';
   const attachmentDisplay = batch
@@ -483,7 +502,7 @@ function buildQueueBlocks(
 
   const externalLinksBlock = formatExternalLinksSection(items);
 
-  const headerText = buildQueueHeaderText(status, batch, items.length);
+  const headerText = buildQueueHeaderText(status, batch, items.length, items);
 
   const blocks: Record<string, unknown>[] = [
     { type: 'divider' },
@@ -692,7 +711,7 @@ export const slackService = {
     const status = aggregateBatchStatus(items);
     const result = await slackApi<{ channel: string; ts: string }>('chat.postMessage', {
       channel,
-      text: `${buildQueueHeaderText(status, items.length > 1, items.length)} — ${label}`,
+      text: `${buildQueueHeaderText(status, items.length > 1, items.length, items)} — ${label}`,
       blocks,
     });
     return { channel: result.channel, ts: result.ts };
@@ -733,7 +752,7 @@ export const slackService = {
       batchItems.length === 1
         ? batchItems[0]!.attachment_filename
         : `${batchItems.length} attachments`;
-    const fallbackText = `${buildQueueHeaderText(status, batchItems.length > 1, batchItems.length)} — ${label}`;
+    const fallbackText = `${buildQueueHeaderText(status, batchItems.length > 1, batchItems.length, batchItems)} — ${label}`;
     await slackApi('chat.update', {
       channel: item.slack_queue_channel_id,
       ts: item.slack_queue_message_ts,

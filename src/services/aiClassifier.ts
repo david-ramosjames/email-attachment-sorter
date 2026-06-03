@@ -21,7 +21,7 @@ import { clientIdentityIsUnknown, emailRequestsClientIdentification } from '../u
 import { buildCaseIdentificationPrompt } from '../constants/caseIdentificationPrompt.js';
 import { buildFolderClassificationPrompt, folderPromptCaseStageLine } from '../constants/folderClassificationPrompt.js';
 import { clientNameExactlyMatchesCase } from '../utils/caseNameMatch.js';
-import { isNewClientIntakeContext } from '../utils/intakeDocumentSignals.js';
+import { isNewClientIntakeContext, INTAKE_NO_CASE_MARKER } from '../utils/intakeDocumentSignals.js';
 import { extractForwardedEmailContext } from '../utils/forwardedEmailContext.js';
 import { foldersForCaseNumber, loadCaseCatalogForAi } from './caseCatalogForAi.js';
 import type { CaseCatalogForAi } from './caseCatalogForAi.js';
@@ -264,6 +264,8 @@ export async function classifyDocument(ctx: MatchContext): Promise<Classificatio
       caseConfidence: 0,
       folderConfidence: 0,
       confidence: 0,
+      suggestedFolderLabel: null,
+      intakeNoCase: false,
       reason: 'Case index is empty — sync cases from Slack, then re-file',
       needsAttention: true,
     };
@@ -306,11 +308,13 @@ export async function classifyDocument(ctx: MatchContext): Promise<Classificatio
     reason = 'AI returned case number not in case index — rejected';
   }
 
-  if (isNewClientIntakeContext(ctx) && suggestedCaseNumber) {
-    suggestedCaseNumber = null;
+  if (isNewClientIntakeContext(ctx)) {
+    if (suggestedCaseNumber) {
+      suggestedCaseNumber = null;
+      reason +=
+        ' (intake/retainer document — case not auto-assigned; open a case channel/folder first or use thread Case: before Approve)';
+    }
     caseConfidence = Math.min(caseConfidence, 0.35);
-    reason +=
-      ' (intake/retainer document — case not auto-assigned; open a case channel/folder first or use thread Case: before Approve)';
   } else if (suggestedCaseNumber && caseParsed.client_name) {
     const caseRow = await getCaseById(suggestedCaseNumber);
     if (caseRow && !clientNameExactlyMatchesCase(caseRow, caseParsed.client_name)) {
@@ -356,6 +360,8 @@ export async function classifyDocument(ctx: MatchContext): Promise<Classificatio
     if (resolved.reasonSuffix) reason += resolved.reasonSuffix;
   }
 
+  const intakeNoCase = isNewClientIntakeContext(ctx) && !suggestedCaseNumber;
+
   const overallConfidence = computeOverallConfidence(
     caseConfidence,
     folderConfidence,
@@ -367,15 +373,30 @@ export async function classifyDocument(ctx: MatchContext): Promise<Classificatio
     caseConfidence < CASE_REVIEW_THRESHOLD ||
     documentType === 'needs_attention';
 
+  let suggestedFolderLabel =
+    folderParsed.folder?.trim() ? normalizeFolderLabel(folderParsed.folder) : intakeNoCase ? 'Intake' : null;
+
+  let filingDocumentType: DocumentType | 'needs_attention' = needsAttention
+    ? 'needs_attention'
+    : (documentType as DocumentType);
+
+  if (intakeNoCase) {
+    filingDocumentType = 'Intake';
+    if (!suggestedFolderLabel) suggestedFolderLabel = 'Intake';
+    reason = `${INTAKE_NO_CASE_MARKER} ${reason}`;
+  }
+
   return {
     suggestedCaseNumber,
     suggestedFolderPath,
-    documentType: needsAttention ? 'needs_attention' : (documentType as DocumentType),
+    suggestedFolderLabel,
+    documentType: filingDocumentType,
     caseConfidence,
     folderConfidence,
     confidence: overallConfidence,
     reason,
     needsAttention,
+    intakeNoCase,
   };
 }
 

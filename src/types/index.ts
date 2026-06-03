@@ -175,6 +175,8 @@ export type DocumentType =
 export interface ClassificationResult {
   suggestedCaseNumber: string | null;
   suggestedFolderPath: string | null;
+  /** Dropbox subfolder label when path is not resolved yet (e.g. new intake). */
+  suggestedFolderLabel: string | null;
   documentType: DocumentType | 'needs_attention';
   caseConfidence: number;
   folderConfidence: number;
@@ -182,6 +184,8 @@ export interface ClassificationResult {
   confidence: number;
   reason: string;
   needsAttention: boolean;
+  /** Retainer/contract intake with no case channel or folder yet. */
+  intakeNoCase: boolean;
 }
 
 export const DOCUMENT_TYPES: DocumentType[] = [

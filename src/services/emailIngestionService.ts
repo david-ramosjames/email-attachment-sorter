@@ -318,8 +318,9 @@ async function processSingleAttachment(
     temp_storage_url: tempStorageUrl,
     suggested_case_number: classification.suggestedCaseNumber,
     suggested_folder_path: classification.suggestedFolderPath,
-    suggested_document_type:
-      classification.documentType === 'needs_attention'
+    suggested_document_type: classification.intakeNoCase
+      ? 'Intake'
+      : classification.documentType === 'needs_attention'
         ? null
         : classification.documentType,
     ai_case_confidence: classification.caseConfidence,
