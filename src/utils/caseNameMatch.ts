@@ -1,4 +1,5 @@
 import type { Case, ClientIdentity } from '../types/index.js';
+import { tokensFromPersonName } from './patientNameExtract.js';
 
 /** "lourdes galeas" → "lourdesgaleas" for matching slack channel slugs */
 export function compactAlpha(s: string): string {
@@ -76,6 +77,37 @@ function channelNamesDifferentFirstPerson(
   }
 
   return false;
+}
+
+function tokenAppearsExactlyInHaystack(
+  token: string,
+  haystack: { text: string; compact: string }
+): boolean {
+  if (token.length < 3) return false;
+  const t = token.toLowerCase();
+  const compact = compactAlpha(t);
+  return haystack.text.includes(t) || haystack.compact.includes(compact);
+}
+
+/**
+ * Strict gate for AI case assignment: BOTH first and last name must appear in the
+ * case Slack slug or Dropbox folder label — no fuzzy surname matching, no first-name-only.
+ */
+export function clientNameExactlyMatchesCase(caseRow: Case, clientFullName: string): boolean {
+  const tokens = tokensFromPersonName(clientFullName);
+  if (tokens.length < 2) return false;
+
+  const first = tokens[0]!;
+  const last = tokens[tokens.length - 1]!;
+  const haystack = caseHaystack(caseRow);
+
+  if (!tokenAppearsExactlyInHaystack(first, haystack)) return false;
+  if (!tokenAppearsExactlyInHaystack(last, haystack)) return false;
+
+  // Channel slug often glues first+last (albertomontes) — last name must still appear
+  if (channelNamesDifferentFirstPerson(caseRow, first, haystack)) return false;
+
+  return true;
 }
 
 /** How many name tokens appear in channel, folder, or case number fields */

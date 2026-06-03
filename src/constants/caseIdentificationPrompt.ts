@@ -28,6 +28,31 @@ They are often NOT: the sender, recipient, investigator, medical provider, adjus
 
 ---
 
+## NEW CLIENT / INTAKE (retainers, Adobe Sign contracts)
+
+Retainer and engagement contracts sent for signature are often for a **brand-new client** — there may be **no Slack case channel yet**.
+
+For Adobe Sign / DocuSign contracts, "sent out for signature", or Ramos James Law contract templates:
+* suggested_case_number = null unless the PI client's **full first AND last name** exactly match a case index row
+* Same first name with a **different last name is NOT a match** (Alberto Hernández ≠ Alberto Montes / albertomontes-etal-1034)
+* Do not assign a case just because the first name appears inside a channel slug
+* Folder Intake is handled separately — your job here is case_number only
+
+---
+
+## EXACT NAME MATCHING (required for any case assignment)
+
+Both **first name AND last name** from the document must match the client label in the case index (Slack slug + Dropbox folder name).
+
+* CORRECT: Alberto Montes → albertomontes-etal-1034 / "Alberto Montes"
+* INCORRECT: Alberto Hernández Hernández → albertomontes-etal-1034 (last name Hernández ≠ Montes)
+* INCORRECT: Nancy Gauna → Nancy Garcia
+* INCORRECT: matching on first name only when last names differ
+
+If last names differ, suggested_case_number = null and case_confidence below 0.60.
+
+---
+
 ## HOW TO MATCH (work through this in order)
 
 1. Read attachment text first (OCR/PDF text is primary evidence)
@@ -69,7 +94,7 @@ Choose suggested_case_number ONLY as an exact case_number string from the index 
 
 ## case_confidence
 
-* 0.95–1.00: PI client full name in attachment; exact index match; no plausible alternate case
+* 0.95–1.00: PI client first AND last name in attachment; **both** match case index client label exactly; no alternate case with same first name
 * 0.80–0.94: client clearly identified; minor ambiguity only
 * 0.60–0.79: likely client but meaningful uncertainty — still assign only if you would defend this to a paralegal
 * below 0.60: suggested_case_number MUST be null

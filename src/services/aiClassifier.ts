@@ -20,6 +20,8 @@ import { getCaseById } from '../db/supabase.js';
 import { clientIdentityIsUnknown, emailRequestsClientIdentification } from '../utils/emailClientSignals.js';
 import { buildCaseIdentificationPrompt } from '../constants/caseIdentificationPrompt.js';
 import { buildFolderClassificationPrompt, folderPromptCaseStageLine } from '../constants/folderClassificationPrompt.js';
+import { clientNameExactlyMatchesCase } from '../utils/caseNameMatch.js';
+import { isNewClientIntakeContext } from '../utils/intakeDocumentSignals.js';
 import { extractForwardedEmailContext } from '../utils/forwardedEmailContext.js';
 import { foldersForCaseNumber, loadCaseCatalogForAi } from './caseCatalogForAi.js';
 import type { CaseCatalogForAi } from './caseCatalogForAi.js';
@@ -302,6 +304,24 @@ export async function classifyDocument(ctx: MatchContext): Promise<Classificatio
     suggestedCaseNumber = null;
     caseConfidence = 0;
     reason = 'AI returned case number not in case index — rejected';
+  }
+
+  if (isNewClientIntakeContext(ctx) && suggestedCaseNumber) {
+    suggestedCaseNumber = null;
+    caseConfidence = Math.min(caseConfidence, 0.35);
+    reason +=
+      ' (intake/retainer document — case not auto-assigned; open a case channel/folder first or use thread Case: before Approve)';
+  } else if (suggestedCaseNumber && caseParsed.client_name) {
+    const caseRow = await getCaseById(suggestedCaseNumber);
+    if (caseRow && !clientNameExactlyMatchesCase(caseRow, caseParsed.client_name)) {
+      suggestedCaseNumber = null;
+      caseConfidence = Math.min(caseConfidence, 0.35);
+      reason += ` (exact name match required — "${caseParsed.client_name}" does not match ${caseRow.slack_channel_name})`;
+    }
+  } else if (suggestedCaseNumber && !caseParsed.client_name) {
+    suggestedCaseNumber = null;
+    caseConfidence = Math.min(caseConfidence, 0.35);
+    reason += ' (case not assigned without a identified PI client name)';
   }
 
   logger.info('AI folder classification request', {
