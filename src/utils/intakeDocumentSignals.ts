@@ -2,44 +2,40 @@ import type { MatchContext, FileSorterItem } from '../types/index.js';
 
 export const INTAKE_NO_CASE_MARKER = '[Intake — no case folder yet]';
 
-/** Retainer/contract intake — often no Slack case channel yet; do not assign an existing case lightly. */
-export function isNewClientIntakeContext(ctx: MatchContext): boolean {
-  if (ctx.aiClientIdentity?.isNewClientIntake) return true;
+export const INTAKE_RAMOSJAMES_EMAIL = 'intake@ramosjames.com';
 
-  const blob = [
-    ctx.subject,
-    ctx.bodyExcerpt,
-    ctx.attachmentFilename,
-    ctx.fromEmail,
-  ]
-    .filter(Boolean)
-    .join('\n')
-    .toLowerCase();
+export function isIntakeRamosJamesAddress(email: string): boolean {
+  return email.trim().toLowerCase() === INTAKE_RAMOSJAMES_EMAIL;
+}
 
-  if (/\bhas been sent out for signature\b/.test(blob)) return true;
-  if (/\bsent out for signature to\b/.test(blob)) return true;
-  if (/\bawaiting (your )?signature\b/.test(blob)) return true;
+/** True when the message is from intake@ or forwards an intake@ request. */
+export function isEmailFromIntake(ctx: {
+  fromEmail: string;
+  bodyExcerpt?: string | null;
+  forwardedEmailContext?: string | null;
+}): boolean {
+  if (isIntakeRamosJamesAddress(ctx.fromEmail)) return true;
 
-  if (/adobesign|docusign/.test(ctx.fromEmail.toLowerCase())) {
-    if (/\b(contract|retainer|engagement|fee agreement)\b/.test(blob)) return true;
-  }
+  const body = ctx.bodyExcerpt ?? '';
+  if (/\bfrom:\s*[^\n]*intake@ramosjames\.com/i.test(body)) return true;
 
-  if (/\bcontract\b.*\bramos james law\b/.test(blob)) return true;
-  if (/\bramos james law\b.*\bcontract\b/.test(blob)) return true;
+  const forwarded = ctx.forwardedEmailContext ?? '';
+  if (/intake@ramosjames\.com/i.test(forwarded)) return true;
 
   return false;
+}
+
+/** New-client intake queue handling — only intake@ramosjames.com (not Adobe Sign / e-sign). */
+export function isNewClientIntakeContext(ctx: MatchContext): boolean {
+  return isEmailFromIntake(ctx);
 }
 
 export function isIntakeNoCaseItem(item: FileSorterItem): boolean {
   if (item.suggested_case_number) return false;
   if (item.ai_reason?.includes(INTAKE_NO_CASE_MARKER)) return true;
-  return isNewClientIntakeContext({
+  return isEmailFromIntake({
     fromEmail: item.from_email,
-    toEmails: item.to_emails,
-    ccEmails: item.cc_emails,
-    subject: item.subject ?? '',
-    bodyExcerpt: item.body_excerpt ?? '',
-    attachmentFilename: item.attachment_filename,
+    bodyExcerpt: item.body_excerpt,
   });
 }
 

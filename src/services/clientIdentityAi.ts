@@ -3,6 +3,7 @@ import { getEnv } from '../config/env.js';
 import { MAX_DOCUMENT_TEXT_FOR_AI } from '../constants/classification.js';
 import type { ClientIdentity, MatchContext } from '../types/index.js';
 import { buildSmartBodyExcerpt } from '../utils/emailBodyExcerpt.js';
+import { isEmailFromIntake } from '../utils/intakeDocumentSignals.js';
 import { caseMatchingHintsPromptSection } from '../utils/matchingHints.js';
 import { logger } from '../utils/logger.js';
 
@@ -81,7 +82,7 @@ From: sender, To/Cc, subject, body (including forwards), attachment filename, an
 
 1. Who is the PI CLIENT (person RJL represents)? This is usually NOT the email sender (often a vendor, HR dept, Adobe Sign, medical records company, or RJL staff).
 2. What kind of document this is (brief document_kind label).
-3. Whether this looks like a brand-new client engagement with no case folder yet (is_new_client_intake) — decide from meaning, not keywords like "signed" alone.
+3. Whether this looks like a brand-new client engagement with no case folder yet (is_new_client_intake) — **only true when the email is from intake@ramosjames.com or forwards intake@**; Adobe Sign and other vendors are NOT intake.
 
 If the sender asks RJL to identify the client ("please let me know the name of your client"), set client_full_name to null — the client is unknown.
 
@@ -156,7 +157,7 @@ Attachment filename: ${ctx.attachmentFilename}${siblings}${attachmentSection}${c
       caseNumberHint: parsed.case_number_hint?.replace(/\D/g, '') || null,
       slackChannelHint: parsed.slack_channel_hint?.toLowerCase().trim() || null,
       documentKind: parsed.document_kind,
-      isNewClientIntake: parsed.is_new_client_intake,
+      isNewClientIntake: isEmailFromIntake(ctx),
       confidence: parsed.confidence,
       reason: parsed.reason,
     };

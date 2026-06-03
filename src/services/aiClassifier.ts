@@ -329,13 +329,12 @@ export async function classifyDocument(ctx: MatchContext): Promise<Classificatio
   if (isNewClientIntakeContext(ctx)) {
     const existingClientCaseMatch = Boolean(suggestedCaseNumber && caseParsed.client_name);
     if (existingClientCaseMatch) {
-      reason +=
-        ' (contract/signature intake for existing client — case matched by client name; folder may still be Intake)';
+      reason += ' (intake@ request — case matched by client name)';
     } else {
       if (suggestedCaseNumber) {
         suggestedCaseNumber = null;
         reason +=
-          ' (intake/retainer document — no matching case channel yet; use thread Case: before Approve)';
+          ' (intake@ request — no matching case channel yet; use thread Case: before Approve)';
       }
       caseConfidence = Math.min(caseConfidence, 0.35);
     }

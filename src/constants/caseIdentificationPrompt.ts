@@ -28,15 +28,14 @@ They are often NOT: the sender, recipient, investigator, medical provider, adjus
 
 ---
 
-## NEW CLIENT / INTAKE (retainers, Adobe Sign contracts)
+## NEW CLIENT / INTAKE (intake@ramosjames.com only)
 
-Retainer and engagement contracts sent for signature are often for a **brand-new client** — there may be **no Slack case channel yet**.
+Treat as **new-client intake** only when the email is **from intake@ramosjames.com** or forwards an original message from intake@ramosjames.com. There may be **no Slack case channel yet** for a brand-new client.
 
-For Adobe Sign / DocuSign contracts, "sent out for signature", or Ramos James Law contract templates:
+In that situation:
 * suggested_case_number = null unless the PI client's **full first AND last name** exactly match a case index row
-* Same first name with a **different last name is NOT a match** (Alberto Hernández ≠ Alberto Montes / albertomontes-etal-1034)
-* Do not assign a case just because the first name appears inside a channel slug
-* Folder Intake is handled separately — your job here is case_number only
+
+**Adobe Sign, DocuSign, MSA, retainer, and "sent for signature" mail from other senders are NOT intake** — match case by client name using normal rules below.
 
 ---
 
