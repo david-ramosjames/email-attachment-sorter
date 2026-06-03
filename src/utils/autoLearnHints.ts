@@ -12,76 +12,46 @@ export interface AutoLearnApprovalContext {
   threadFolderOverrideText: string | null;
 }
 
-export function buildSenderCaseHintText(
-  ctx: AutoLearnApprovalContext,
-  opts: { corrected: boolean }
-): string {
-  if (opts.corrected) {
-    return `Emails from ${ctx.fromEmail} belong to case ${ctx.caseSlackChannelName} (${ctx.caseNumber}).`;
-  }
-  return (
-    `Staff confirmed: emails from ${ctx.fromEmail} usually belong to case ` +
-    `${ctx.caseSlackChannelName} (${ctx.caseNumber}).`
-  );
+export function buildSenderCaseHintText(ctx: AutoLearnApprovalContext): string {
+  return `Emails from ${ctx.fromEmail} belong to case ${ctx.caseSlackChannelName} (${ctx.caseNumber}).`;
 }
 
-export function buildSenderFolderHintText(
-  ctx: AutoLearnApprovalContext,
-  opts: { corrected: boolean }
-): string | null {
+export function buildSenderFolderHintText(ctx: AutoLearnApprovalContext): string | null {
   if (!ctx.folderLabel) return null;
-  if (opts.corrected) {
-    return (
-      `Emails from ${ctx.fromEmail} (case ${ctx.caseNumber}) → folder ${ctx.folderLabel}.`
-    );
-  }
-  return (
-    `Staff confirmed: emails from ${ctx.fromEmail} (case ${ctx.caseNumber}) ` +
-    `usually → folder ${ctx.folderLabel}.`
-  );
+  return `Emails from ${ctx.fromEmail} (case ${ctx.caseNumber}) → folder ${ctx.folderLabel}.`;
 }
 
-/** Distinct subject/sender/filename patterns worth remembering (deduped). */
+/** Attachment filename + document-type patterns (not broad sender or e-sign provider rules). */
 export function buildPatternSortHints(ctx: AutoLearnApprovalContext): string[] {
   const folder = ctx.folderLabel;
   if (!folder) return [];
 
   const hints: string[] = [];
-  const subjectLower = ctx.subject.trim().toLowerCase();
-  const fromLower = ctx.fromEmail.toLowerCase();
-  const domain = fromLower.split('@')[1];
-
-  if (
-    /\bhas been sent out for signature\b/.test(subjectLower) ||
-    /\bsent out for signature\b/.test(subjectLower)
-  ) {
-    hints.push(`Subject "sent out for signature" from ${ctx.fromEmail} → folder ${folder}.`);
-  }
-
-  if (/adobesign|docusign/.test(fromLower)) {
-    hints.push(`E-signature notifications from ${ctx.fromEmail} → folder ${folder}.`);
-  }
-
-  if (domain && !domain.endsWith('ramosjames.com')) {
-    hints.push(`Emails from @${domain} (case ${ctx.caseNumber}) → folder ${folder}.`);
-  }
 
   for (const filename of ctx.attachmentFilenames) {
     const fn = filename.toLowerCase();
     if (/\blop\b/.test(fn)) {
-      hints.push(`Filenames containing "LOP" from ${ctx.fromEmail} → folder ${folder}.`);
+      hints.push(
+        `Attachment filename pattern "LOP" from ${ctx.fromEmail} (case ${ctx.caseNumber}) → folder ${folder}.`
+      );
       break;
     }
     if (/\b(medical|records|billing|hospital|clinic|radiology)\b/.test(fn)) {
-      hints.push(`Medical-record style filenames from ${ctx.fromEmail} → folder ${folder}.`);
+      hints.push(
+        `Medical-record attachment filenames from ${ctx.fromEmail} (case ${ctx.caseNumber}) → folder ${folder}.`
+      );
       break;
     }
     if (/\b(demand|settlement|offer|mediation)\b/.test(fn)) {
-      hints.push(`Demand/settlement style filenames from ${ctx.fromEmail} → folder ${folder}.`);
+      hints.push(
+        `Demand/settlement attachment filenames from ${ctx.fromEmail} (case ${ctx.caseNumber}) → folder ${folder}.`
+      );
       break;
     }
     if (/\b(deposition|discovery|pleading|subpoena)\b/.test(fn)) {
-      hints.push(`Litigation document filenames from ${ctx.fromEmail} → folder ${folder}.`);
+      hints.push(
+        `Litigation attachment filenames from ${ctx.fromEmail} (case ${ctx.caseNumber}) → folder ${folder}.`
+      );
       break;
     }
   }

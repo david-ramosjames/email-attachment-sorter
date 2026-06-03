@@ -307,9 +307,8 @@ async function persistMatchingHintsFromApproval(opts: {
     }
   }
 
-  if (!threadCaseHints.length) {
-    const caseCorrected = usedCaseOverride || aiMissedCase;
-    const caseHintText = buildSenderCaseHintText(learnCtx, { corrected: caseCorrected });
+  if ((usedCaseOverride || aiMissedCase) && !threadCaseHints.length) {
+    const caseHintText = buildSenderCaseHintText(learnCtx);
     try {
       await upsertSenderCaseHint({
         caseNumber,
@@ -326,7 +325,7 @@ async function persistMatchingHintsFromApproval(opts: {
           caseNumber,
           senderEmail: trigger.from_email,
           hintText: caseHintText.slice(0, 200),
-          autoLearned: caseCorrected ? 'sender_case_corrected' : 'sender_case_confirmed',
+          autoLearned: 'sender_case_corrected',
         },
         slackUserId
       );
@@ -337,37 +336,36 @@ async function persistMatchingHintsFromApproval(opts: {
 
   if (!threadSortHints.length && confirmedFolderLabel) {
     const folderCorrected = usedFolderOverride || aiMissedFolder;
-    let folderHintText = buildSenderFolderHintText(learnCtx, { corrected: folderCorrected });
-    const patterns = buildPatternSortHints(learnCtx);
-    if (folderHintText && patterns.length) {
-      folderHintText = `${folderHintText} ${patterns.join(' ')}`;
-    }
-    if (folderHintText) {
-      try {
-        await upsertSenderSortHint({
-          senderEmail: trigger.from_email,
-          hintText: folderHintText,
-          caseNumber,
-          source: 'auto_learned',
-          createdBy: slackUserId,
-        });
-        await auditService.log(
-          trigger.id,
-          'matching_hint_saved',
-          {
-            hintType: 'sort',
-            caseNumber,
+    if (folderCorrected) {
+      const folderHintText = buildSenderFolderHintText(learnCtx);
+      if (folderHintText) {
+        try {
+          await upsertSenderSortHint({
             senderEmail: trigger.from_email,
-            hintText: folderHintText.slice(0, 200),
-            autoLearned: folderCorrected ? 'sender_folder_corrected' : 'sender_folder_confirmed',
-          },
-          slackUserId
-        );
-      } catch (err) {
-        logger.warn('Could not auto-learn sender folder hint', { caseNumber, err: String(err) });
+            hintText: folderHintText,
+            caseNumber,
+            source: 'auto_learned',
+            createdBy: slackUserId,
+          });
+          await auditService.log(
+            trigger.id,
+            'matching_hint_saved',
+            {
+              hintType: 'sort',
+              caseNumber,
+              senderEmail: trigger.from_email,
+              hintText: folderHintText.slice(0, 200),
+              autoLearned: 'sender_folder_corrected',
+            },
+            slackUserId
+          );
+        } catch (err) {
+          logger.warn('Could not auto-learn sender folder hint', { caseNumber, err: String(err) });
+        }
       }
     }
 
+    const patterns = buildPatternSortHints(learnCtx);
     for (const hintText of patterns) {
       try {
         const inserted = await insertMatchingHintIfNew({
