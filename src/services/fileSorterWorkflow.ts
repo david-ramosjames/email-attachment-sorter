@@ -11,6 +11,7 @@ import {
   upsertSenderCaseHint,
   upsertSenderSortHint,
   addCaseOnlyHint,
+  insertMatchingHintIfNew,
   upsertCauseNumberCaseHint,
 } from '../db/supabase.js';
 import {
@@ -26,6 +27,15 @@ import {
   extractCauseNumbersFromTexts,
   formatCauseNumberCaseHint,
 } from '../utils/causeNumbers.js';
+import { folderLabelFromDropboxPath } from '../utils/dropboxFolderLabel.js';
+import {
+  autoLearnContextFromApproval,
+  buildPatternSortHints,
+  buildSenderCaseHintText,
+  buildSenderFolderHintText,
+  buildThreadOverrideCaseHint,
+  buildThreadOverrideFolderHint,
+} from '../utils/autoLearnHints.js';
 import { extractDocumentExcerpt } from './documentExtractor.js';
 import {
   clearTempStorageForItems,
@@ -70,6 +80,8 @@ async function resolveBatchCase(
   usedCaseOverride: boolean;
   usedFolderOverride: boolean;
   threadFolderLabel: string | null;
+  threadCaseOverrideText: string | null;
+  threadFolderOverrideText: string | null;
 }> {
   const trigger = await getFileSorterItem(itemId);
   if (!trigger) throw new Error('Item not found');
@@ -87,6 +99,8 @@ async function resolveBatchCase(
   let usedCaseOverride = false;
   let usedFolderOverride = false;
   let threadFolderLabel: string | null = null;
+  let threadCaseOverrideText: string | null = null;
+  let threadFolderOverrideText: string | null = null;
   const threadCtx = slackThreadForItem(trigger, slackThread);
 
   if (threadCtx) {
@@ -119,6 +133,7 @@ async function resolveBatchCase(
       threadSortHints = override.sortHints;
     }
     if (override.caseName) {
+      threadCaseOverrideText = override.caseName.trim();
       const matched = await getCaseByName(override.caseName);
       if (matched) {
         caseNumber = matched.case_number;
@@ -131,6 +146,7 @@ async function resolveBatchCase(
     }
     if (override.folderLabel && caseNumber) {
       usedFolderOverride = true;
+      threadFolderOverrideText = override.folderLabel.trim();
       threadFolderLabel = normalizeFolderLabel(override.folderLabel);
       const folders = await getFoldersForCase(caseNumber);
       const folder = folders.find(
@@ -175,6 +191,8 @@ async function resolveBatchCase(
     usedCaseOverride,
     usedFolderOverride,
     threadFolderLabel,
+    threadCaseOverrideText,
+    threadFolderOverrideText,
   };
 }
 
@@ -197,6 +215,10 @@ async function persistMatchingHintsFromApproval(opts: {
   usedCaseOverride: boolean;
   usedFolderOverride: boolean;
   threadFolderLabel: string | null;
+  confirmedFolderLabel: string | null;
+  savedAttachmentFilenames: string[];
+  threadCaseOverrideText: string | null;
+  threadFolderOverrideText: string | null;
   slackUserId: string;
   documentTextsForCauseLearning?: string[];
 }): Promise<void> {
@@ -209,7 +231,10 @@ async function persistMatchingHintsFromApproval(opts: {
     threadSortHints,
     usedCaseOverride,
     usedFolderOverride,
-    threadFolderLabel,
+    confirmedFolderLabel,
+    savedAttachmentFilenames,
+    threadCaseOverrideText,
+    threadFolderOverrideText,
     slackUserId,
     documentTextsForCauseLearning = [],
   } = opts;
@@ -217,6 +242,24 @@ async function persistMatchingHintsFromApproval(opts: {
   const aiMissedCase = batch.some(
     (i) => !i.suggested_case_number || i.suggested_case_number !== caseNumber
   );
+  const aiMissedFolder = batch.some((i) => {
+    const suggested = folderLabelFromDropboxPath(i.suggested_folder_path);
+    return (
+      confirmedFolderLabel &&
+      suggested?.toLowerCase() !== confirmedFolderLabel.toLowerCase()
+    );
+  });
+
+  const learnCtx = autoLearnContextFromApproval({
+    trigger,
+    batch,
+    caseNumber,
+    caseSlackChannelName: caseRow.slack_channel_name,
+    confirmedFolderLabel,
+    threadCaseOverrideText,
+    threadFolderOverrideText,
+  });
+  learnCtx.attachmentFilenames = savedAttachmentFilenames;
 
   for (const hintText of threadCaseHints) {
     try {
@@ -249,7 +292,7 @@ async function persistMatchingHintsFromApproval(opts: {
       await upsertSenderSortHint({
         senderEmail: trigger.from_email,
         hintText,
-        caseNumber: null,
+        caseNumber,
         source: 'slack_thread',
         createdBy: slackUserId,
       });
@@ -264,33 +307,129 @@ async function persistMatchingHintsFromApproval(opts: {
     }
   }
 
-  if ((usedCaseOverride || aiMissedCase) && !threadCaseHints.length) {
-    const hintText = `Emails from ${trigger.from_email} belong to case ${caseRow.slack_channel_name} (${caseNumber}).`;
+  if (!threadCaseHints.length) {
+    const caseCorrected = usedCaseOverride || aiMissedCase;
+    const caseHintText = buildSenderCaseHintText(learnCtx, { corrected: caseCorrected });
     try {
       await upsertSenderCaseHint({
         caseNumber,
         senderEmail: trigger.from_email,
-        hintText,
+        hintText: caseHintText,
         source: 'auto_learned',
         createdBy: slackUserId,
       });
+      await auditService.log(
+        trigger.id,
+        'matching_hint_saved',
+        {
+          hintType: 'case',
+          caseNumber,
+          senderEmail: trigger.from_email,
+          hintText: caseHintText.slice(0, 200),
+          autoLearned: caseCorrected ? 'sender_case_corrected' : 'sender_case_confirmed',
+        },
+        slackUserId
+      );
     } catch (err) {
-      logger.warn('Could not auto-learn case hint', { caseNumber, err: String(err) });
+      logger.warn('Could not auto-learn sender case hint', { caseNumber, err: String(err) });
     }
   }
 
-  if (usedFolderOverride && threadFolderLabel && !threadSortHints.length) {
-    const hintText = `Emails from ${trigger.from_email} → folder ${threadFolderLabel}.`;
-    try {
-      await upsertSenderSortHint({
-        senderEmail: trigger.from_email,
-        hintText,
-        caseNumber: null,
-        source: 'auto_learned',
-        createdBy: slackUserId,
-      });
-    } catch (err) {
-      logger.warn('Could not auto-learn sort hint', { err: String(err) });
+  if (!threadSortHints.length && confirmedFolderLabel) {
+    const folderCorrected = usedFolderOverride || aiMissedFolder;
+    let folderHintText = buildSenderFolderHintText(learnCtx, { corrected: folderCorrected });
+    const patterns = buildPatternSortHints(learnCtx);
+    if (folderHintText && patterns.length) {
+      folderHintText = `${folderHintText} ${patterns.join(' ')}`;
+    }
+    if (folderHintText) {
+      try {
+        await upsertSenderSortHint({
+          senderEmail: trigger.from_email,
+          hintText: folderHintText,
+          caseNumber,
+          source: 'auto_learned',
+          createdBy: slackUserId,
+        });
+        await auditService.log(
+          trigger.id,
+          'matching_hint_saved',
+          {
+            hintType: 'sort',
+            caseNumber,
+            senderEmail: trigger.from_email,
+            hintText: folderHintText.slice(0, 200),
+            autoLearned: folderCorrected ? 'sender_folder_corrected' : 'sender_folder_confirmed',
+          },
+          slackUserId
+        );
+      } catch (err) {
+        logger.warn('Could not auto-learn sender folder hint', { caseNumber, err: String(err) });
+      }
+    }
+
+    for (const hintText of patterns) {
+      try {
+        const inserted = await insertMatchingHintIfNew({
+          hintType: 'case',
+          caseNumber,
+          senderEmail: null,
+          hintText,
+          source: 'auto_learned',
+          createdBy: slackUserId,
+        });
+        if (inserted) {
+          await auditService.log(
+            trigger.id,
+            'matching_hint_saved',
+            {
+              hintType: 'case',
+              caseNumber,
+              hintText: hintText.slice(0, 200),
+              autoLearned: 'pattern',
+            },
+            slackUserId
+          );
+        }
+      } catch (err) {
+        logger.warn('Could not auto-learn case filing pattern hint', { hintText, err: String(err) });
+      }
+    }
+  }
+
+  if (usedCaseOverride && !threadCaseHints.length) {
+    const threadOverrideCaseHint = buildThreadOverrideCaseHint(learnCtx);
+    if (threadOverrideCaseHint) {
+      try {
+        await insertMatchingHintIfNew({
+          hintType: 'case',
+          caseNumber,
+          senderEmail: null,
+          hintText: threadOverrideCaseHint,
+          source: 'auto_learned',
+          createdBy: slackUserId,
+        });
+      } catch (err) {
+        logger.warn('Could not auto-learn thread Case override hint', { caseNumber, err: String(err) });
+      }
+    }
+  }
+
+  if (usedFolderOverride && !threadSortHints.length) {
+    const threadOverrideFolderHint = buildThreadOverrideFolderHint(learnCtx);
+    if (threadOverrideFolderHint) {
+      try {
+        await insertMatchingHintIfNew({
+          hintType: 'case',
+          caseNumber,
+          senderEmail: null,
+          hintText: threadOverrideFolderHint,
+          source: 'auto_learned',
+          createdBy: slackUserId,
+        });
+      } catch (err) {
+        logger.warn('Could not auto-learn thread Folder override hint', { caseNumber, err: String(err) });
+      }
     }
   }
 
@@ -365,6 +504,8 @@ export async function handleApprove(
     usedCaseOverride,
     usedFolderOverride,
     threadFolderLabel,
+    threadCaseOverrideText,
+    threadFolderOverrideText,
   } = await resolveBatchCase(itemId, slackThread);
 
   logger.info('Approve folder resolution', {
@@ -377,6 +518,8 @@ export async function handleApprove(
   });
 
   const savedFiles: Array<{ filename: string; dropboxLink: string }> = [];
+  const savedAttachmentFilenames: string[] = [];
+  let confirmedFolderLabel: string | null = threadFolderLabel;
   const reviewedAt = new Date().toISOString();
   let duplicateCount = 0;
   let externalLinkCount = 0;
@@ -487,9 +630,11 @@ export async function handleApprove(
     );
 
     savedFiles.push({ filename: batchItem.attachment_filename, dropboxLink: permalink });
+    savedAttachmentFilenames.push(batchItem.attachment_filename);
 
     const folderLabel = folderPath.split('/').filter(Boolean).pop();
     if (folderLabel) {
+      confirmedFolderLabel = folderLabelFromDropboxPath(folderPath) ?? folderLabel;
       try {
         await upsertCaseFolder(caseNumber, folderLabel, folderPath);
       } catch (err) {
@@ -556,6 +701,10 @@ export async function handleApprove(
     usedCaseOverride,
     usedFolderOverride,
     threadFolderLabel,
+    confirmedFolderLabel,
+    savedAttachmentFilenames,
+    threadCaseOverrideText,
+    threadFolderOverrideText,
     slackUserId,
     documentTextsForCauseLearning,
   });

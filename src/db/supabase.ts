@@ -437,6 +437,58 @@ export async function addCaseOnlyHint(params: {
   if (error) throw new Error(`Insert case-only hint failed: ${error.message}`);
 }
 
+/** Insert a hint only when the same text is not already stored (pattern learning). */
+export async function insertMatchingHintIfNew(params: {
+  hintType: MatchingHint['hintType'];
+  caseNumber: string | null;
+  senderEmail: string | null;
+  hintText: string;
+  source: string;
+  createdBy?: string;
+}): Promise<boolean> {
+  const hintText = params.hintText.trim();
+  if (!hintText) return false;
+
+  let query = getSupabase()
+    .from('matching_hints')
+    .select('id')
+    .eq('hint_type', params.hintType)
+    .eq('hint_text', hintText);
+
+  if (params.senderEmail) {
+    query = query.eq('sender_email', normalizeSenderEmail(params.senderEmail));
+  } else {
+    query = query.is('sender_email', null);
+  }
+
+  if (params.caseNumber) {
+    query = query.eq('case_number', params.caseNumber);
+  } else {
+    query = query.is('case_number', null);
+  }
+
+  const { data: existing, error: lookupError } = await query.maybeSingle();
+  if (lookupError) {
+    if (isMissingMatchingHintsTable(lookupError)) return false;
+    throw new Error(`Matching hint lookup failed: ${lookupError.message}`);
+  }
+  if (existing?.id) return false;
+
+  const { error } = await getSupabase().from('matching_hints').insert({
+    hint_type: params.hintType,
+    case_number: params.caseNumber,
+    sender_email: params.senderEmail ? normalizeSenderEmail(params.senderEmail) : null,
+    hint_text: hintText,
+    source: params.source,
+    created_by: params.createdBy ?? null,
+  });
+  if (error) {
+    if (isMissingMatchingHintsTable(error)) return false;
+    throw new Error(`Insert matching hint failed: ${error.message}`);
+  }
+  return true;
+}
+
 /** Case hints that mention extracted Cause numbers (litigation matching). */
 export async function getCaseHintsForCauseNumbers(causeNumbers: string[]): Promise<MatchingHint[]> {
   const unique = [...new Set(causeNumbers.map((c) => c.trim().toUpperCase()).filter(Boolean))];
