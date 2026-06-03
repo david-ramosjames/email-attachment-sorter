@@ -34,6 +34,8 @@ import {
 import {
   parseCaseNumberFromDropboxFolder,
   RJL_STANDARD_SUBFOLDERS,
+  dropboxPathForCaseSubfolder,
+  normalizeFolderLabel,
 } from '../constants/rjlFolders.js';
 import { slackService } from './slackService.js';
 import { auditService } from './auditService.js';
@@ -129,25 +131,28 @@ async function resolveBatchCase(
     }
     if (override.folderLabel && caseNumber) {
       usedFolderOverride = true;
-      threadFolderLabel = override.folderLabel;
+      threadFolderLabel = normalizeFolderLabel(override.folderLabel);
       const folders = await getFoldersForCase(caseNumber);
       const folder = folders.find(
-        (f) => f.folder_label.toLowerCase() === override.folderLabel!.toLowerCase()
+        (f) => f.folder_label.toLowerCase() === threadFolderLabel!.toLowerCase()
       );
       if (folder) {
         threadFolderPath = folder.dropbox_path;
         await auditService.log(itemId, 'thread_override', {
-          folderLabel: override.folderLabel,
+          folderLabel: threadFolderLabel,
           dropboxPath: folder.dropbox_path,
         });
       } else {
-        const caseRow = await getCaseById(caseNumber);
-        if (caseRow) {
-          threadFolderPath = `${caseRow.dropbox_root_path}/${override.folderLabel}`;
+        const caseRowForFolder = await getCaseById(caseNumber);
+        if (caseRowForFolder) {
+          threadFolderPath = dropboxPathForCaseSubfolder(
+            caseRowForFolder.dropbox_root_path,
+            threadFolderLabel
+          );
           await auditService.log(itemId, 'thread_override', {
-            folderLabel: override.folderLabel,
+            folderLabel: threadFolderLabel,
             dropboxPath: threadFolderPath,
-            note: 'constructed from case root',
+            note: 'constructed from case root — created on Approve if missing',
           });
         }
       }
@@ -482,6 +487,19 @@ export async function handleApprove(
     );
 
     savedFiles.push({ filename: batchItem.attachment_filename, dropboxLink: permalink });
+
+    const folderLabel = folderPath.split('/').filter(Boolean).pop();
+    if (folderLabel) {
+      try {
+        await upsertCaseFolder(caseNumber, folderLabel, folderPath);
+      } catch (err) {
+        logger.warn('Could not index folder after upload', {
+          caseNumber,
+          folderLabel,
+          err: String(err),
+        });
+      }
+    }
 
     scheduleTempStorageDeletionAfterRouted(saved);
 

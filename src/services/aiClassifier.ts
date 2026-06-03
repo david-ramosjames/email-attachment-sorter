@@ -12,14 +12,14 @@ import {
   type DocumentType,
   type MatchContext,
 } from '../types/index.js';
-import { RJL_STANDARD_SUBFOLDERS } from '../constants/rjlFolders.js';
+import { RJL_STANDARD_SUBFOLDERS, dropboxPathForCaseSubfolder, normalizeFolderLabel } from '../constants/rjlFolders.js';
 import { subfolderForDocumentType } from '../utils/folderInference.js';
 import { buildSmartBodyExcerpt } from '../utils/emailBodyExcerpt.js';
 import { caseMatchingHintsPromptSection, documentSortHintsPromptSection } from '../utils/matchingHints.js';
 import { getCaseById } from '../db/supabase.js';
 import { clientIdentityIsUnknown, emailRequestsClientIdentification } from '../utils/emailClientSignals.js';
 import { buildCaseIdentificationPrompt } from '../constants/caseIdentificationPrompt.js';
-import { buildFolderClassificationPrompt } from '../constants/folderClassificationPrompt.js';
+import { buildFolderClassificationPrompt, folderPromptCaseStageLine } from '../constants/folderClassificationPrompt.js';
 import { extractForwardedEmailContext } from '../utils/forwardedEmailContext.js';
 import { foldersForCaseNumber, loadCaseCatalogForAi } from './caseCatalogForAi.js';
 import type { CaseCatalogForAi } from './caseCatalogForAi.js';
@@ -87,7 +87,7 @@ const folderClassificationSchema = {
   properties: {
     folder: {
       type: ['string', 'null'] as const,
-      description: `RJL Dropbox subfolder: ${RJL_STANDARD_SUBFOLDERS.join(', ')}`,
+      description: `RJL subfolder — core: ${RJL_STANDARD_SUBFOLDERS.slice(0, 6).join(', ')}… or rare custom name`,
     },
     document_type: {
       type: 'string' as const,
@@ -209,10 +209,14 @@ async function identifyCase(
 async function classifyFolder(
   ctx: MatchContext,
   catalog: CaseCatalogForAi,
-  caseResult: CaseIdentificationResult
+  caseResult: CaseIdentificationResult,
+  suggestedCaseNumber: string | null
 ): Promise<FolderClassificationResult> {
-  const caseContext = caseResult.suggested_case_number
-    ? `Assigned case (DO NOT CHANGE): case_number="${caseResult.suggested_case_number}", client="${caseResult.client_name ?? 'unknown'}", case_confidence=${caseResult.case_confidence}`
+  const caseRow = suggestedCaseNumber ? await getCaseById(suggestedCaseNumber) : null;
+  const stageLine = folderPromptCaseStageLine(caseRow?.topic_stage ?? null);
+
+  const caseContext = suggestedCaseNumber
+    ? `Assigned case (DO NOT CHANGE): case_number="${suggestedCaseNumber}", client="${caseResult.client_name ?? 'unknown'}", case_confidence=${caseResult.case_confidence}\n${stageLine}`
     : 'Assigned case: none (suggested_case_number is null — folder may be Intake or null)';
 
   const response = await getOpenAI().chat.completions.create({
@@ -310,7 +314,7 @@ export async function classifyDocument(ctx: MatchContext): Promise<Classificatio
     ...caseParsed,
     suggested_case_number: suggestedCaseNumber,
     case_confidence: caseConfidence,
-  });
+  }, suggestedCaseNumber);
 
   let documentType = folderParsed.document_type as DocumentType | 'needs_attention';
   let folderConfidence = folderParsed.folder_confidence;
@@ -330,8 +334,6 @@ export async function classifyDocument(ctx: MatchContext): Promise<Classificatio
     const resolved = resolveFolderForCase(caseRow, folders, folderParsed.folder, documentType);
     suggestedFolderPath = resolved.path;
     if (resolved.reasonSuffix) reason += resolved.reasonSuffix;
-  } else if (folderParsed.folder?.trim()) {
-    suggestedFolderPath = folderParsed.folder.trim();
   }
 
   const overallConfidence = computeOverallConfidence(
@@ -376,13 +378,17 @@ function resolveFolderForCase(
     return { path: null, reasonSuffix: ' (case not found for folder resolution)' };
   }
 
-  if (!folders.length) {
-    return { path: null, reasonSuffix: ' (no indexed folders for case)' };
-  }
-
   const fromAi = findFolderByLabel(folders, aiFolderLabel);
   if (fromAi) {
     return { path: fromAi.dropbox_path, reasonSuffix: '' };
+  }
+
+  if (aiFolderLabel?.trim()) {
+    const label = normalizeFolderLabel(aiFolderLabel);
+    return {
+      path: dropboxPathForCaseSubfolder(caseRow.dropbox_root_path, label),
+      reasonSuffix: '',
+    };
   }
 
   const subfolder = subfolderForDocumentType(documentType);
@@ -394,10 +400,9 @@ function resolveFolderForCase(
         reasonSuffix: ` (mapped ${documentType} → ${subfolder})`,
       };
     }
-    const root = caseRow.dropbox_root_path.replace(/\/+$/, '');
     return {
-      path: `${root}/${subfolder}`.replace(/\/+/g, '/'),
-      reasonSuffix: ` (constructed ${subfolder} under case root)`,
+      path: dropboxPathForCaseSubfolder(caseRow.dropbox_root_path, subfolder),
+      reasonSuffix: ` (mapped ${documentType} → ${subfolder})`,
     };
   }
 

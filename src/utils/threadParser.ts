@@ -1,4 +1,4 @@
-import { RJL_STANDARD_SUBFOLDERS } from '../constants/rjlFolders.js';
+import { normalizeFolderLabel } from '../constants/rjlFolders.js';
 
 /**
  * Parses reviewer thread replies for case/folder overrides and hints.
@@ -25,13 +25,9 @@ export function cleanThreadLine(line: string): string {
     .trim();
 }
 
-/** "medical" → "Medical" when it matches a standard RJL subfolder */
+/** Normalize folder override — known folders match canonical spelling; custom names allowed. */
 export function normalizeFolderOverrideLabel(label: string): string {
-  const trimmed = cleanThreadLine(label);
-  const match = RJL_STANDARD_SUBFOLDERS.find(
-    (f) => f.toLowerCase() === trimmed.toLowerCase()
-  );
-  return match ?? trimmed;
+  return normalizeFolderLabel(label);
 }
 
 export function threadOverrideHasValues(override: ThreadOverride): boolean {

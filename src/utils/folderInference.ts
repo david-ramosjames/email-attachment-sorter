@@ -13,7 +13,7 @@ export function inferFolderLabelFromContent(parts: {
   subject?: string;
   bodyExcerpt?: string;
   documentExcerpt?: string;
-}): RjlSubfolder | null {
+}): RjlSubfolder | string | null {
   const text = combinedText([
     parts.attachmentFilename,
     parts.subject,
@@ -28,11 +28,26 @@ export function inferFolderLabelFromContent(parts: {
   ) {
     return 'Pleadings';
   }
-  if (/\b(discovery|interrogator|request for production|deposition)\b/.test(text)) {
-    return 'Investigation';
+  if (/\b(discovery|interrogator|request for production)\b/.test(text)) {
+    return 'Discovery';
   }
-  if (/\b(settlement|release|demand letter|offer of settlement)\b/.test(text)) {
+  if (/\b(deposition|depo transcript)\b/.test(text)) {
+    return 'Deposition';
+  }
+  if (/\b(mediation|mediator)\b/.test(text)) {
+    return 'Mediation';
+  }
+  if (/\b(expert report|expert witness|expert disclosure)\b/.test(text)) {
+    return 'Experts';
+  }
+  if (/\b(trial exhibit|trial brief|voir dire)\b/.test(text)) {
+    return 'Trial';
+  }
+  if (/\b(settlement release|signed release|offer of settlement)\b/.test(text)) {
     return 'Settlement';
+  }
+  if (/\b(settlement demand|demand letter|demand package)\b/.test(text)) {
+    return 'Demand';
   }
   if (/\b(subrogation|lien notice|insurance lien)\b/.test(text)) {
     return 'Subrogation';
@@ -50,7 +65,10 @@ export function inferFolderLabelFromContent(parts: {
   if (/\b(photo|photograph|image of (scene|injury|vehicle))\b/.test(text)) {
     return 'Photos';
   }
-  if (/\b(court notice|order|scheduling order|docket)\b/.test(text)) {
+  if (/\b(court notice|scheduling order|litigation correspondence)\b/.test(text)) {
+    return 'Correspondence Litigation';
+  }
+  if (/\b(court notice|order|docket)\b/.test(text)) {
     return 'Correspondence';
   }
 
@@ -130,6 +148,6 @@ export function inferDocumentTypeFromContent(parts: {
   return null;
 }
 
-export function subfolderForDocumentType(documentType: string): RjlSubfolder | undefined {
+export function subfolderForDocumentType(documentType: string): RjlSubfolder | string | undefined {
   return DOCUMENT_TYPE_TO_SUBFOLDER[documentType];
 }
