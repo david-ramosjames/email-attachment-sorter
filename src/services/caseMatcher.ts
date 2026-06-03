@@ -2,16 +2,12 @@ import {
   getFoldersForCase,
   getCaseHintsForCases,
   getCaseHintsForSender,
-  getSenderHistory,
   listAllCases,
   searchCases,
 } from '../db/supabase.js';
 import { MAX_AI_CANDIDATES, MIN_EXTRACTED_TEXT_CHARS } from '../constants/classification.js';
 import type { Case, CaseCandidate, MatchContext } from '../types/index.js';
-import {
-  clientTokensFromFilename,
-  isGenericFilingSender,
-} from '../utils/filenameCaseMatch.js';
+import { clientTokensFromFilename } from '../utils/filenameCaseMatch.js';
 import {
   allPatientNameTokens,
   extractPatientNamesFromText,
@@ -330,14 +326,6 @@ function scoreCase(
     reasons.push(`Case number ${caseRow.case_number} matched in text`);
   }
 
-  if (
-    senderCaseNumbers.includes(caseRow.case_number) &&
-    !isGenericFilingSender(ctx.fromEmail)
-  ) {
-    score += 20;
-    reasons.push('Sender has previously filed to this case');
-  }
-
   const clientFilenameTokens = clientTokensFromFilename(ctx.attachmentFilename);
   const filenameHits = clientFilenameTokens.filter(
     (t) =>
@@ -588,8 +576,7 @@ async function keywordFallbackCandidates(
 
   const numericRefs = extractNumericCaseRefs(rawText, knownCaseNumbers);
   const known = new Set(matched.map((c) => c.case_number));
-  const senderCaseNumbers = await getSenderHistory(ctx.fromEmail);
-  return buildCandidates(matched, ctx, senderCaseNumbers, numericRefs, known);
+  return buildCandidates(matched, ctx, [], numericRefs, known);
 }
 
 async function findCandidatesByClientIdentity(
@@ -734,7 +721,7 @@ export async function findCaseCandidates(ctx: MatchContext): Promise<CaseCandida
 
   const allCases = await listAllCases();
   const knownCaseNumbers = new Set(allCases.map((c) => c.case_number));
-  const senderCaseNumbers = await getSenderHistory(ctx.fromEmail);
+  const senderCaseNumbers: string[] = [];
   const rawText = [
     ctx.subject,
     ctx.bodyExcerpt,

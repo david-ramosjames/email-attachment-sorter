@@ -88,8 +88,10 @@ export interface MatchContext {
   attachmentFilename: string;
   /** Populated on second-pass classification after document extraction */
   documentExcerpt?: string;
-  /** Cases this sender previously filed to (helps AI disambiguate) */
+  /** @deprecated Sender history is not used for case matching — use senderPriorFolderLabels */
   senderPriorCaseNumbers?: string[];
+  /** Dropbox folder labels this sender recently filed to (folder pass only) */
+  senderPriorFolderLabels?: string[];
   /** Parsed from email body (e.g. "Attached are Lourdes Galeas Montoya records") */
   emailPatientNames?: string[];
   /** Other attachments in the same inbound email */

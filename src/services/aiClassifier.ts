@@ -132,7 +132,11 @@ interface FolderClassificationResult {
   evidence: string;
 }
 
-function buildSharedUserPrompt(ctx: MatchContext, catalog: CaseCatalogForAi): string {
+function buildSharedUserPrompt(
+  ctx: MatchContext,
+  catalog: CaseCatalogForAi,
+  opts?: { folderPass?: boolean }
+): string {
   const bodyForAi = buildSmartBodyExcerpt(ctx.bodyExcerpt, 8000);
 
   const identityHint = ctx.aiClientIdentity?.clientFullName
@@ -143,9 +147,10 @@ function buildSharedUserPrompt(ctx: MatchContext, catalog: CaseCatalogForAi): st
     ? `\n\nAttachment text (PRIMARY evidence for case matching — read carefully):\n${ctx.documentExcerpt.slice(0, MAX_DOCUMENT_TEXT_FOR_AI)}`
     : '\n\n(No attachment text extracted — case matching is harder; prefer null over guessing)';
 
-  const senderSection = ctx.senderPriorCaseNumbers?.length
-    ? `\nSender has previously filed to case(s): ${ctx.senderPriorCaseNumbers.join(', ')} (weak hint only — never override attachment name evidence)`
-    : '';
+  const senderFolderSection =
+    opts?.folderPass && ctx.senderPriorFolderLabels?.length
+      ? `\nSender has previously filed to folder(s): ${ctx.senderPriorFolderLabels.join(', ')} (weak hint for folder only — same sender may file to different cases)`
+      : '';
 
   const siblingSection = ctx.siblingAttachmentFilenames?.length
     ? `\nAll attachments in this email (usually same case): ${ctx.siblingAttachmentFilenames.join(', ')}`
@@ -173,7 +178,7 @@ Subject: ${ctx.subject}
 Email body:
 ${bodyForAi}
 
-Attachment filename: ${ctx.attachmentFilename}${identityHint}${caseMatchingHintsPromptSection(ctx.caseMatchingHints)}${documentSortHintsPromptSection(ctx.documentSortHints)}${siblingSection}${batchSection}${forwardedBlock}${externalLinkSection}${senderSection}${documentSection}
+Attachment filename: ${ctx.attachmentFilename}${identityHint}${caseMatchingHintsPromptSection(ctx.caseMatchingHints)}${documentSortHintsPromptSection(ctx.documentSortHints)}${siblingSection}${batchSection}${forwardedBlock}${externalLinkSection}${senderFolderSection}${documentSection}
 
 Case index (${catalog.caseNumbers.size} cases — suggested_case_number MUST be an exact case_number from this list, or null):
 ${catalog.catalogPrompt}`;
@@ -236,7 +241,7 @@ async function classifyFolder(
       { role: 'system', content: buildFolderClassificationPrompt() },
       {
         role: 'user',
-        content: `${caseContext}\n\n${buildSharedUserPrompt(ctx, catalog)}`,
+        content: `${caseContext}\n\n${buildSharedUserPrompt(ctx, catalog, { folderPass: true })}`,
       },
     ],
   });
@@ -308,14 +313,7 @@ export async function classifyDocument(ctx: MatchContext): Promise<Classificatio
     reason = 'AI returned case number not in case index — rejected';
   }
 
-  if (isNewClientIntakeContext(ctx)) {
-    if (suggestedCaseNumber) {
-      suggestedCaseNumber = null;
-      reason +=
-        ' (intake/retainer document — case not auto-assigned; open a case channel/folder first or use thread Case: before Approve)';
-    }
-    caseConfidence = Math.min(caseConfidence, 0.35);
-  } else if (suggestedCaseNumber && caseParsed.client_name) {
+  if (suggestedCaseNumber && caseParsed.client_name) {
     const caseRow = await getCaseById(suggestedCaseNumber);
     if (caseRow && !clientNameExactlyMatchesCase(caseRow, caseParsed.client_name)) {
       suggestedCaseNumber = null;
@@ -326,6 +324,21 @@ export async function classifyDocument(ctx: MatchContext): Promise<Classificatio
     suggestedCaseNumber = null;
     caseConfidence = Math.min(caseConfidence, 0.35);
     reason += ' (case not assigned without a identified PI client name)';
+  }
+
+  if (isNewClientIntakeContext(ctx)) {
+    const existingClientCaseMatch = Boolean(suggestedCaseNumber && caseParsed.client_name);
+    if (existingClientCaseMatch) {
+      reason +=
+        ' (contract/signature intake for existing client — case matched by client name; folder may still be Intake)';
+    } else {
+      if (suggestedCaseNumber) {
+        suggestedCaseNumber = null;
+        reason +=
+          ' (intake/retainer document — no matching case channel yet; use thread Case: before Approve)';
+      }
+      caseConfidence = Math.min(caseConfidence, 0.35);
+    }
   }
 
   logger.info('AI folder classification request', {

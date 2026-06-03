@@ -7,7 +7,7 @@ import {
   getCaseHintsForSender,
   getCaseHintsForCauseNumbers,
   getSortHintsForSender,
-  getSenderHistory,
+  getSenderFolderHistory,
   updateFileSorterItem,
   uploadTempAttachment,
 } from '../db/supabase.js';
@@ -185,7 +185,7 @@ async function processSingleAttachment(
     }
   }
 
-  const senderPriorCaseNumbers = await getSenderHistory(payload.fromEmail);
+  const senderPriorFolderLabels = await getSenderFolderHistory(payload.fromEmail);
   const senderCaseHints = await getCaseHintsForSender(payload.fromEmail);
   const senderSortHints = await getSortHintsForSender(payload.fromEmail);
   const causeNumbers = extractCauseNumbersFromTexts(payload.subject, payload.bodyExcerpt);
@@ -200,7 +200,7 @@ async function processSingleAttachment(
     subject: payload.subject,
     bodyExcerpt: payload.bodyExcerpt,
     attachmentFilename: attachment.filename,
-    senderPriorCaseNumbers,
+    senderPriorFolderLabels,
     caseMatchingHints: mergeMatchingHints(senderCaseHints, causeHints),
     documentSortHints: senderSortHints,
     emailPatientNames: batch.patientNames,

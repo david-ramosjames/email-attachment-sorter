@@ -5,6 +5,7 @@ import {
   formatCauseNumberCaseHint,
   hintTextContainsCauseNumber,
 } from '../utils/causeNumbers.js';
+import { folderLabelFromDropboxPath } from '../utils/dropboxFolderLabel.js';
 import type {
   AuditEvent,
   Case,
@@ -298,6 +299,22 @@ export async function getSenderHistory(fromEmail: string): Promise<string[]> {
     .map((r) => r.final_case_number as string)
     .filter(Boolean);
   return [...new Set(ids)];
+}
+
+/** Recent Dropbox folder labels this sender filed to (for folder classification only). */
+export async function getSenderFolderHistory(fromEmail: string): Promise<string[]> {
+  const { data } = await getSupabase()
+    .from('file_sorter_items')
+    .select('final_dropbox_path')
+    .eq('from_email', fromEmail)
+    .eq('status', 'saved')
+    .not('final_dropbox_path', 'is', null)
+    .order('created_at', { ascending: false })
+    .limit(15);
+  const labels = (data ?? [])
+    .map((r) => folderLabelFromDropboxPath(r.final_dropbox_path as string))
+    .filter((l): l is string => Boolean(l));
+  return [...new Set(labels)];
 }
 
 function isMissingMatchingHintsTable(error: { message?: string }): boolean {
