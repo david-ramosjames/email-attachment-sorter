@@ -655,20 +655,28 @@ export async function createFileSorterItemIfNew(
   ) =>
     getSupabase().from('file_sorter_items').insert(insertRow).select().single();
 
-  let { data, error } = await attemptInsert(row);
+  let insertRow = row;
+  let { data, error } = await attemptInsert(insertRow);
 
   if (
     error &&
-    row.email_received_at != null &&
+    (isMissingColumnError(error, 'ai_case_confidence') ||
+      isMissingColumnError(error, 'ai_folder_confidence'))
+  ) {
+    const { ai_case_confidence: _c, ai_folder_confidence: _f, ...withoutSplitConfidence } =
+      insertRow;
+    insertRow = withoutSplitConfidence as typeof insertRow;
+    ({ data, error } = await attemptInsert(insertRow));
+  }
+
+  if (
+    error &&
+    insertRow.email_received_at != null &&
     isMissingColumnError(error, 'email_received_at')
   ) {
-    const { email_received_at: _dropped, ...withoutReceivedAt } = row;
-    ({ data, error } = await attemptInsert(
-      withoutReceivedAt as Omit<FileSorterItem, 'created_at' | 'updated_at'> & {
-        status?: FileSorterItemStatus;
-        email_received_at?: string | null;
-      }
-    ));
+    const { email_received_at: _dropped, ...withoutReceivedAt } = insertRow;
+    insertRow = withoutReceivedAt as typeof insertRow;
+    ({ data, error } = await attemptInsert(insertRow));
   }
 
   if (!error) {
