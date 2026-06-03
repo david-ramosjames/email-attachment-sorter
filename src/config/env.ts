@@ -6,6 +6,22 @@ const optionalString = z.preprocess(
   z.string().optional()
 );
 
+/** Parse Railway-style boolean strings ("true"/"false"); default when unset. */
+function envBoolean(defaultValue: boolean) {
+  return z.preprocess((val) => {
+    if (val === undefined || val === null) return undefined;
+    if (typeof val === 'string' && val.trim() === '') return undefined;
+    if (val === true || val === 1) return true;
+    if (val === false || val === 0) return false;
+    if (typeof val === 'string') {
+      const s = val.trim().toLowerCase();
+      if (s === 'true' || s === '1' || s === 'yes' || s === 'on') return true;
+      if (s === 'false' || s === '0' || s === 'no' || s === 'off') return false;
+    }
+    return val;
+  }, z.boolean().default(defaultValue));
+}
+
 const envSchema = z.object({
   PORT: z.coerce.number().default(3000),
   SUPABASE_URL: z.string().url(),
@@ -49,9 +65,10 @@ const envSchema = z.object({
   CASE_SHEET_SYNC_INTERVAL_MINUTES: z.coerce.number().default(0),
   /** How often to sync cases from Slack channel list (minutes). 0 = manual only. Default 4h like legacy sheet backfill. */
   SLACK_CASE_SYNC_INTERVAL_MINUTES: z.coerce.number().default(240),
-  /** Join public case channels on each case sync (requires channels:join). */
-  SLACK_AUTO_JOIN_PUBLIC_CHANNELS: z
-    .preprocess((val) => val === 'false' || val === '0' ? false : val, z.boolean().default(true)),
+  /** Join public case channels on each case sync (requires channels:join). Default on. */
+  SLACK_AUTO_JOIN_PUBLIC_CHANNELS: envBoolean(true),
+  /** Only join channels matching *-{caseNumber} (skip general/public channels). Default on. */
+  SLACK_AUTO_JOIN_CASE_CHANNELS_ONLY: envBoolean(true),
   /** Comma-separated Slack channel names to skip (lowercase, without #). */
   SLACK_CASE_CHANNEL_EXCLUDE_NAMES: z.string().default(''),
 });

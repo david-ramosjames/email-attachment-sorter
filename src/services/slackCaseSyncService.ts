@@ -138,7 +138,7 @@ export function startSlackCaseSyncScheduler(intervalMinutes: number): void {
     });
   };
 
-  setTimeout(run, 60_000);
+  setTimeout(run, 10_000);
   setInterval(run, intervalMinutes * 60 * 1000);
-  logger.info('Slack case sync scheduler started', { intervalMinutes, firstRunDelaySec: 60 });
+  logger.info('Slack case sync scheduler started', { intervalMinutes, firstRunDelaySec: 10 });
 }

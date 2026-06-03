@@ -145,7 +145,7 @@ export async function listAllSlackChannels(): Promise<SlackChannelSummary[]> {
   return channels;
 }
 
-function slackJoinHint(code: string): string {
+export function slackJoinHint(code: string): string {
   switch (code) {
     case 'missing_scope':
       return 'Add channels:join to the Slack app, reinstall to the workspace, then retry.';
@@ -193,9 +193,7 @@ export async function ensureBotInChannel(channelId: string): Promise<boolean> {
 }
 
 function caseChannelsOnly(): boolean {
-  const val = process.env.SLACK_AUTO_JOIN_CASE_CHANNELS_ONLY;
-  if (val === 'false' || val === '0') return false;
-  return true;
+  return getEnv().SLACK_AUTO_JOIN_CASE_CHANNELS_ONLY;
 }
 
 /**
@@ -330,11 +328,15 @@ export async function getConversationInfo(channelId: string): Promise<{
   id: string;
   name: string;
   topic: string;
+  isMember: boolean;
+  isPrivate: boolean;
 } | null> {
   const data = await slackApiForm<{
     channel?: {
       id?: string;
       name?: string;
+      is_member?: boolean;
+      is_private?: boolean;
       topic?: { value?: string };
     };
   }>('conversations.info', { channel: channelId });
@@ -346,7 +348,83 @@ export async function getConversationInfo(channelId: string): Promise<{
     id: ch.id,
     name: ch.name,
     topic: ch.topic?.value?.trim() ?? '',
+    isMember: Boolean(ch.is_member),
+    isPrivate: Boolean(ch.is_private),
   };
+}
+
+export interface BotChannelUploadAccess {
+  channelId: string;
+  channelName: string;
+  isMember: boolean;
+  isPrivate: boolean;
+  joinedNow: boolean;
+  slackError: string | null;
+}
+
+/** Join a public case channel when needed so files.upload can attach PDFs. */
+export async function ensureBotCanUploadToChannel(
+  channelId: string
+): Promise<BotChannelUploadAccess> {
+  let channelName = channelId;
+  let isPrivate = false;
+  let isMember = false;
+
+  try {
+    const info = await getConversationInfo(channelId);
+    if (info) {
+      channelName = info.name;
+      isPrivate = info.isPrivate;
+      isMember = info.isMember;
+    }
+  } catch (err) {
+    logger.warn('Could not load Slack channel info before join', {
+      channelId,
+      err: String(err),
+    });
+  }
+
+  if (isMember) {
+    return {
+      channelId,
+      channelName,
+      isMember: true,
+      isPrivate,
+      joinedNow: false,
+      slackError: null,
+    };
+  }
+
+  try {
+    await ensureBotInChannel(channelId);
+    logger.info('Joined Slack case channel for file upload', { channelId, channelName });
+    return {
+      channelId,
+      channelName,
+      isMember: true,
+      isPrivate,
+      joinedNow: true,
+      slackError: null,
+    };
+  } catch (err) {
+    const slackError = err instanceof SlackApiError ? err.code : 'unknown';
+    logger.warn('Could not join Slack case channel for file upload', {
+      channelId,
+      channelName,
+      isPrivate,
+      slackError,
+      hint: slackJoinHint(slackError),
+      err: String(err),
+    });
+    return {
+      channelId,
+      channelName,
+      isMember: false,
+      isPrivate: isPrivate || slackError === 'method_not_supported_for_channel_type',
+      joinedNow: false,
+      slackError,
+    };
+  }
 }
 
 let channelIdByName: Map<string, string> | null = null;

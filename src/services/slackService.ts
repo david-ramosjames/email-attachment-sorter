@@ -26,7 +26,13 @@ import {
   queueFolderLabel,
 } from '../utils/intakeDocumentSignals.js';
 import { parseUserMentionsFromSlackTopic } from '../utils/slackCaseParser.js';
-import { getSlackChannelIdByNameMap, ensureBotInChannel, getConversationInfo } from './slackChannels.js';
+import {
+  getSlackChannelIdByNameMap,
+  ensureBotCanUploadToChannel,
+  getConversationInfo,
+  slackJoinHint,
+  type BotChannelUploadAccess,
+} from './slackChannels.js';
 
 const SLACK_API = 'https://slack.com/api';
 
@@ -186,7 +192,15 @@ async function slackUploadFileToChannelWithFallback(opts: {
   buffer: Buffer;
   mimeType?: string | null;
   initialComment?: string;
+  channelName?: string;
 }): Promise<void> {
+  const uploadAccess = await ensureBotCanUploadToChannel(opts.channelId);
+  if (!uploadAccess.isMember) {
+    throw new Error(
+      `Slack API files.upload failed: not_in_channel (${uploadAccess.slackError ?? 'not joined'})`
+    );
+  }
+
   const attempt = async () => {
     try {
       await slackUploadFileToChannel(opts);
@@ -200,36 +214,45 @@ async function slackUploadFileToChannelWithFallback(opts: {
   };
 
   try {
-    await ensureBotInChannel(opts.channelId);
-  } catch {
-    /* private channel — may still fail on upload */
-  }
-
-  try {
     await attempt();
   } catch (err) {
     const msg = String(err);
     if (!msg.includes('not_in_channel')) throw err;
-    try {
-      await ensureBotInChannel(opts.channelId);
-      await attempt();
-    } catch {
-      throw err;
+    const retryAccess = await ensureBotCanUploadToChannel(opts.channelId);
+    if (!retryAccess.isMember) {
+      throw new Error(`Slack API files.upload failed: not_in_channel (${retryAccess.slackError ?? 'not joined'})`);
     }
+    await attempt();
   }
 }
 
-function slackFileUploadHint(err: string, channelName: string): string {
-  if (err.includes('not_in_channel')) {
+function slackFileUploadHint(
+  err: string,
+  channelName: string,
+  uploadAccess?: { isPrivate: boolean; slackError: string | null }
+): string {
+  if (err.includes('not_in_channel') || uploadAccess?.slackError) {
+    if (uploadAccess?.isPrivate) {
+      return (
+        `This is a *private* case channel — invite the bot with \`/invite @RJL File Sorter\` in #${channelName}. ` +
+        'File attachments require channel membership (text-only posts work without it).'
+      );
+    }
+    if (uploadAccess?.slackError === 'missing_scope') {
+      return 'Add channels:join to the Slack app, reinstall, then Approve again (or run POST /admin/join-public-slack-channels).';
+    }
+    if (uploadAccess?.slackError) {
+      return `${slackJoinHint(uploadAccess.slackError)} Then Approve again or use POST /admin/join-public-slack-channels.`;
+    }
     return (
-      `Invite the bot to #${channelName} with /invite @RJL File Sorter — ` +
-      'required for file attachments (especially private channels).'
+      `Bot is not in #${channelName} — public channels auto-join on Approve; if this persists, ` +
+      'add channels:join scope and reinstall the Slack app.'
     );
   }
   if (err.includes('missing_scope')) {
     return 'Add files:write scope to the Slack app and reinstall to the workspace.';
   }
-  return 'Check Slack app scopes (files:write) and that the bot is in the case channel.';
+  return 'Check Slack app scopes (files:write, channels:join) and that the bot is in the case channel.';
 }
 
 /** Form-encoded POST — required for some methods (e.g. conversations.replies). */
@@ -846,6 +869,17 @@ export const slackService = {
     const dropboxLink = slackMrkdwnLink(opts.dropboxLink, 'Open in Dropbox');
 
     let topicMentionIds: string[] = [];
+    let uploadAccess: BotChannelUploadAccess | null = null;
+    try {
+      uploadAccess = await ensureBotCanUploadToChannel(channelId);
+    } catch (err) {
+      logger.warn('Could not join case channel before cross-post', {
+        channelId,
+        caseNumber: opts.caseRow.case_number,
+        err: String(err),
+      });
+    }
+
     try {
       const convo = await getConversationInfo(channelId);
       if (convo?.topic) {
@@ -878,12 +912,6 @@ export const slackService = {
       : `Document sorted to Dropbox: ${opts.item.attachment_filename}`;
 
     try {
-      try {
-        await ensureBotInChannel(channelId);
-      } catch {
-        /* public join may fail for private channels */
-      }
-
       const postResult = await slackApi<{ ts: string }>('chat.postMessage', {
         channel: channelId,
         text: fallbackText,
@@ -906,7 +934,7 @@ export const slackService = {
         fileAttached = true;
       } catch (uploadErr) {
         const errMsg = String(uploadErr);
-        const hint = slackFileUploadHint(errMsg, opts.caseRow.slack_channel_name);
+        const hint = slackFileUploadHint(errMsg, opts.caseRow.slack_channel_name, uploadAccess ?? undefined);
         logger.error('Case channel file attachment failed', {
           caseNumber: opts.caseRow.case_number,
           channelId,
