@@ -517,6 +517,11 @@ export async function handleApprove(
 
   const savedFiles: Array<{ filename: string; dropboxLink: string }> = [];
   const savedAttachmentFilenames: string[] = [];
+  const crossPostFiles: Array<{
+    item: FileSorterItem;
+    dropboxLink: string;
+    fileBuffer: Buffer;
+  }> = [];
   let confirmedFolderLabel: string | null = threadFolderLabel;
   const reviewedAt = new Date().toISOString();
   let duplicateCount = 0;
@@ -629,6 +634,7 @@ export async function handleApprove(
 
     savedFiles.push({ filename: batchItem.attachment_filename, dropboxLink: permalink });
     savedAttachmentFilenames.push(batchItem.attachment_filename);
+    crossPostFiles.push({ item: saved, dropboxLink: permalink, fileBuffer: buffer });
 
     const folderLabel = folderPath.split('/').filter(Boolean).pop();
     if (folderLabel) {
@@ -645,22 +651,25 @@ export async function handleApprove(
     }
 
     scheduleTempStorageDeletionAfterRouted(saved);
+  }
 
+  if (crossPostFiles.length) {
     const crossPosted = await slackService.postCaseChannelConfirmation({
       caseRow,
-      item: saved,
-      dropboxLink: permalink,
+      trigger,
+      files: crossPostFiles,
       approvedByUserId: slackUserId,
-      fileBuffer: buffer,
     });
 
     if (!crossPosted) {
-      await auditService.log(
-        batchItem.id,
-        'case_channel_cross_post_failed',
-        { caseNumber: caseRow.case_number, slackChannelName: caseRow.slack_channel_name },
-        slackUserId
-      );
+      for (const f of crossPostFiles) {
+        await auditService.log(
+          f.item.id,
+          'case_channel_cross_post_failed',
+          { caseNumber: caseRow.case_number, slackChannelName: caseRow.slack_channel_name },
+          slackUserId
+        );
+      }
     }
   }
 

@@ -1,4 +1,10 @@
-import { getCaseById, getFileSorterItem, updateFileSorterItem } from '../db/supabase.js';
+import {
+  getCaseById,
+  getFileSorterItem,
+  getQueueableItemsByGmailMessage,
+  getQueueBatchItems,
+  updateFileSorterItem,
+} from '../db/supabase.js';
 import type { Case, FileSorterItem } from '../types/index.js';
 import { auditService } from './auditService.js';
 import { slackService } from './slackService.js';
@@ -10,6 +16,9 @@ export interface QueuedInboundItem {
   caseRow: Case | null;
 }
 
+/** Serialize Slack posting per Gmail message (retries / slow AI can overlap). */
+const slackPostLocks = new Map<string, Promise<void>>();
+
 export async function postEmailItemsToSlack(
   payload: InboundEmailPayload,
   queued: QueuedInboundItem[],
@@ -17,23 +26,98 @@ export async function postEmailItemsToSlack(
 ): Promise<void> {
   if (!queued.length) return;
 
-  let caseRow: Case | null = null;
+  const gmailMessageId = payload.gmailMessageId;
+  const prev = slackPostLocks.get(gmailMessageId) ?? Promise.resolve();
+  const work = prev
+    .catch(() => undefined)
+    .then(() => postEmailItemsToSlackInner(payload, queued, sharedCaseNumber))
+    .finally(() => {
+      if (slackPostLocks.get(gmailMessageId) === work) {
+        slackPostLocks.delete(gmailMessageId);
+      }
+    });
+  slackPostLocks.set(gmailMessageId, work);
+  await work;
+}
+
+async function resolveBatchCaseRow(
+  items: FileSorterItem[],
+  queued: QueuedInboundItem[],
+  sharedCaseNumber: string | null
+): Promise<Case | null> {
   if (sharedCaseNumber) {
-    caseRow = await getCaseById(sharedCaseNumber);
+    const row = await getCaseById(sharedCaseNumber);
+    if (row) return row;
   }
-  if (!caseRow) {
-    caseRow = queued.find((q) => q.caseRow)?.caseRow ?? null;
+  const fromQueued = queued.find((q) => q.caseRow)?.caseRow;
+  if (fromQueued) return fromQueued;
+  for (const item of items) {
+    if (item.suggested_case_number) {
+      const row = await getCaseById(item.suggested_case_number);
+      if (row) return row;
+    }
   }
-  if (!caseRow && queued[0]?.item.suggested_case_number) {
-    caseRow = await getCaseById(queued[0].item.suggested_case_number);
+  return null;
+}
+
+function pickPrimaryItem(items: FileSorterItem[]): FileSorterItem {
+  return items.reduce((best, cur) => {
+    const curScore = cur.ai_case_confidence ?? cur.ai_confidence ?? 0;
+    const bestScore = best.ai_case_confidence ?? best.ai_confidence ?? 0;
+    return curScore > bestScore ? cur : best;
+  });
+}
+
+async function postEmailItemsToSlackInner(
+  payload: InboundEmailPayload,
+  queued: QueuedInboundItem[],
+  sharedCaseNumber: string | null
+): Promise<void> {
+  const gmailMessageId = payload.gmailMessageId;
+  const allItems = await getQueueableItemsByGmailMessage(gmailMessageId);
+  if (!allItems.length) return;
+
+  const caseRow = await resolveBatchCaseRow(allItems, queued, sharedCaseNumber);
+  const withSlack = allItems.filter(
+    (i) => i.slack_queue_channel_id && i.slack_queue_message_ts
+  );
+  const withoutSlack = allItems.filter(
+    (i) => !i.slack_queue_channel_id || !i.slack_queue_message_ts
+  );
+
+  if (withSlack.length > 0) {
+    const anchor = withSlack[0]!;
+    for (const item of withoutSlack) {
+      await updateFileSorterItem(item.id, {
+        slack_queue_channel_id: anchor.slack_queue_channel_id,
+        slack_queue_message_ts: anchor.slack_queue_message_ts,
+      });
+      await auditService.log(item.id, 'slack_queued', {
+        channel: anchor.slack_queue_channel_id,
+        ts: anchor.slack_queue_message_ts,
+        batchSize: allItems.length,
+        mergedIntoExisting: true,
+      });
+    }
+
+    const batchItems = await getQueueBatchItems(anchor);
+    const primary = pickPrimaryItem(batchItems);
+    await slackService.updateQueueMessage(primary, caseRow);
+
+    logger.info('Slack queue batch merged into existing card', {
+      gmailMessageId,
+      attachmentCount: batchItems.length,
+      filenames: batchItems.map((i) => i.attachment_filename),
+      slackTs: anchor.slack_queue_message_ts,
+    });
+    return;
   }
 
-  const items = queued.map((q) => q.item);
-  const slackMsg = await slackService.postQueueBatch(items, caseRow, {
+  const slackMsg = await slackService.postQueueBatch(allItems, caseRow, {
     emailReceivedAt: payload.receivedAt,
   });
 
-  for (const { item } of queued) {
+  for (const item of allItems) {
     await updateFileSorterItem(item.id, {
       slack_queue_channel_id: slackMsg.channel,
       slack_queue_message_ts: slackMsg.ts,
@@ -41,21 +125,17 @@ export async function postEmailItemsToSlack(
     await auditService.log(item.id, 'slack_queued', {
       channel: slackMsg.channel,
       ts: slackMsg.ts,
-      batchSize: items.length,
+      batchSize: allItems.length,
     });
   }
 
-  const primaryId = items.reduce((best, cur) => {
-    const curScore = cur.ai_case_confidence ?? cur.ai_confidence ?? 0;
-    const bestScore = best.ai_case_confidence ?? best.ai_confidence ?? 0;
-    return curScore > bestScore ? cur : best;
-  }).id;
-  const updatedPrimary = (await getFileSorterItem(primaryId)) ?? items[0]!;
+  const primaryId = pickPrimaryItem(allItems).id;
+  const updatedPrimary = (await getFileSorterItem(primaryId)) ?? allItems[0]!;
   await slackService.updateQueueMessage(updatedPrimary, caseRow);
 
   logger.info('Slack queue batch posted', {
-    gmailMessageId: payload.gmailMessageId,
-    attachmentCount: items.length,
-    filenames: items.map((i) => i.attachment_filename),
+    gmailMessageId,
+    attachmentCount: allItems.length,
+    filenames: allItems.map((i) => i.attachment_filename),
   });
 }

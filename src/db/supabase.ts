@@ -679,6 +679,22 @@ export async function addCaseMatchingHint(params: {
   return addCaseOnlyHint(params);
 }
 
+/** Pending queue rows for one inbound Gmail message (all attachments). */
+export async function getQueueableItemsByGmailMessage(
+  gmailMessageId: string
+): Promise<FileSorterItem[]> {
+  const { data, error } = await getSupabase()
+    .from('file_sorter_items')
+    .select('*')
+    .eq('gmail_message_id', gmailMessageId)
+    .in('status', ['pending_review', 'needs_attention'])
+    .order('created_at', { ascending: true });
+  if (error) {
+    throw new Error(`Queueable items lookup failed: ${error.message}`);
+  }
+  return (data ?? []) as FileSorterItem[];
+}
+
 export async function getFileSorterItemByGmailAttachment(
   gmailMessageId: string,
   attachmentFilename: string

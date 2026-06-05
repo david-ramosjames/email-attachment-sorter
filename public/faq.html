@@ -389,7 +389,8 @@
         <a href="#how-it-works">How it works</a>
         <a href="#buttons">Buttons</a>
         <a href="#thread">Thread commands</a>
-        <a href="#hints">Hints</a>
+        <a href="#folders">Folders</a>
+        <a href="#teach">Teach</a>
         <a href="#faq">FAQ</a>
       </nav>
     </div>
@@ -464,12 +465,12 @@
         <ul>
           <li><strong>From / To / Subject / Received</strong> — email metadata</li>
           <li><strong>Attachment(s)</strong> — filename(s) and each suggested folder</li>
-          <li><strong>AI Suggested Case</strong> — matched client case (Slack channel name)</li>
-          <li><strong>AI Suggested Folder</strong> — Dropbox subfolder (Medical, Pleadings, etc.)</li>
-          <li><strong>Confidence</strong> — how sure the AI is (below 75% → needs review)</li>
+          <li><strong>AI Suggested Case</strong> — matched client case (Slack channel name), or <strong>Intake — no case folder yet</strong> for new-client mail from <code>intake@ramosjames.com</code></li>
+          <li><strong>AI Suggested Folder</strong> — Dropbox subfolder (Medical, Pleadings, Intake, etc.)</li>
+          <li><strong>Confidence</strong> — separate <strong>Case</strong>, <strong>Folder</strong>, and <strong>Overall</strong> scores. Case below 75% → needs review.</li>
           <li><strong>Reason</strong> — short explanation of why it chose that case/folder</li>
         </ul>
-        <p>Cards marked <strong>Needs Human Review</strong> usually mean no case matched, low confidence, or the AI couldn't identify the PI client from the email alone.</p>
+        <p>Cards marked <strong>Needs Human Review</strong> usually mean no case matched, low case confidence, or the AI couldn't identify the PI client from the email alone. Adobe Sign and other e-sign mail is treated like normal client documents — not intake — unless it came through <code>intake@ramosjames.com</code>.</p>
       </div>
     </section>
 
@@ -485,7 +486,7 @@
         <div class="cmd">
           <div class="cmd-label">Get help</div>
           <div class="cmd-name">Change Case/Folder</div>
-          <p>Posts instructions in the thread explaining how to override case, folder, or hints. Does not change anything by itself — reply in the thread, then click Approve.</p>
+          <p>Posts instructions in the thread for <code>case:</code>, <code>folder:</code>, and <strong>Teach Case</strong> / <strong>Teach Folder</strong> lines. Does not change anything by itself — reply in the thread, then click Approve.</p>
         </div>
         <div class="cmd">
           <div class="cmd-label">Flag</div>
@@ -502,17 +503,28 @@
 
     <section id="thread">
       <h2>Thread commands</h2>
-      <p>Before clicking <strong>Approve</strong>, reply in the card's thread with any of these. They are read when you Approve.</p>
+      <p>Before clicking <strong>Approve</strong>, reply in the card's thread. Overrides apply to this email only; <strong>Teach</strong> lines are saved for future mail (see <a href="#teach">Teach the system</a>).</p>
 
       <div class="card">
-        <h3>Override case or folder</h3>
+        <h3>Override case or folder (this email only)</h3>
         <div class="code-block">case: 1277
 case: Juan Garcia
 folder: Medical</div>
         <ul>
-          <li><code>case:</code> — case number or client name</li>
-          <li><code>folder:</code> — applies to <strong>all attachments</strong> in that email</li>
+          <li><code>case:</code> — case number or client name (must match the case index)</li>
+          <li><code>folder:</code> — applies to <strong>all attachments</strong> in that email unless each file already has its own suggestion</li>
         </ul>
+        <p>Click <strong>Change Case/Folder</strong> on the card for the same instructions in Slack.</p>
+      </div>
+    </section>
+
+    <section id="folders">
+      <h2>Dropbox folders</h2>
+      <p>Each case folder in Dropbox has standard subfolders. The AI picks from these lists based on document type and whether the case is pre-lit or in litigation (from the case Slack channel topic).</p>
+
+      <div class="card">
+        <h3>Core folders (most cases)</h3>
+        <p>Use these for pre-lit, intake, and general filing.</p>
         <div class="pill-row">
           <span class="pill">Correspondence</span>
           <span class="pill">Expenses</span>
@@ -523,22 +535,76 @@ folder: Medical</div>
           <span class="pill">Medical</span>
           <span class="pill">PD</span>
           <span class="pill">Photos</span>
-          <span class="pill">Pleadings</span>
           <span class="pill">Settlement</span>
           <span class="pill">Subrogation</span>
         </div>
       </div>
 
-      <div class="card card-accent" id="hints">
-        <h3>Teach the system (saved for future emails)</h3>
-        <p>Two types of hints — use the right one:</p>
-        <div class="code-block">case hint: Maria Garcia emails on behalf of PI client Juan Garcia
-sort hint: Law360 newsletters from this listserv — Do Not Sort</div>
+      <div class="card">
+        <h3>Litigation folders</h3>
+        <p>Used when the case Slack channel topic indicates the case is in litigation (discovery, trial, etc.). The AI avoids these for pre-lit / intake cases unless the document is clearly litigation-related.</p>
+        <div class="pill-row">
+          <span class="pill">Correspondence Litigation</span>
+          <span class="pill">Demand</span>
+          <span class="pill">Deposition</span>
+          <span class="pill">Discovery</span>
+          <span class="pill">Experts</span>
+          <span class="pill">Mediation</span>
+          <span class="pill">Pleadings</span>
+          <span class="pill">Trial</span>
+        </div>
+      </div>
+
+      <div class="notice">
+        <strong>Custom folders:</strong> If none of the standard labels fit, you can reply with <code>folder: Your Folder Name</code>. The folder is created in Dropbox on Approve if it doesn't exist yet.
+      </div>
+    </section>
+
+    <section id="teach">
+      <h2>Teach the system</h2>
+      <p>
+        <strong>Teach Case</strong> and <strong>Teach Folder</strong> lines tell the AI how to handle <em>future</em> similar mail.
+        Add them in the card thread, then click <strong>Approve</strong> — hints are saved when you approve, not when you type them.
+      </p>
+
+      <div class="card card-accent">
+        <h3>Teach Case — who is the client? Which case?</h3>
+        <div class="code-block">Teach Case: Maria Garcia is Juan Garcia's daughter.
+Teach Case: Cause number DC-24-12345 belongs to case 1277.</div>
         <ul>
-          <li><strong><code>case hint:</code></strong> — <em>Who is the client?</em> Relatives, nicknames, sender→client links. Helps match the right case.</li>
-          <li><strong><code>sort hint:</code></strong> — <em>How should mail from this sender be filed?</em> Provider behavior, folder rules, newsletters to ignore.</li>
+          <li>Relatives, nicknames, or senders who email on behalf of a PI client</li>
+          <li>Cause / docket numbers linked to a case number</li>
+          <li>Treated as authoritative when the same facts appear in a later email</li>
         </ul>
-        <p>Hints are saved when you Approve. The next email from that sender gets (usually) match better automatically.</p>
+      </div>
+
+      <div class="card card-accent">
+        <h3>Teach Folder — where should this type of mail go?</h3>
+        <div class="code-block">Teach Folder: MoveDocs records belong in Medical.
+Teach Folder: Law360 newsletters should not be sorted.
+Teach Folder: Photos from this sender belong in Photos.</div>
+        <ul>
+          <li>Provider or vendor behavior (which subfolder to use)</li>
+          <li>Recurring non-client mail — pair with <strong>Do Not Sort</strong> when appropriate</li>
+          <li>Sender-specific folder rules for a known case</li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <h3>What the bot learns automatically on Approve</h3>
+        <p>You don't need a Teach line for every correction. When you Approve, the system may also save hints when:</p>
+        <ul>
+          <li>You used <code>case:</code> or <code>folder:</code> because the AI's suggestion was wrong</li>
+          <li>A Cause number in the email or attachment maps to the case you filed to</li>
+          <li>Filename patterns repeat (e.g. medical records, LOP, demand letters) for that case</li>
+        </ul>
+        <p>It does <strong>not</strong> blindly link every sender to one case — senders often handle many clients. Use explicit <strong>Teach Case</strong> lines for those relationships.</p>
+        <p class="pill-row" style="margin-top: 0.75rem;">
+          <span class="pill">Legacy: <code>case hint:</code></span>
+          <span class="pill">Legacy: <code>sort hint:</code></span>
+          <span class="pill">Legacy: <code>hint:</code></span>
+        </p>
+        <p style="margin-bottom: 0;">Older hint formats still work; prefer <strong>Teach Case:</strong> and <strong>Teach Folder:</strong> in new replies.</p>
       </div>
     </section>
 
@@ -559,28 +625,56 @@ sort hint: Law360 newsletters from this listserv — Do Not Sort</div>
       <details>
         <summary>Why didn't the bot pick a case?</summary>
         <div class="answer">
-          <p>Common reasons: the PI client isn't named clearly in the email (sender is a vendor, not the client), the case isn't in the index yet, or the name only partially matches a different client. Use <code>case hint:</code> and <code>case:</code> in the thread, then Approve to teach it for next time.</p>
+          <p>Common reasons: the PI client isn't named clearly in the email (sender is a vendor, not the client), the case isn't in the index yet, or the name only partially matches a different client. Reply with <code>case:</code> for this email, add a <strong>Teach Case:</strong> line for next time, then Approve.</p>
+        </div>
+      </details>
+
+      <details>
+        <summary>What is "Intake — no case folder yet"?</summary>
+        <div class="answer">
+          <p>That label appears on mail from <code>intake@ramosjames.com</code> (or forwarded from it) when no existing case matched yet — typical new-client intake. Suggested folder is usually <strong>Intake</strong>. Once a case folder exists and matches the client name, normal case matching applies. Adobe Sign and other signature requests are <em>not</em> treated as intake unless they came through the intake mailbox.</p>
+        </div>
+      </details>
+
+      <details>
+        <summary>How do Teach Case and Teach Folder work?</summary>
+        <div class="answer">
+          <p>Reply in the thread with lines starting with <strong>Teach Case:</strong> or <strong>Teach Folder:</strong>, then Approve. They are stored as matching hints and fed into future AI classification. Teach Case helps identify the PI client or link Cause numbers to a case. Teach Folder helps route document types or senders to the right subfolder. See the <a href="#teach">Teach the system</a> section for examples.</p>
         </div>
       </details>
 
       <details>
         <summary>What's the difference between Needs Attention and Needs Human Review?</summary>
         <div class="answer">
-          <p><strong>Needs Human Review</strong> on the card title means the AI flagged uncertainty before anyone clicked anything — usually no case match or low confidence. <strong>Needs Attention</strong> (status) can also mean someone pressed the button, or a duplicate file was detected in Dropbox.</p>
+          <p><strong>Needs Human Review</strong> on the card title means the AI flagged uncertainty before anyone clicked anything — usually no case match or case confidence below 75%. <strong>Needs Attention</strong> (status) can also mean someone pressed the button, or a duplicate file was detected in Dropbox.</p>
         </div>
       </details>
 
       <details>
         <summary>Can I file to a case the AI didn't suggest?</summary>
         <div class="answer">
-          <p>Yes. Reply in the thread with <code>case: 1277</code> or <code>case: Client Name</code>, then Approve. The system saves a case hint for that sender so future mail may auto-match.</p>
+          <p>Yes. Reply in the thread with <code>case: 1277</code> or <code>case: Client Name</code>, then Approve. If the AI had the wrong case, a correction hint may be saved automatically. For ongoing sender→client relationships, add an explicit <strong>Teach Case:</strong> line.</p>
+        </div>
+      </details>
+
+      <details>
+        <summary>What's the difference between core and litigation folders?</summary>
+        <div class="answer">
+          <p><strong>Core</strong> folders (Medical, Correspondence, Investigation, etc.) are for everyday pre-lit filing. <strong>Litigation</strong> folders (Pleadings, Discovery, Deposition, Trial, etc.) are used when the case Slack channel topic shows the case is in litigation. Override anytime with <code>folder: Pleadings</code> (or any standard label) in the thread before Approve.</p>
+        </div>
+      </details>
+
+      <details>
+        <summary>What about Google Drive links in an email?</summary>
+        <div class="answer">
+          <p>Drive links in the email body are detected and listed on the queue card, but the bytes can't be downloaded automatically. Classify case/folder as usual, then download the file manually and file it — or use Approve only for attachments the bot actually received.</p>
         </div>
       </details>
 
       <details>
         <summary>What emails are ignored?</summary>
         <div class="answer">
-          <p>Emails without attachments are skipped. Certain known list senders (e.g. TTLA listserv) are ignored at ingestion. Use <code>sort hint:</code> + Do Not Sort for other recurring non-client mail.</p>
+          <p>Emails without attachments or external file links are skipped. Calendar invites (.ics) are skipped. Certain known list senders (e.g. TTLA listserv) are ignored at ingestion. Use <strong>Teach Folder:</strong> + <strong>Do Not Sort</strong> for other recurring non-client mail.</p>
         </div>
       </details>
 

@@ -121,13 +121,18 @@ function processInbox() {
   threads.forEach(processThread_);
 }
 
+/**
+ * Process only the newest eligible message in the thread.
+ * Avoids multiple Slack cards when a thread has several replies with attachments.
+ */
 function processThread_(thread) {
   const messages = thread.getMessages();
-  messages.forEach(function (message) {
-    if (message.isInTrash()) return;
-    if (!isWithinLookback_(message)) return;
-    if (!message.getAttachments().length && !hasDriveLinksInBody_(message)) return;
-    if (hasLabel_(message, SCRIPT_CONFIG.PROCESSED_LABEL)) return;
+  for (var i = messages.length - 1; i >= 0; i--) {
+    var message = messages[i];
+    if (message.isInTrash()) continue;
+    if (!isWithinLookback_(message)) continue;
+    if (!message.getAttachments().length && !hasDriveLinksInBody_(message)) continue;
+    if (hasLabel_(message, SCRIPT_CONFIG.PROCESSED_LABEL)) continue;
 
     if (!hasProcessableContent_(message)) {
       markProcessed_(message);
@@ -144,11 +149,17 @@ function processThread_(thread) {
     try {
       postMessageToWebhook_(message);
       markProcessed_(message);
-      Logger.log('Processed: %s (%s)', message.getSubject(), message.getId());
+      Logger.log(
+        'Processed: %s (%s, %s attachment(s))',
+        message.getSubject(),
+        message.getId(),
+        message.getAttachments().length
+      );
     } catch (err) {
       Logger.log('Failed: %s — %s', message.getSubject(), err);
     }
-  });
+    return;
+  }
 }
 
 function postMessageToWebhook_(message) {

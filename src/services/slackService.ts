@@ -194,7 +194,94 @@ async function slackUploadFileToChannelWithFallback(opts: {
   mimeType?: string | null;
   initialComment?: string;
   channelName?: string;
+  threadTs?: string;
 }): Promise<void> {
+  await slackUploadMultipleFilesToChannelWithFallback({
+    channelId: opts.channelId,
+    channelName: opts.channelName,
+    threadTs: opts.threadTs,
+    files: [
+      {
+        filename: opts.filename,
+        buffer: opts.buffer,
+        mimeType: opts.mimeType,
+      },
+    ],
+  });
+}
+
+async function slackUploadMultipleFilesToChannel(opts: {
+  channelId: string;
+  files: Array<{ filename: string; buffer: Buffer; mimeType?: string | null }>;
+  threadTs?: string;
+}): Promise<void> {
+  if (!opts.files.length) return;
+
+  const completed: Array<{ id: string; title: string }> = [];
+  for (const file of opts.files) {
+    const mime = file.mimeType?.trim() || 'application/octet-stream';
+    const uploadStart = await slackApiForm<{
+      upload_url: string;
+      file_id: string;
+    }>('files.getUploadURLExternal', {
+      filename: file.filename,
+      length: file.buffer.length,
+    });
+
+    const byteUpload = await fetch(uploadStart.upload_url, {
+      method: 'POST',
+      headers: { 'Content-Type': mime },
+      body: file.buffer,
+    });
+    if (!byteUpload.ok) {
+      throw new Error(
+        `Slack file byte upload failed for ${file.filename}: HTTP ${byteUpload.status}`
+      );
+    }
+
+    completed.push({ id: uploadStart.file_id, title: file.filename });
+  }
+
+  await slackApiForm('files.completeUploadExternal', {
+    files: JSON.stringify(completed),
+    channel_id: opts.channelId,
+    ...(opts.threadTs ? { thread_ts: opts.threadTs } : {}),
+  });
+}
+
+async function slackUploadMultipleFilesLegacy(opts: {
+  channelId: string;
+  files: Array<{ filename: string; buffer: Buffer; mimeType?: string | null }>;
+  threadTs?: string;
+}): Promise<void> {
+  for (const file of opts.files) {
+    const form = new FormData();
+    form.append('channels', opts.channelId);
+    form.append('filename', file.filename);
+    if (opts.threadTs) form.append('thread_ts', opts.threadTs);
+    const mime = file.mimeType?.trim() || 'application/octet-stream';
+    form.append('file', new Blob([file.buffer], { type: mime }), file.filename);
+
+    const res = await fetch(`${SLACK_API}/files.upload`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${getEnv().SLACK_BOT_TOKEN}` },
+      body: form,
+    });
+    const data = (await res.json()) as { ok: boolean; error?: string };
+    if (!data.ok) {
+      throw new Error(`Slack API files.upload failed for ${file.filename}: ${data.error ?? 'unknown'}`);
+    }
+  }
+}
+
+async function slackUploadMultipleFilesToChannelWithFallback(opts: {
+  channelId: string;
+  files: Array<{ filename: string; buffer: Buffer; mimeType?: string | null }>;
+  threadTs?: string;
+  channelName?: string;
+}): Promise<void> {
+  if (!opts.files.length) return;
+
   const uploadAccess = await ensureBotCanUploadToChannel(opts.channelId);
   if (!uploadAccess.isMember) {
     throw new Error(
@@ -204,13 +291,13 @@ async function slackUploadFileToChannelWithFallback(opts: {
 
   const attempt = async () => {
     try {
-      await slackUploadFileToChannel(opts);
+      await slackUploadMultipleFilesToChannel(opts);
     } catch (err) {
-      logger.warn('Slack external file upload failed, trying legacy files.upload', {
-        filename: opts.filename,
+      logger.warn('Slack external multi-file upload failed, trying legacy files.upload', {
+        fileCount: opts.files.length,
         err: String(err),
       });
-      await slackUploadFileLegacy(opts);
+      await slackUploadMultipleFilesLegacy(opts);
     }
   };
 
@@ -221,7 +308,9 @@ async function slackUploadFileToChannelWithFallback(opts: {
     if (!msg.includes('not_in_channel')) throw err;
     const retryAccess = await ensureBotCanUploadToChannel(opts.channelId);
     if (!retryAccess.isMember) {
-      throw new Error(`Slack API files.upload failed: not_in_channel (${retryAccess.slackError ?? 'not joined'})`);
+      throw new Error(
+        `Slack API files.upload failed: not_in_channel (${retryAccess.slackError ?? 'not joined'})`
+      );
     }
     await attempt();
   }
@@ -873,11 +962,16 @@ export const slackService = {
 
   async postCaseChannelConfirmation(opts: {
     caseRow: Case;
-    item: FileSorterItem;
-    dropboxLink: string;
+    trigger: FileSorterItem;
+    files: Array<{
+      item: FileSorterItem;
+      dropboxLink: string;
+      fileBuffer: Buffer;
+    }>;
     approvedByUserId: string;
-    fileBuffer: Buffer;
   }): Promise<boolean> {
+    if (!opts.files.length) return false;
+
     const channelId = await resolveCaseSlackChannelId(opts.caseRow);
 
     if (!channelId) {
@@ -888,11 +982,8 @@ export const slackService = {
       return false;
     }
 
-    const folderName = folderLabelFromPath(
-      opts.item.final_dropbox_path ?? opts.item.suggested_folder_path
-    );
-
-    const dropboxLink = slackMrkdwnLink(opts.dropboxLink, 'Open in Dropbox');
+    const batch = opts.files.length > 1;
+    const trigger = opts.trigger;
 
     let topicMentionIds: string[] = [];
     let uploadAccess: BotChannelUploadAccess | null = null;
@@ -919,23 +1010,53 @@ export const slackService = {
       });
     }
 
-    const sectionBody =
-      `:white_check_mark: *Document sorted to Dropbox*\n` +
-      `*${slackFieldText(opts.item.attachment_filename, 200)}*\n` +
-      `Case: #${opts.caseRow.slack_channel_name} · Folder: ${slackFieldText(folderName, 80)}\n` +
-      `From: ${slackFieldText(opts.item.from_email, 120)}\n` +
-      `Subject: ${slackFieldText(opts.item.subject ?? '—', 200)}`;
+    const fileLines = batch
+      ? opts.files
+          .map((f) => {
+            const folderName = folderLabelFromPath(
+              f.item.final_dropbox_path ?? f.item.suggested_folder_path
+            );
+            const link = slackMrkdwnLink(f.dropboxLink, f.item.attachment_filename);
+            return `• ${link} · Folder: ${slackFieldText(folderName, 80)}`;
+          })
+          .join('\n')
+      : `*${slackFieldText(opts.files[0]!.item.attachment_filename, 200)}*`;
+
+    const sectionBody = batch
+      ? `:white_check_mark: *Documents sorted to Dropbox* (${opts.files.length} files)\n${fileLines}\n` +
+        `Case: #${opts.caseRow.slack_channel_name}\n` +
+        `From: ${slackFieldText(trigger.from_email, 120)}\n` +
+        `Subject: ${slackFieldText(trigger.subject ?? '—', 200)}`
+      : `:white_check_mark: *Document sorted to Dropbox*\n${fileLines}\n` +
+        `Case: #${opts.caseRow.slack_channel_name} · Folder: ${slackFieldText(
+          folderLabelFromPath(
+            opts.files[0]!.item.final_dropbox_path ?? opts.files[0]!.item.suggested_folder_path
+          ),
+          80
+        )}\n` +
+        `From: ${slackFieldText(trigger.from_email, 120)}\n` +
+        `Subject: ${slackFieldText(trigger.subject ?? '—', 200)}`;
+
+    const sectionExtras = batch
+      ? [`Sorted by: ${slackUserMention(opts.approvedByUserId)}`]
+      : [
+          `Sorted by: ${slackUserMention(opts.approvedByUserId)}`,
+          slackMrkdwnLink(opts.files[0]!.dropboxLink, 'Open in Dropbox'),
+        ];
 
     const sectionText = slackSectionWithLeadingMentions(
       topicMentionIds,
       sectionBody,
-      [`Sorted by: ${slackUserMention(opts.approvedByUserId)}`, dropboxLink]
+      sectionExtras
     );
 
     const mentionPrefix = formatSlackUserMentions(topicMentionIds);
+    const fallbackLabel = batch
+      ? `${opts.files.length} documents sorted to Dropbox`
+      : opts.files[0]!.item.attachment_filename;
     const fallbackText = mentionPrefix
-      ? `${mentionPrefix} Document sorted to Dropbox: ${opts.item.attachment_filename}`
-      : `Document sorted to Dropbox: ${opts.item.attachment_filename}`;
+      ? `${mentionPrefix} Document sorted to Dropbox: ${fallbackLabel}`
+      : `Document sorted to Dropbox: ${fallbackLabel}`;
 
     try {
       const postResult = await slackApi<{ ts: string }>('chat.postMessage', {
@@ -951,21 +1072,30 @@ export const slackService = {
 
       let fileAttached = false;
       try {
-        await slackUploadFileToChannelWithFallback({
+        await slackUploadMultipleFilesToChannelWithFallback({
           channelId,
-          filename: opts.item.attachment_filename,
-          buffer: opts.fileBuffer,
-          mimeType: opts.item.attachment_mime_type,
+          channelName: opts.caseRow.slack_channel_name,
+          threadTs: postResult.ts,
+          files: opts.files.map((f) => ({
+            filename: f.item.attachment_filename,
+            buffer: f.fileBuffer,
+            mimeType: f.item.attachment_mime_type,
+          })),
         });
         fileAttached = true;
       } catch (uploadErr) {
         const errMsg = String(uploadErr);
-        const hint = slackFileUploadHint(errMsg, opts.caseRow.slack_channel_name, uploadAccess ?? undefined);
+        const hint = slackFileUploadHint(
+          errMsg,
+          opts.caseRow.slack_channel_name,
+          uploadAccess ?? undefined
+        );
         logger.error('Case channel file attachment failed', {
           caseNumber: opts.caseRow.case_number,
           channelId,
           slackChannelName: opts.caseRow.slack_channel_name,
-          filename: opts.item.attachment_filename,
+          fileCount: opts.files.length,
+          filenames: opts.files.map((f) => f.item.attachment_filename),
           err: errMsg,
           hint,
           uploadAccess,
@@ -975,7 +1105,7 @@ export const slackService = {
             channel: channelId,
             thread_ts: postResult.ts,
             text:
-              `:warning: *PDF not attached in Slack* — file is in Dropbox (link above).\n` +
+              `:warning: *File${batch ? 's' : ''} not attached in Slack* — ${batch ? 'they are' : 'file is'} in Dropbox (link${batch ? 's' : ''} above).\n` +
               `${hint}`,
           });
         } catch {
@@ -986,7 +1116,8 @@ export const slackService = {
       logger.info('Cross-posted sorted document to case Slack channel', {
         caseNumber: opts.caseRow.case_number,
         channelId,
-        filename: opts.item.attachment_filename,
+        fileCount: opts.files.length,
+        filenames: opts.files.map((f) => f.item.attachment_filename),
         fileAttached,
         topicMentions: topicMentionIds,
       });
