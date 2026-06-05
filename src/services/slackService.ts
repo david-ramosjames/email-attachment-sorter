@@ -1010,7 +1010,7 @@ export const slackService = {
       });
     }
 
-    const fileLines = batch
+    const batchFileLines = batch
       ? opts.files
           .map((f) => {
             const folderName = folderLabelFromPath(
@@ -1020,14 +1020,11 @@ export const slackService = {
             return `• ${link} · Folder: ${slackFieldText(folderName, 80)}`;
           })
           .join('\n')
-      : `*${slackFieldText(opts.files[0]!.item.attachment_filename, 200)}*`;
+      : '';
 
     const sectionBody = batch
-      ? `:white_check_mark: *Documents sorted to Dropbox* (${opts.files.length} files)\n${fileLines}\n` +
-        `Case: #${opts.caseRow.slack_channel_name}\n` +
-        `From: ${slackFieldText(trigger.from_email, 120)}\n` +
-        `Subject: ${slackFieldText(trigger.subject ?? '—', 200)}`
-      : `:white_check_mark: *Document sorted to Dropbox*\n${fileLines}\n` +
+      ? `:white_check_mark: *Documents sorted to Dropbox* (${opts.files.length} files)`
+      : `:white_check_mark: *Document sorted to Dropbox*\n*${slackFieldText(opts.files[0]!.item.attachment_filename, 200)}*\n` +
         `Case: #${opts.caseRow.slack_channel_name} · Folder: ${slackFieldText(
           folderLabelFromPath(
             opts.files[0]!.item.final_dropbox_path ?? opts.files[0]!.item.suggested_folder_path
@@ -1038,7 +1035,13 @@ export const slackService = {
         `Subject: ${slackFieldText(trigger.subject ?? '—', 200)}`;
 
     const sectionExtras = batch
-      ? [`Sorted by: ${slackUserMention(opts.approvedByUserId)}`]
+      ? [
+          batchFileLines,
+          `Case: #${opts.caseRow.slack_channel_name}`,
+          `From: ${slackFieldText(trigger.from_email, 120)}`,
+          `Subject: ${slackFieldText(trigger.subject ?? '—', 200)}`,
+          `Sorted by: ${slackUserMention(opts.approvedByUserId)}`,
+        ]
       : [
           `Sorted by: ${slackUserMention(opts.approvedByUserId)}`,
           slackMrkdwnLink(opts.files[0]!.dropboxLink, 'Open in Dropbox'),
