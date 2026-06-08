@@ -109,9 +109,17 @@ webhooksRouter.post('/webhooks/slack/interactions', async (req, res) => {
   (async () => {
     try {
       const actionType = slackActionType(action.action_id);
-      const messageTs = payload.message?.thread_ts ?? payload.message?.ts;
+      const db = await import('../db/supabase.js');
+      const item = await db.getFileSorterItem(itemId);
+      const resolvedChannelId = channelId ?? item?.slack_queue_channel_id;
+      const resolvedMessageTs =
+        item?.slack_queue_message_ts ??
+        payload.message?.thread_ts ??
+        payload.message?.ts;
       const slackThread =
-        channelId && messageTs ? { channelId, messageTs } : undefined;
+        resolvedChannelId && resolvedMessageTs
+          ? { channelId: resolvedChannelId, messageTs: resolvedMessageTs }
+          : undefined;
 
       switch (actionType) {
         case 'approve':

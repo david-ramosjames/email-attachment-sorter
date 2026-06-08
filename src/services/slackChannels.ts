@@ -221,6 +221,8 @@ export async function joinAllPublicSlackChannels(
 
   joinInProgress = true;
   try {
+    await ensureBotInQueueChannel();
+
     const all = channels ?? (await listAllSlackChannels());
     const delayMs = opts?.delayMs ?? joinDelayMs();
     const onlyCaseChannels = opts?.caseChannelsOnly ?? caseChannelsOnly();
@@ -232,7 +234,7 @@ export async function joinAllPublicSlackChannels(
     if (onlyCaseChannels) {
       const before = publicChannels.length;
       publicChannels = publicChannels.filter(
-        (ch) => ch.id !== queueChannelId && isLikelyCaseSlackChannel(ch.name)
+        (ch) => ch.id === queueChannelId || isLikelyCaseSlackChannel(ch.name)
       );
       skippedNonCase = before - publicChannels.length;
     }
@@ -446,6 +448,29 @@ export async function ensureBotCanUploadToChannel(
       slackError,
     };
   }
+}
+
+/** Always join the configured #file-sorter-queue channel (required for thread reads). */
+export async function ensureBotInQueueChannel(): Promise<BotChannelUploadAccess> {
+  const channelId = getEnv().SLACK_FILE_SORTER_QUEUE_CHANNEL_ID.trim();
+  const access = await ensureBotCanUploadToChannel(channelId);
+  if (!access.isMember) {
+    logger.warn('File Sorter bot is not a member of the queue channel', {
+      channelId,
+      channelName: access.channelName,
+      isPrivate: access.isPrivate,
+      slackError: access.slackError,
+      hint: access.isPrivate
+        ? 'Private channel — run /invite @RJL File Sorter in the queue channel.'
+        : 'Ensure channels:join scope is installed and SLACK_FILE_SORTER_QUEUE_CHANNEL_ID is correct.',
+    });
+  } else if (access.joinedNow) {
+    logger.info('Joined File Sorter queue channel', {
+      channelId,
+      channelName: access.channelName,
+    });
+  }
+  return access;
 }
 
 let channelIdByName: Map<string, string> | null = null;

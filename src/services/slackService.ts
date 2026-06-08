@@ -30,6 +30,7 @@ import {
   getSlackChannelIdByNameMap,
   clearSlackChannelNameCache,
   ensureBotCanUploadToChannel,
+  ensureBotInQueueChannel,
   getConversationInfo,
   slackJoinHint,
   type BotChannelUploadAccess,
@@ -841,6 +842,7 @@ export const slackService = {
     options?: { emailReceivedAt?: string | null }
   ): Promise<{ channel: string; ts: string }> {
     const channel = getEnv().SLACK_FILE_SORTER_QUEUE_CHANNEL_ID;
+    await ensureBotInQueueChannel();
     const blocks = buildQueueBlocks(items, caseRow, options);
     const label =
       items.length === 1
@@ -925,18 +927,42 @@ export const slackService = {
       throw new Error('Missing Slack channel or message timestamp');
     }
 
-    const result = await slackApiForm<{
-      messages: Array<Record<string, unknown>>;
-    }>('conversations.replies', {
-      channel: channelId,
-      ts,
-      limit: 50,
-    });
+    const access = await ensureBotCanUploadToChannel(channelId);
+    if (!access.isMember) {
+      throw new Error(
+        `Slack API conversations.replies failed: not_in_channel (${access.slackError ?? 'bot not in channel'})`
+      );
+    }
 
-    return (result.messages ?? [])
+    let result: { messages: Array<Record<string, unknown>> };
+    try {
+      result = await slackApiForm<{
+        messages: Array<Record<string, unknown>>;
+      }>('conversations.replies', {
+        channel: channelId,
+        ts,
+        limit: 50,
+      });
+    } catch (err) {
+      const msg = String(err);
+      const historyHint = access.isPrivate
+        ? 'Private queue channel — ensure groups:history scope is installed and the bot is invited.'
+        : 'Ensure channels:history scope is installed and the bot is in the queue channel.';
+      throw new Error(`${msg} (${historyHint})`);
+    }
+
+    const texts = (result.messages ?? [])
       .filter((m) => !m.bot_id && m.subtype !== 'bot_message')
       .map((m) => extractSlackMessageText(m))
       .filter(Boolean);
+
+    logger.info('Slack thread replies loaded', {
+      channelId,
+      messageTs: ts,
+      replyCount: texts.length,
+    });
+
+    return texts;
   },
 
   async getUserDisplayName(userId: string): Promise<string> {

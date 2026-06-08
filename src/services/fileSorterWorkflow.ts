@@ -57,15 +57,26 @@ import type { Case, FileSorterItem } from '../types/index.js';
 import { confirmThreadOverrides } from './queueThreadOverrideService.js';
 
 function slackThreadForItem(item: FileSorterItem, slackThread?: SlackThreadContext): SlackThreadContext | null {
-  return (
-    slackThread ??
-    (item.slack_queue_channel_id && item.slack_queue_message_ts
-      ? {
-          channelId: item.slack_queue_channel_id,
-          messageTs: item.slack_queue_message_ts,
-        }
-      : null)
-  );
+  if (slackThread?.channelId && slackThread.messageTs) {
+    // Queue card ts on the item is the thread root — prefer it over interaction thread_ts.
+    if (
+      item.slack_queue_channel_id === slackThread.channelId &&
+      item.slack_queue_message_ts
+    ) {
+      return {
+        channelId: slackThread.channelId,
+        messageTs: item.slack_queue_message_ts,
+      };
+    }
+    return slackThread;
+  }
+  if (item.slack_queue_channel_id && item.slack_queue_message_ts) {
+    return {
+      channelId: item.slack_queue_channel_id,
+      messageTs: item.slack_queue_message_ts,
+    };
+  }
+  return null;
 }
 
 async function resolveBatchCase(

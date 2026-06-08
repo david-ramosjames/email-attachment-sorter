@@ -1,5 +1,10 @@
 import { getEnv } from '../config/env.js';
-import { getCaseById, getCaseByName, getPendingQueueItemsByThread } from '../db/supabase.js';
+import {
+  getCaseById,
+  getCaseByName,
+  getPendingQueueItemsByThread,
+  hasActiveQueueCardsInChannel,
+} from '../db/supabase.js';
 import { slackService, type SlackThreadContext } from './slackService.js';
 import {
   parseThreadReplies,
@@ -83,21 +88,34 @@ export async function confirmThreadOverrides(
   return true;
 }
 
+async function isFileSorterQueueChannel(channelId: string): Promise<boolean> {
+  const configured = getEnv().SLACK_FILE_SORTER_QUEUE_CHANNEL_ID.trim();
+  if (channelId === configured) return true;
+  return hasActiveQueueCardsInChannel(channelId);
+}
+
 /** Slack Events API: human replied in #file-sorter-queue with case/folder syntax. */
 export async function handleQueueThreadOverrideEvent(
   event: Record<string, unknown>
 ): Promise<boolean> {
   if (String(event.type ?? '') !== 'message') return false;
   if (event.bot_id || event.subtype === 'bot_message') return false;
+  if (event.subtype === 'message_changed' || event.subtype === 'message_deleted') return false;
 
   const channelId = typeof event.channel === 'string' ? event.channel : '';
   const threadTs = typeof event.thread_ts === 'string' ? event.thread_ts : '';
   if (!channelId || !threadTs) return false;
-  if (channelId !== getEnv().SLACK_FILE_SORTER_QUEUE_CHANNEL_ID) return false;
+  if (!(await isFileSorterQueueChannel(channelId))) return false;
 
   const text = slackService.extractSlackMessageText(event);
   const parsed = parseThreadReply(text);
   if (!threadOverrideHasValues(parsed)) return false;
+
+  logger.info('Queue thread override message received', {
+    channelId,
+    threadTs,
+    preview: text.slice(0, 120),
+  });
 
   const items = await getPendingQueueItemsByThread(channelId, threadTs);
   if (!items.length) return false;

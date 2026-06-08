@@ -827,6 +827,18 @@ export async function getQueueBatchItems(item: FileSorterItem): Promise<FileSort
   return data as FileSorterItem[];
 }
 
+/** True when this channel has active queue cards (used when queue channel id changed). */
+export async function hasActiveQueueCardsInChannel(channelId: string): Promise<boolean> {
+  const { data, error } = await getSupabase()
+    .from('file_sorter_items')
+    .select('id')
+    .eq('slack_queue_channel_id', channelId.trim())
+    .in('status', ['pending_review', 'needs_attention'])
+    .limit(1);
+  if (error) return false;
+  return (data?.length ?? 0) > 0;
+}
+
 /** Pending queue items for a Slack thread (batch card root message). */
 export async function getPendingQueueItemsByThread(
   channelId: string,

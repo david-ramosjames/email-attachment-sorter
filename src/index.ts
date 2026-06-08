@@ -4,6 +4,7 @@ import { dropboxAuthMode, ensureDropboxAccessToken } from './services/dropboxAut
 import { getDropboxConfigIssue } from './config/env.js';
 import { startCaseSheetSyncScheduler } from './services/caseSheetSyncService.js';
 import { startSlackCaseSyncScheduler } from './services/slackCaseSyncService.js';
+import { ensureBotInQueueChannel } from './services/slackChannels.js';
 import { startDropboxSyncScheduler } from './services/dropboxSyncService.js';
 import { startTempStorageCleanupScheduler } from './services/tempStorageCleanupService.js';
 import { logger } from './utils/logger.js';
@@ -43,4 +44,8 @@ app.listen(env.PORT, () => {
   startTempStorageCleanupScheduler(env.TEMP_STORAGE_CLEANUP_INTERVAL_MINUTES);
   startCaseSheetSyncScheduler(env.CASE_SHEET_SYNC_INTERVAL_MINUTES);
   startSlackCaseSyncScheduler(env.SLACK_CASE_SYNC_INTERVAL_MINUTES);
+
+  void ensureBotInQueueChannel().catch((err) => {
+    logger.error('Queue channel join on startup failed', { err: String(err) });
+  });
 });
