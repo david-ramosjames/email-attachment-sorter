@@ -22,6 +22,8 @@ const SCRIPT_CONFIG = {
   MAX_ATTACHMENT_BYTES: 20 * 1024 * 1024,
   /** From addresses to skip (lowercase); still marked processed so they are not retried */
   IGNORED_SENDER_EMAILS: ['listsender-ttlaadvocates@lyris.ttla.com'],
+  /** To addresses to skip — personal staff inboxes, not the shared file-sorter mailbox */
+  IGNORED_TO_EMAILS: ['laura@ramosjames.com', 'jon@ramosjames.com', 'david@ramosjames.com'],
   /** Only process mail received within this many hours (keeps each run fast) */
   LOOKBACK_HOURS: 1,
 };
@@ -143,6 +145,12 @@ function processThread_(thread) {
     if (isIgnoredSender_(message)) {
       markProcessed_(message);
       Logger.log('Skipped (ignored sender): %s from %s', message.getSubject(), message.getFrom());
+      return;
+    }
+
+    if (isIgnoredRecipient_(message)) {
+      markProcessed_(message);
+      Logger.log('Skipped (ignored To recipient): %s to %s', message.getSubject(), message.getTo());
       return;
     }
 
@@ -299,6 +307,18 @@ function isIgnoredSender_(message) {
   const ignored = SCRIPT_CONFIG.IGNORED_SENDER_EMAILS || [];
   return ignored.some(function (addr) {
     return from === String(addr).toLowerCase();
+  });
+}
+
+function isIgnoredRecipient_(message) {
+  const ignored = SCRIPT_CONFIG.IGNORED_TO_EMAILS || [];
+  if (!ignored.length) return false;
+  var to = parseAddressList_(message.getTo());
+  if (!to.length) return false;
+  return to.every(function (addr) {
+    return ignored.some(function (blocked) {
+      return addr.toLowerCase() === String(blocked).toLowerCase();
+    });
   });
 }
 

@@ -35,7 +35,7 @@ import {
   isExternalLinkAttachment,
 } from '../utils/externalFileLinks.js';
 import { extractForwardedEmailContext } from '../utils/forwardedEmailContext.js';
-import { isIgnoredInboundSender } from '../constants/ignoredSenders.js';
+import { isIgnoredInboundRecipient, isIgnoredInboundSender } from '../constants/ignoredSenders.js';
 import { logger } from '../utils/logger.js';
 
 /** Shared state while processing all attachments in one inbound email. */
@@ -72,6 +72,14 @@ export async function processInboundEmail(
     logger.info('Skipping email from ignored sender', {
       gmailMessageId: payload.gmailMessageId,
       fromEmail: payload.fromEmail,
+    });
+    return { processed: 0, skipped: 1 };
+  }
+
+  if (isIgnoredInboundRecipient(payload.toEmails)) {
+    logger.info('Skipping email to ignored recipient inbox', {
+      gmailMessageId: payload.gmailMessageId,
+      toEmails: payload.toEmails,
     });
     return { processed: 0, skipped: 1 };
   }
