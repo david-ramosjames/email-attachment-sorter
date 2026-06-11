@@ -4,10 +4,8 @@ import {
 } from '../db/supabase.js';
 import { getEnv } from '../config/env.js';
 import { auditService } from './auditService.js';
-import { resolveQueueMentionUserIds } from './queueMentionService.js';
 import { slackService } from './slackService.js';
 import type { FileSorterItem } from '../types/index.js';
-import { formatSlackUserMentions } from '../utils/slackText.js';
 import { logger } from '../utils/logger.js';
 
 let reminderPassInProgress = false;
@@ -61,8 +59,6 @@ export async function runQueueReminderPass(): Promise<{
   try {
     const cutoffMs = Date.now() - hours * 60 * 60 * 1000;
     const items = await listPendingQueueItemsWithSlackCard();
-    const mentionIds = await resolveQueueMentionUserIds();
-    const mentionLine = formatSlackUserMentions(mentionIds);
 
     const batches = new Map<string, FileSorterItem[]>();
     for (const item of items) {
@@ -92,9 +88,8 @@ export async function runQueueReminderPass(): Promise<{
 
       const filenames = batchItems.map((i) => i.attachment_filename).join(', ');
       const hoursWaiting = Math.floor((Date.now() - itemQueuedAtMs(oldest)) / (60 * 60 * 1000));
-      const mentionPrefix = mentionLine ? `${mentionLine} ` : '';
       const text =
-        `${mentionPrefix}:hourglass_flowing_sand: *Reminder* — this file sorter item has been waiting ` +
+        `:hourglass_flowing_sand: *Reminder* — this file sorter item has been waiting ` +
         `${hoursWaiting}+ hours. Please review the card above and click *Approve* or *Do Not Sort*.` +
         (batchItems.length > 1 ? `\n_Attachments: ${filenames}_` : `\n_${filenames}_`);
 
