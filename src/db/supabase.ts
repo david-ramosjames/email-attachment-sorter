@@ -895,6 +895,29 @@ export async function listUnroutedTempStorageExpired(hours: number): Promise<Fil
   return (data ?? []) as FileSorterItem[];
 }
 
+export async function listPendingQueueItemsWithSlackCard(): Promise<FileSorterItem[]> {
+  const { data, error } = await getSupabase()
+    .from('file_sorter_items')
+    .select('*')
+    .in('status', ['pending_review', 'needs_attention'])
+    .not('slack_queue_channel_id', 'is', null)
+    .not('slack_queue_message_ts', 'is', null)
+    .order('created_at', { ascending: true });
+  if (error) throw new Error(`List pending queue items failed: ${error.message}`);
+  return (data ?? []) as FileSorterItem[];
+}
+
+export async function hasQueueReminderBeenSent(itemId: string): Promise<boolean> {
+  const { data, error } = await getSupabase()
+    .from('audit_events')
+    .select('id')
+    .eq('file_sorter_item_id', itemId)
+    .eq('event_type', 'queue_reminder_sent')
+    .limit(1);
+  if (error) return false;
+  return (data?.length ?? 0) > 0;
+}
+
 export async function listFileSorterItems(opts?: {
   status?: FileSorterItemStatus;
   limit?: number;

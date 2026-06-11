@@ -14,7 +14,8 @@ export type AuditEventType =
   | 'duplicate_detected'
   | 'case_channel_cross_post_failed'
   | 'reindex_folders'
-  | 'matching_hint_saved';
+  | 'matching_hint_saved'
+  | 'queue_reminder_sent';
 
 export const auditService = {
   async log(

@@ -35,6 +35,14 @@ const envSchema = z.object({
   SLACK_BOT_TOKEN: z.string().min(1),
   SLACK_SIGNING_SECRET: z.string().min(1),
   SLACK_FILE_SORTER_QUEUE_CHANNEL_ID: z.string().min(1),
+  /** Comma-separated Slack user IDs to @mention on new queue cards (e.g. U0123ABC,U0456DEF). */
+  SLACK_QUEUE_MENTION_USER_IDS: optionalString,
+  /** Post a thread reminder when unsorted this many hours (weekdays only). 0 = disabled. */
+  SLACK_QUEUE_REMINDER_HOURS: z.coerce.number().min(0).default(24),
+  /** How often to check for queue reminders (minutes). 0 = disabled. */
+  SLACK_QUEUE_REMINDER_CHECK_INTERVAL_MINUTES: z.coerce.number().min(0).default(60),
+  /** IANA timezone for weekday reminder checks (default Central). */
+  SLACK_REMINDER_TIMEZONE: z.string().default('America/Chicago'),
   /** Short-lived (~4h); use refresh-token trio instead */
   DROPBOX_ACCESS_TOKEN: optionalString,
   DROPBOX_APP_KEY: optionalString,

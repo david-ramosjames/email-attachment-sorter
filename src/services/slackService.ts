@@ -26,6 +26,7 @@ import {
   queueFolderLabel,
 } from '../utils/intakeDocumentSignals.js';
 import { parseUserMentionsFromSlackTopic } from '../utils/slackCaseParser.js';
+import { resolveQueueMentionUserIds } from './queueMentionService.js';
 import {
   getSlackChannelIdByNameMap,
   clearSlackChannelNameCache,
@@ -843,15 +844,27 @@ export const slackService = {
   ): Promise<{ channel: string; ts: string }> {
     const channel = getEnv().SLACK_FILE_SORTER_QUEUE_CHANNEL_ID;
     await ensureBotInQueueChannel();
+    const mentionIds = await resolveQueueMentionUserIds();
+    const mentionLine = formatSlackUserMentions(mentionIds);
     const blocks = buildQueueBlocks(items, caseRow, options);
+    if (mentionLine) {
+      blocks.splice(1, 0, {
+        type: 'section',
+        text: { type: 'mrkdwn', text: mentionLine },
+      });
+    }
     const label =
       items.length === 1
         ? items[0]!.attachment_filename
         : `${items.length} attachments: ${items.map((i) => i.attachment_filename).join(', ')}`;
     const status = aggregateBatchStatus(items);
+    const headerText = buildQueueHeaderText(status, items.length > 1, items.length, items);
+    const fallbackText = mentionLine
+      ? `${mentionLine} ${headerText} — ${label}`
+      : `${headerText} — ${label}`;
     const result = await slackApi<{ channel: string; ts: string }>('chat.postMessage', {
       channel,
-      text: `${buildQueueHeaderText(status, items.length > 1, items.length, items)} — ${label}`,
+      text: fallbackText,
       blocks,
     });
     return { channel: result.channel, ts: result.ts };
@@ -918,6 +931,15 @@ export const slackService = {
       thread_ts: threadTs,
       text,
     });
+  },
+
+  async postQueueCardThreadNotice(item: FileSorterItem, text: string): Promise<void> {
+    if (!item.slack_queue_channel_id || !item.slack_queue_message_ts) return;
+    await slackService.postThreadReply(
+      item.slack_queue_channel_id,
+      item.slack_queue_message_ts,
+      text
+    );
   },
 
   async getThreadReplies(ctx: SlackThreadContext): Promise<string[]> {

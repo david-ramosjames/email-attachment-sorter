@@ -164,13 +164,17 @@ webhooksRouter.post('/webhooks/slack/interactions', async (req, res) => {
           }
         }
       }
-      if (channelId) {
+      const threadItem = item ?? (await db.getFileSorterItem(itemId));
+      const threadText = `:warning: *File Sorter* — ${userMessage}`;
+      if (threadItem?.slack_queue_channel_id && threadItem.slack_queue_message_ts) {
         try {
-          await slackService.postEphemeral(
-            channelId,
-            userId,
-            `File Sorter error: ${userMessage}`
-          );
+          await slackService.postQueueCardThreadNotice(threadItem, threadText);
+        } catch {
+          /* ignore */
+        }
+      } else if (channelId) {
+        try {
+          await slackService.postEphemeral(channelId, userId, `File Sorter error: ${userMessage}`);
         } catch {
           /* ignore */
         }
