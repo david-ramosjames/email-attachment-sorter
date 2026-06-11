@@ -1,6 +1,5 @@
 import {
   getCaseById,
-  getFileSorterItem,
   getQueueableItemsByGmailMessage,
   getQueueBatchItems,
   updateFileSorterItem,
@@ -128,10 +127,6 @@ async function postEmailItemsToSlackInner(
       batchSize: allItems.length,
     });
   }
-
-  const primaryId = pickPrimaryItem(allItems).id;
-  const updatedPrimary = (await getFileSorterItem(primaryId)) ?? allItems[0]!;
-  await slackService.updateQueueMessage(updatedPrimary, caseRow);
 
   logger.info('Slack queue batch posted', {
     gmailMessageId,
