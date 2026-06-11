@@ -333,6 +333,7 @@ export async function getConversationInfo(channelId: string): Promise<{
   id: string;
   name: string;
   topic: string;
+  purpose: string;
   isMember: boolean;
   isPrivate: boolean;
 } | null> {
@@ -343,6 +344,7 @@ export async function getConversationInfo(channelId: string): Promise<{
       is_member?: boolean;
       is_private?: boolean;
       topic?: { value?: string };
+      purpose?: { value?: string };
     };
   }>('conversations.info', { channel: channelId });
 
@@ -353,9 +355,31 @@ export async function getConversationInfo(channelId: string): Promise<{
     id: ch.id,
     name: ch.name,
     topic: ch.topic?.value?.trim() ?? '',
+    purpose: ch.purpose?.value?.trim() ?? '',
     isMember: Boolean(ch.is_member),
     isPrivate: Boolean(ch.is_private),
   };
+}
+
+/** Resolve a workspace member ID from their email (needs users:read.email). */
+export async function lookupSlackUserByEmail(email: string): Promise<string | null> {
+  const normalized = email.trim().toLowerCase();
+  if (!normalized) return null;
+  try {
+    const data = await slackApiForm<{ user?: { id?: string; deleted?: boolean } }>(
+      'users.lookupByEmail',
+      { email: normalized }
+    );
+    const id = data.user?.id?.trim();
+    if (!id || data.user?.deleted) return null;
+    return id;
+  } catch (err) {
+    logger.warn('Slack users.lookupByEmail failed', {
+      email: normalized,
+      err: String(err),
+    });
+    return null;
+  }
 }
 
 export interface BotChannelUploadAccess {

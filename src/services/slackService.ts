@@ -848,10 +848,14 @@ export const slackService = {
     const mentionLine = formatSlackUserMentions(mentionIds);
     const blocks = buildQueueBlocks(items, caseRow, options);
     if (mentionLine) {
-      blocks.splice(1, 0, {
+      const headerIdx = blocks.findIndex((b) => (b as { type?: string }).type === 'header');
+      const insertAt = headerIdx >= 0 ? headerIdx + 1 : 0;
+      blocks.splice(insertAt, 0, {
         type: 'section',
         text: { type: 'mrkdwn', text: mentionLine },
       });
+    } else {
+      logger.info('Queue card posted without @mentions — set SLACK_QUEUE_MENTION_USER_IDS or add <@U…> to queue channel topic/description');
     }
     const label =
       items.length === 1

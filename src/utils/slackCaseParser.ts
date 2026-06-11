@@ -56,7 +56,7 @@ export function parseStatusFromTopic(topicText: string): string {
 export function parseUserMentionsFromSlackTopic(topicText: string): string[] {
   const seen = new Set<string>();
   const ids: string[] = [];
-  const re = /<@(U[A-Z0-9]+)(?:\|[^>]*)?>/gi;
+  const re = /<@([UW][A-Z0-9]+)(?:\|[^>]*)?>/gi;
   let match: RegExpExecArray | null;
   while ((match = re.exec(topicText)) !== null) {
     const id = match[1]!;
