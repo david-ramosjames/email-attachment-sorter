@@ -1,8 +1,10 @@
 import express, { type Express } from 'express';
 import path from 'path';
-import { healthRouter } from './routes/health.js';import { webhooksRouter } from './routes/webhooks.js';
+import { healthRouter } from './routes/health.js';
+import { webhooksRouter } from './routes/webhooks.js';
 import { adminRouter } from './routes/admin.js';
 import { faqRouter } from './routes/faq.js';
+import { dashboardRouter } from './routes/dashboard.js';
 import { logger } from './utils/logger.js';
 
 export function createApp(): Express {
@@ -60,6 +62,7 @@ export function createApp(): Express {
   app.use(healthRouter);
   app.use(express.static(path.join(process.cwd(), 'public'), { index: false }));
   app.use(faqRouter);
+  app.use(dashboardRouter);
   app.use(webhooksRouter);
   app.use(adminRouter);
 

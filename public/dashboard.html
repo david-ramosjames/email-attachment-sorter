@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>RJL File Sorter — Activity</title>
+  <style>
+    :root {
+      --navy: #0b1526;
+      --pink: #e8488a;
+      --pink-dark: #c2185b;
+      --bg: #ffffff;
+      --bg-subtle: #f6f8fb;
+      --text: #0b1526;
+      --text-muted: #4a5568;
+      --border: rgba(11, 21, 38, 0.1);
+      --green: #0f766e;
+      --amber: #b45309;
+      --gray: #64748b;
+      --radius: 14px;
+      --max: 1100px;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+      min-height: 100vh;
+    }
+
+    a { color: var(--pink-dark); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    header {
+      border-bottom: 1px solid var(--border);
+      background: rgba(255, 255, 255, 0.95);
+      backdrop-filter: blur(12px);
+    }
+
+    .header-inner {
+      max-width: var(--max);
+      margin: 0 auto;
+      padding: 0.9rem 1.25rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+      flex-wrap: wrap;
+    }
+
+    .brand {
+      font-weight: 700;
+      color: var(--navy);
+      letter-spacing: -0.02em;
+    }
+
+    .nav a {
+      margin-left: 1rem;
+      color: var(--text-muted);
+      font-size: 0.95rem;
+    }
+
+    .wrap {
+      max-width: var(--max);
+      margin: 0 auto;
+      padding: 1.5rem 1.25rem 3rem;
+    }
+
+    h1 {
+      font-size: 1.6rem;
+      margin-bottom: 0.35rem;
+    }
+
+    .subtitle {
+      color: var(--text-muted);
+      margin-bottom: 1.5rem;
+    }
+
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+      gap: 0.85rem;
+      margin-bottom: 1.5rem;
+    }
+
+    .stat {
+      background: var(--bg-subtle);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 1rem 1.1rem;
+    }
+
+    .stat-label {
+      font-size: 0.82rem;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    .stat-value {
+      font-size: 1.8rem;
+      font-weight: 700;
+      margin-top: 0.2rem;
+    }
+
+    .stat.sorted .stat-value { color: var(--green); }
+    .stat.pending .stat-value { color: var(--amber); }
+    .stat.skipped .stat-value { color: var(--gray); }
+
+    .toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+      flex-wrap: wrap;
+      margin-bottom: 0.75rem;
+    }
+
+    .filters button {
+      border: 1px solid var(--border);
+      background: #fff;
+      color: var(--text);
+      border-radius: 999px;
+      padding: 0.35rem 0.85rem;
+      margin-right: 0.4rem;
+      cursor: pointer;
+      font: inherit;
+    }
+
+    .filters button.active {
+      background: var(--navy);
+      color: #fff;
+      border-color: var(--navy);
+    }
+
+    .table-wrap {
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: auto;
+      background: #fff;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      min-width: 760px;
+      font-size: 0.92rem;
+    }
+
+    th, td {
+      padding: 0.75rem 0.9rem;
+      text-align: left;
+      border-bottom: 1px solid var(--border);
+      vertical-align: top;
+    }
+
+    th {
+      background: var(--bg-subtle);
+      font-size: 0.78rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: var(--text-muted);
+    }
+
+    tr:last-child td { border-bottom: none; }
+
+    .subject {
+      max-width: 320px;
+      word-break: break-word;
+    }
+
+    .filename {
+      color: var(--text-muted);
+      font-size: 0.84rem;
+      margin-top: 0.15rem;
+    }
+
+    .badge {
+      display: inline-block;
+      border-radius: 999px;
+      padding: 0.15rem 0.55rem;
+      font-size: 0.78rem;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+
+    .badge.sorted { background: #ccfbf1; color: var(--green); }
+    .badge.pending { background: #fef3c7; color: var(--amber); }
+    .badge.skipped { background: #e2e8f0; color: var(--gray); }
+    .badge.failed { background: #fee2e2; color: #b91c1c; }
+
+    .empty, .loading, .error {
+      padding: 2rem;
+      text-align: center;
+      color: var(--text-muted);
+    }
+
+    .error { color: #b91c1c; }
+
+    @media (max-width: 640px) {
+      .stat-value { font-size: 1.45rem; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="header-inner">
+      <div class="brand">RJL File Sorter</div>
+      <nav class="nav">
+        <a href="/dashboard">Activity</a>
+        <a href="/faq">FAQ</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <h1>Last 7 days</h1>
+    <p class="subtitle">Quick view of sorted vs still pending. Click a row’s Slack link to open the queue card.</p>
+
+    <div class="stats" id="stats">
+      <div class="stat"><div class="stat-label">Total</div><div class="stat-value" id="stat-total">—</div></div>
+      <div class="stat sorted"><div class="stat-label">Sorted</div><div class="stat-value" id="stat-sorted">—</div></div>
+      <div class="stat pending"><div class="stat-label">Not sorted</div><div class="stat-value" id="stat-pending">—</div></div>
+      <div class="stat skipped"><div class="stat-label">Do not sort</div><div class="stat-value" id="stat-skipped">—</div></div>
+    </div>
+
+    <div class="toolbar">
+      <div class="filters">
+        <button type="button" class="active" data-filter="all">All</button>
+        <button type="button" data-filter="sorted">Sorted</button>
+        <button type="button" data-filter="pending">Not sorted</button>
+        <button type="button" data-filter="skipped">Do not sort</button>
+      </div>
+      <div id="updated-at" class="subtitle" style="margin:0;font-size:0.85rem;"></div>
+    </div>
+
+    <div class="table-wrap" id="table-wrap">
+      <div class="loading">Loading…</div>
+    </div>
+  </main>
+
+  <script>
+    let allItems = [];
+    let activeFilter = 'all';
+
+    function formatDate(iso) {
+      if (!iso) return '—';
+      return new Date(iso).toLocaleString(undefined, {
+        month: 'short',
+        day: 'numeric',
+        hour: 'numeric',
+        minute: '2-digit',
+      });
+    }
+
+    function badgeClass(item) {
+      if (item.status === 'failed') return 'failed';
+      return item.outcome;
+    }
+
+    function filteredItems() {
+      if (activeFilter === 'all') return allItems;
+      return allItems.filter((item) => item.outcome === activeFilter);
+    }
+
+    function renderTable() {
+      const wrap = document.getElementById('table-wrap');
+      const items = filteredItems();
+
+      if (!items.length) {
+        wrap.innerHTML = '<div class="empty">No items in this view.</div>';
+        return;
+      }
+
+      const rows = items.map((item) => {
+        const slack = item.slackUrl
+          ? `<a href="${item.slackUrl}" target="_blank" rel="noopener">Open in Slack</a>`
+          : '—';
+        const caseNum = item.suggestedCaseNumber ? `#${item.suggestedCaseNumber}` : '—';
+        return `
+          <tr>
+            <td>${formatDate(item.receivedAt)}</td>
+            <td class="subject">
+              <div>${escapeHtml(item.subject)}</div>
+              <div class="filename">${escapeHtml(item.attachmentFilename)}</div>
+            </td>
+            <td><span class="badge ${badgeClass(item)}">${escapeHtml(item.statusLabel)}</span></td>
+            <td>${escapeHtml(item.caseConfidenceLabel)}</td>
+            <td>${escapeHtml(caseNum)}</td>
+            <td>${slack}</td>
+          </tr>
+        `;
+      }).join('');
+
+      wrap.innerHTML = `
+        <table>
+          <thead>
+            <tr>
+              <th>Received</th>
+              <th>Subject</th>
+              <th>Status</th>
+              <th>Case confidence</th>
+              <th>Suggested case</th>
+              <th>Slack</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      `;
+    }
+
+    function escapeHtml(text) {
+      return String(text ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    }
+
+    function setStats(summary) {
+      document.getElementById('stat-total').textContent = summary.total;
+      document.getElementById('stat-sorted').textContent = summary.sorted;
+      document.getElementById('stat-pending').textContent = summary.pending;
+      document.getElementById('stat-skipped').textContent = summary.skipped;
+    }
+
+    document.querySelectorAll('.filters button').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.filters button').forEach((b) => b.classList.remove('active'));
+        btn.classList.add('active');
+        activeFilter = btn.dataset.filter;
+        renderTable();
+      });
+    });
+
+    fetch('/api/dashboard/recent?days=7')
+      .then((res) => {
+        if (!res.ok) throw new Error('Failed to load');
+        return res.json();
+      })
+      .then((data) => {
+        allItems = data.items || [];
+        setStats(data.summary || { total: 0, sorted: 0, pending: 0, skipped: 0 });
+        document.getElementById('updated-at').textContent =
+          `Updated ${new Date().toLocaleTimeString()} · ${data.days || 7}-day window`;
+        renderTable();
+      })
+      .catch(() => {
+        document.getElementById('table-wrap').innerHTML =
+          '<div class="error">Could not load activity data.</div>';
+      });
+  </script>
+</body>
+</html>

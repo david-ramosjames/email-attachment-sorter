@@ -57,8 +57,8 @@ const envSchema = z.object({
   INBOUND_EMAIL_WEBHOOK_SECRET: optionalString,
   /** Delete staged files this many minutes after successful routing (Dropbox save). */
   TEMP_STORAGE_ROUTED_DELETE_AFTER_MINUTES: z.coerce.number().min(0).default(1),
-  /** Keep unrouted queue items in temp storage this many hours (weekend backlog). */
-  TEMP_STORAGE_UNROUTED_TTL_HOURS: z.coerce.number().min(0).default(72),
+  /** Keep unrouted queue items in temp storage this many hours (default 7 days). */
+  TEMP_STORAGE_UNROUTED_TTL_HOURS: z.coerce.number().min(0).default(168),
   /** How often to purge expired temp files (minutes). 0 = scheduled deletes only on Approve. */
   TEMP_STORAGE_CLEANUP_INTERVAL_MINUTES: z.coerce.number().default(15),
   /** Google Sheet that lists cases ↔ Slack channels (service account must have Viewer access). */

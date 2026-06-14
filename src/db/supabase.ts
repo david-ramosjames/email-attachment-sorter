@@ -918,6 +918,19 @@ export async function hasQueueReminderBeenSent(itemId: string): Promise<boolean>
   return (data?.length ?? 0) > 0;
 }
 
+export async function listFileSorterItemsSince(days: number): Promise<FileSorterItem[]> {
+  const safeDays = Math.min(Math.max(days, 1), 30);
+  const cutoff = new Date(Date.now() - safeDays * 24 * 60 * 60 * 1000).toISOString();
+  const { data, error } = await getSupabase()
+    .from('file_sorter_items')
+    .select('*')
+    .gte('created_at', cutoff)
+    .order('created_at', { ascending: false })
+    .limit(2000);
+  if (error) throw new Error(`List recent items failed: ${error.message}`);
+  return (data ?? []) as FileSorterItem[];
+}
+
 export async function listFileSorterItems(opts?: {
   status?: FileSorterItemStatus;
   limit?: number;
