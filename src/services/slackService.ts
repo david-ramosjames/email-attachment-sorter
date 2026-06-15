@@ -399,6 +399,41 @@ function slackUserMention(userId: string): string {
   return `<@${userId.trim()}>`;
 }
 
+const SLACK_USER_ID = /^[UW][A-Z0-9]+$/i;
+
+function parseTaggedUserIdsFromItem(item: FileSorterItem): string[] {
+  if (!item.queue_tagged_slack_user_id?.trim()) return [];
+  return item.queue_tagged_slack_user_id
+    .split(/[,\s]+/)
+    .map((part) => part.trim())
+    .filter((id) => SLACK_USER_ID.test(id));
+}
+
+function taggedMentionIdsFromBatchItems(items: FileSorterItem[]): string[] {
+  for (const item of items) {
+    const ids = parseTaggedUserIdsFromItem(item);
+    if (ids.length) return ids;
+  }
+  return [];
+}
+
+function insertQueueMentionBlock(
+  blocks: Record<string, unknown>[],
+  mentionIds: string[]
+): { blocks: Record<string, unknown>[]; mentionLine: string } {
+  const mentionLine = formatSlackUserMentions(mentionIds);
+  if (!mentionLine) return { blocks, mentionLine: '' };
+
+  const headerIdx = blocks.findIndex((b) => (b as { type?: string }).type === 'header');
+  const insertAt = headerIdx >= 0 ? headerIdx + 1 : 0;
+  const next = [...blocks];
+  next.splice(insertAt, 0, {
+    type: 'section',
+    text: { type: 'mrkdwn', text: mentionLine },
+  });
+  return { blocks: next, mentionLine };
+}
+
 function folderLabelFromPath(path: string | null): string {
   if (!path) return '—';
   const parts = path.split('/').filter(Boolean);
@@ -848,17 +883,10 @@ export const slackService = {
     const mentionIds = await pickQueueMentionUserIdsForNewCard();
     const nameMap = await getSlackUserDisplayNames(mentionIds);
     const taggedUserNames = mentionIds.map((id) => nameMap.get(id) ?? id);
-    const mentionLine = formatSlackUserMentions(mentionIds);
     const blocks = buildQueueBlocks(items, caseRow, options);
-    if (mentionLine) {
-      const headerIdx = blocks.findIndex((b) => (b as { type?: string }).type === 'header');
-      const insertAt = headerIdx >= 0 ? headerIdx + 1 : 0;
-      blocks.splice(insertAt, 0, {
-        type: 'section',
-        text: { type: 'mrkdwn', text: mentionLine },
-      });
-    } else {
-      logger.info('Queue card posted without @mentions — set SLACK_QUEUE_MENTION_USER_IDS or add <@U…> to queue channel topic/description');
+    const { blocks: blocksWithMention, mentionLine } = insertQueueMentionBlock(blocks, mentionIds);
+    if (!mentionLine) {
+      logger.info('Queue card posted without @mentions — set SLACK_QUEUE_MENTION_USER_IDS or add <@U…> to queue channel topic');
     }
     const label =
       items.length === 1
@@ -872,7 +900,7 @@ export const slackService = {
     const result = await slackApi<{ channel: string; ts: string }>('chat.postMessage', {
       channel,
       text: fallbackText,
-      blocks,
+      blocks: blocksWithMention,
     });
     return { channel: result.channel, ts: result.ts, taggedUserIds: mentionIds, taggedUserNames };
   },
@@ -900,7 +928,7 @@ export const slackService = {
     const reviewedByUserId =
       options?.reviewedByUserId ?? item.reviewed_by_slack_user_id ?? undefined;
     const status = aggregateBatchStatus(batchItems);
-    const blocks = buildQueueBlocks(batchItems, caseRow, {
+    let blocks = buildQueueBlocks(batchItems, caseRow, {
       statusOverride: status,
       reviewedByUserId,
       dropboxLink: options?.dropboxLink,
@@ -908,11 +936,17 @@ export const slackService = {
       disabled:
         options?.disabled ?? ['saved', 'ignored', 'failed'].includes(status),
     });
+    const mentionIds = taggedMentionIdsFromBatchItems(batchItems);
+    const { blocks: blocksWithMention, mentionLine } = insertQueueMentionBlock(blocks, mentionIds);
+    blocks = blocksWithMention;
     const label =
       batchItems.length === 1
         ? batchItems[0]!.attachment_filename
         : `${batchItems.length} attachments`;
-    const fallbackText = `${buildQueueHeaderText(status, batchItems.length > 1, batchItems.length, batchItems)} — ${label}`;
+    const headerText = buildQueueHeaderText(status, batchItems.length > 1, batchItems.length, batchItems);
+    const fallbackText = mentionLine
+      ? `${mentionLine} ${headerText} — ${label}`
+      : `${headerText} — ${label}`;
     await slackApi('chat.update', {
       channel: item.slack_queue_channel_id,
       ts: item.slack_queue_message_ts,

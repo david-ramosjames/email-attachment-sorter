@@ -6,6 +6,8 @@ import {
 } from '../db/supabase.js';
 import type { Case, FileSorterItem } from '../types/index.js';
 import { auditService } from './auditService.js';
+import { pickQueueMentionUserIdsForNewCard } from './queueMentionService.js';
+import { getSlackUserDisplayNames } from './slackUserDirectory.js';
 import { slackService } from './slackService.js';
 import type { InboundEmailPayload } from '../types/index.js';
 import { logger } from '../utils/logger.js';
@@ -122,6 +124,31 @@ async function postEmailItemsToSlackInner(
 
     const batchItems = await getQueueBatchItems(anchor);
     const primary = pickPrimaryItem(batchItems);
+
+    if (!parseTaggedUserIds(anchor.queue_tagged_slack_user_id).length) {
+      const mentionIds = await pickQueueMentionUserIdsForNewCard();
+      if (mentionIds.length) {
+        const nameMap = await getSlackUserDisplayNames(mentionIds);
+        const taggedStored = taggedUserIdsToStored(mentionIds);
+        const taggedNamesStored = taggedUserNamesToStored(
+          mentionIds.map((id) => nameMap.get(id) ?? id)
+        );
+        for (const batchItem of batchItems) {
+          await updateFileSorterItem(batchItem.id, {
+            queue_tagged_slack_user_id: taggedStored,
+            queue_tagged_slack_user_name: taggedNamesStored,
+          });
+        }
+        primary.queue_tagged_slack_user_id = taggedStored;
+        primary.queue_tagged_slack_user_name = taggedNamesStored;
+        logger.info('Assigned queue mention on batch merge', {
+          gmailMessageId,
+          taggedUserIds: mentionIds,
+          attachmentCount: batchItems.length,
+        });
+      }
+    }
+
     await slackService.updateQueueMessage(primary, caseRow);
 
     logger.info('Slack queue batch merged into existing card', {
