@@ -7,6 +7,7 @@ import { startSlackCaseSyncScheduler } from './services/slackCaseSyncService.js'
 import { ensureBotInQueueChannel } from './services/slackChannels.js';
 import { startDropboxSyncScheduler } from './services/dropboxSyncService.js';
 import { startQueueReminderScheduler } from './services/queueReminderService.js';
+import { startEodStatusReportScheduler } from './services/eodStatusReportService.js';
 import { startTempStorageCleanupScheduler } from './services/tempStorageCleanupService.js';
 import { logger } from './utils/logger.js';
 
@@ -46,6 +47,7 @@ app.listen(env.PORT, () => {
   startCaseSheetSyncScheduler(env.CASE_SHEET_SYNC_INTERVAL_MINUTES);
   startSlackCaseSyncScheduler(env.SLACK_CASE_SYNC_INTERVAL_MINUTES);
   startQueueReminderScheduler(env.SLACK_QUEUE_REMINDER_CHECK_INTERVAL_MINUTES);
+  startEodStatusReportScheduler(env.SLACK_EOD_REPORT_CHECK_INTERVAL_MINUTES);
 
   void ensureBotInQueueChannel().catch((err) => {
     logger.error('Queue channel join on startup failed', { err: String(err) });

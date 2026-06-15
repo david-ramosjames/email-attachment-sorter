@@ -1,7 +1,11 @@
 import { Router } from 'express';
 import path from 'path';
 import { getEnv } from '../config/env.js';
-import { listFileSorterItemsByReceivedDates } from '../db/supabase.js';
+import {
+  listFileSorterItemsByReceivedDates,
+  listFileSorterItemsReceivedSinceHours,
+  receivedDateKey,
+} from '../db/supabase.js';
 import { getSlackUserDisplayNames } from '../services/slackUserDirectory.js';
 import type { FileSorterItem, FileSorterItemStatus } from '../types/index.js';
 import { slackQueueMessageUrl } from '../utils/slackMessageUrl.js';
@@ -191,6 +195,23 @@ export async function buildDashboardSummary(
     },
     userMetrics,
     items: rows,
+  };
+}
+
+export async function buildDashboardSummaryForLastHours(
+  hours: number,
+  timeZone: string
+): Promise<DashboardSummary & { windowStart: string; windowEnd: string }> {
+  const windowEnd = new Date();
+  const windowStart = new Date(windowEnd.getTime() - hours * 60 * 60 * 1000);
+  const items = await listFileSorterItemsReceivedSinceHours(hours, timeZone);
+  const from = receivedDateKey(windowStart.toISOString(), timeZone);
+  const to = receivedDateKey(windowEnd.toISOString(), timeZone);
+  const summary = await buildDashboardSummary(from, to, timeZone, items);
+  return {
+    ...summary,
+    windowStart: windowStart.toISOString(),
+    windowEnd: windowEnd.toISOString(),
   };
 }
 

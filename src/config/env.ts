@@ -45,6 +45,16 @@ const envSchema = z.object({
   SLACK_QUEUE_REMINDER_CHECK_INTERVAL_MINUTES: z.coerce.number().min(0).default(60),
   /** IANA timezone for weekday reminder checks (default Central). */
   SLACK_REMINDER_TIMEZONE: z.string().default('America/Chicago'),
+  /** Public base URL for dashboard links (no trailing slash). */
+  PUBLIC_APP_URL: optionalString,
+  /** Post end-of-day status to the queue channel on weekdays. */
+  SLACK_EOD_REPORT_ENABLED: envBoolean(true),
+  /** Local time (24h HH:MM) to post the daily status report. */
+  SLACK_EOD_REPORT_TIME: z.string().default('17:30'),
+  /** Rolling window length for the daily report (hours). */
+  SLACK_EOD_REPORT_HOURS: z.coerce.number().min(1).max(168).default(24),
+  /** How often to check whether the EOD report is due (minutes). 0 = disabled. */
+  SLACK_EOD_REPORT_CHECK_INTERVAL_MINUTES: z.coerce.number().min(0).default(5),
   /** Short-lived (~4h); use refresh-token trio instead */
   DROPBOX_ACCESS_TOKEN: optionalString,
   DROPBOX_APP_KEY: optionalString,

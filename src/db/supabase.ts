@@ -971,6 +971,30 @@ export async function listFileSorterItemsByReceivedDates(
   });
 }
 
+/** Items received within the last N hours (rolling window). */
+export async function listFileSorterItemsReceivedSinceHours(
+  hours: number,
+  _timeZone: string
+): Promise<FileSorterItem[]> {
+  const safeHours = Math.min(Math.max(hours, 1), 168);
+  const cutoffMs = Date.now() - safeHours * 60 * 60 * 1000;
+  const fetchFrom = new Date(cutoffMs - 3 * 24 * 60 * 60 * 1000).toISOString();
+
+  const { data, error } = await getSupabase()
+    .from('file_sorter_items')
+    .select('*')
+    .gte('created_at', fetchFrom)
+    .order('created_at', { ascending: false })
+    .limit(2000);
+  if (error) throw new Error(`List items received since hours failed: ${error.message}`);
+
+  return ((data ?? []) as FileSorterItem[]).filter((item) => {
+    const raw = item.email_received_at ?? item.created_at;
+    const ms = Date.parse(raw);
+    return !Number.isNaN(ms) && ms >= cutoffMs;
+  });
+}
+
 export async function listFileSorterItems(opts?: {
   status?: FileSorterItemStatus;
   limit?: number;

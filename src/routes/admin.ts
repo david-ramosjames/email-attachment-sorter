@@ -10,6 +10,7 @@ import {
 import type { FileSorterItemStatus, MatchingHintType } from '../types/index.js';
 import { reindexDropboxFoldersForCase } from '../services/fileSorterWorkflow.js';
 import { cleanupExpiredTempStorage } from '../services/tempStorageCleanupService.js';
+import { runEodStatusReport } from '../services/eodStatusReportService.js';
 import {
   getLastCaseSheetSyncAt,
   syncCasesFromGoogleSheet,
@@ -101,6 +102,18 @@ adminRouter.post('/admin/cleanup-temp-storage', async (_req, res) => {
     logger.error('Temp storage cleanup failed', { err: String(err) });
     res.status(500).json({
       error: err instanceof Error ? err.message : 'Cleanup failed',
+    });
+  }
+});
+
+adminRouter.post('/admin/eod-report', async (_req, res) => {
+  try {
+    const result = await runEodStatusReport({ force: true });
+    res.json(result);
+  } catch (err) {
+    logger.error('Manual EOD report failed', { err: String(err) });
+    res.status(500).json({
+      error: err instanceof Error ? err.message : 'EOD report failed',
     });
   }
 });
