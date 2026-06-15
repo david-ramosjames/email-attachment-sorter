@@ -1,6 +1,9 @@
 import { Router } from 'express';
 import path from 'path';
-import { listFileSorterItemsSince } from '../db/supabase.js';
+import { getEnv } from '../config/env.js';
+import {
+  listFileSorterItemsByReceivedDates,
+} from '../db/supabase.js';
 import type { FileSorterItem, FileSorterItemStatus } from '../types/index.js';
 import { slackQueueMessageUrl } from '../utils/slackMessageUrl.js';
 import { logger } from '../utils/logger.js';
@@ -8,6 +11,7 @@ import { logger } from '../utils/logger.js';
 export const dashboardRouter = Router();
 
 const dashboardPath = path.join(process.cwd(), 'public', 'dashboard.html');
+const YMD = /^\d{4}-\d{2}-\d{2}$/;
 
 export interface DashboardItemRow {
   id: string;
@@ -24,7 +28,9 @@ export interface DashboardItemRow {
 }
 
 export interface DashboardSummary {
-  days: number;
+  from: string;
+  to: string;
+  timeZone: string;
   summary: {
     total: number;
     sorted: number;
@@ -77,10 +83,17 @@ function toDashboardRow(item: FileSorterItem): DashboardItemRow {
   };
 }
 
-export function buildDashboardSummary(days: number, items: FileSorterItem[]): DashboardSummary {
+export function buildDashboardSummary(
+  from: string,
+  to: string,
+  timeZone: string,
+  items: FileSorterItem[]
+): DashboardSummary {
   const rows = items.map(toDashboardRow);
   return {
-    days,
+    from,
+    to,
+    timeZone,
     summary: {
       total: rows.length,
       sorted: rows.filter((r) => r.outcome === 'sorted').length,
@@ -91,6 +104,31 @@ export function buildDashboardSummary(days: number, items: FileSorterItem[]): Da
   };
 }
 
+function formatYmd(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+function parseDateRangeQuery(req: {
+  query: Record<string, unknown>;
+}): { from: string; to: string } {
+  const fromRaw = String(req.query.from ?? '').trim();
+  const toRaw = String(req.query.to ?? '').trim();
+
+  if (fromRaw && toRaw && YMD.test(fromRaw) && YMD.test(toRaw)) {
+    return fromRaw <= toRaw ? { from: fromRaw, to: toRaw } : { from: toRaw, to: fromRaw };
+  }
+
+  const daysParsed = parseInt(String(req.query.days ?? 7), 10);
+  const days = Number.isFinite(daysParsed) ? Math.min(Math.max(daysParsed, 1), 30) : 7;
+  const to = new Date();
+  const from = new Date(to);
+  from.setDate(from.getDate() - (days - 1));
+  return { from: formatYmd(from), to: formatYmd(to) };
+}
+
 dashboardRouter.get('/dashboard', (_req, res) => {
   res.sendFile(dashboardPath, (err) => {
     if (err) res.status(404).send('Dashboard not found');
@@ -99,10 +137,10 @@ dashboardRouter.get('/dashboard', (_req, res) => {
 
 dashboardRouter.get('/api/dashboard/recent', async (req, res) => {
   try {
-    const parsed = parseInt(String(req.query.days ?? 7), 10);
-    const days = Number.isFinite(parsed) ? Math.min(Math.max(parsed, 1), 30) : 7;
-    const items = await listFileSorterItemsSince(days);
-    res.json(buildDashboardSummary(days, items));
+    const timeZone = getEnv().SLACK_REMINDER_TIMEZONE.trim() || 'America/Chicago';
+    const { from, to } = parseDateRangeQuery(req);
+    const items = await listFileSorterItemsByReceivedDates(from, to, timeZone);
+    res.json(buildDashboardSummary(from, to, timeZone, items));
   } catch (err) {
     logger.error('Dashboard recent items failed', { err: String(err) });
     res.status(500).json({ error: 'Failed to load dashboard data' });

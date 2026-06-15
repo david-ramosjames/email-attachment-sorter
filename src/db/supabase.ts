@@ -931,6 +931,46 @@ export async function listFileSorterItemsSince(days: number): Promise<FileSorter
   return (data ?? []) as FileSorterItem[];
 }
 
+const YMD = /^\d{4}-\d{2}-\d{2}$/;
+
+export function receivedDateKey(iso: string, timeZone: string): string {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(new Date(iso));
+}
+
+/** Items whose email_received_at (or created_at) falls on a date in [from, to] (YYYY-MM-DD). */
+export async function listFileSorterItemsByReceivedDates(
+  from: string,
+  to: string,
+  timeZone: string
+): Promise<FileSorterItem[]> {
+  if (!YMD.test(from) || !YMD.test(to)) {
+    throw new Error('Invalid date range — use YYYY-MM-DD');
+  }
+  if (from > to) throw new Error('Start date must be on or before end date');
+
+  const fetchFrom = new Date(`${from}T00:00:00.000Z`);
+  fetchFrom.setUTCDate(fetchFrom.getUTCDate() - 3);
+
+  const { data, error } = await getSupabase()
+    .from('file_sorter_items')
+    .select('*')
+    .gte('created_at', fetchFrom.toISOString())
+    .order('created_at', { ascending: false })
+    .limit(2000);
+  if (error) throw new Error(`List items by received date failed: ${error.message}`);
+
+  return ((data ?? []) as FileSorterItem[]).filter((item) => {
+    const raw = item.email_received_at ?? item.created_at;
+    const key = receivedDateKey(raw, timeZone);
+    return key >= from && key <= to;
+  });
+}
+
 export async function listFileSorterItems(opts?: {
   status?: FileSorterItemStatus;
   limit?: number;

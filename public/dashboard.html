@@ -119,6 +119,67 @@
       margin-bottom: 0.75rem;
     }
 
+    .date-range {
+      display: flex;
+      align-items: end;
+      gap: 0.65rem;
+      flex-wrap: wrap;
+      margin-bottom: 1.25rem;
+      padding: 1rem 1.1rem;
+      background: var(--bg-subtle);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+    }
+
+    .date-range label {
+      display: flex;
+      flex-direction: column;
+      gap: 0.3rem;
+      font-size: 0.82rem;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    .date-range input[type="date"] {
+      font: inherit;
+      padding: 0.45rem 0.55rem;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: #fff;
+      color: var(--text);
+      min-width: 150px;
+    }
+
+    .date-range button {
+      border: 1px solid var(--border);
+      background: #fff;
+      color: var(--text);
+      border-radius: 8px;
+      padding: 0.5rem 0.85rem;
+      cursor: pointer;
+      font: inherit;
+    }
+
+    .date-range button.primary {
+      background: var(--navy);
+      color: #fff;
+      border-color: var(--navy);
+    }
+
+    .date-range .presets {
+      display: flex;
+      gap: 0.4rem;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+
+    .date-range .presets button {
+      border-radius: 999px;
+      padding: 0.35rem 0.75rem;
+      font-size: 0.88rem;
+    }
+
     .filters button {
       border: 1px solid var(--border);
       background: #fff;
@@ -217,8 +278,26 @@
   </header>
 
   <main class="wrap">
-    <h1>Last 7 days</h1>
-    <p class="subtitle">Quick view of sorted vs still pending. Click a row’s Slack link to open the queue card.</p>
+    <h1 id="page-title">Activity</h1>
+    <p class="subtitle">Quick view of sorted vs still pending by email received date. Click a row’s Slack link to open the queue card.</p>
+
+    <form class="date-range" id="date-form">
+      <label>
+        Received from
+        <input type="date" id="date-from" required />
+      </label>
+      <label>
+        Received to
+        <input type="date" id="date-to" required />
+      </label>
+      <button type="submit" class="primary">Apply</button>
+      <div class="presets">
+        <span style="font-size:0.82rem;color:var(--text-muted);">Quick:</span>
+        <button type="button" data-days="7">Last 7 days</button>
+        <button type="button" data-days="14">Last 14 days</button>
+        <button type="button" data-days="30">Last 30 days</button>
+      </div>
+    </form>
 
     <div class="stats" id="stats">
       <div class="stat"><div class="stat-label">Total</div><div class="stat-value" id="stat-total">—</div></div>
@@ -245,6 +324,51 @@
   <script>
     let allItems = [];
     let activeFilter = 'all';
+
+    function formatYmd(d) {
+      const y = d.getFullYear();
+      const m = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      return `${y}-${m}-${day}`;
+    }
+
+    function setDefaultDates(days) {
+      const to = new Date();
+      const from = new Date(to);
+      from.setDate(from.getDate() - (days - 1));
+      document.getElementById('date-from').value = formatYmd(from);
+      document.getElementById('date-to').value = formatYmd(to);
+    }
+
+    function readDateParams() {
+      const params = new URLSearchParams(window.location.search);
+      const from = params.get('from');
+      const to = params.get('to');
+      if (from && to) {
+        document.getElementById('date-from').value = from;
+        document.getElementById('date-to').value = to;
+        return { from, to };
+      }
+      setDefaultDates(7);
+      return {
+        from: document.getElementById('date-from').value,
+        to: document.getElementById('date-to').value,
+      };
+    }
+
+    function updateUrl(from, to) {
+      const params = new URLSearchParams({ from, to });
+      history.replaceState(null, '', `/dashboard?${params.toString()}`);
+    }
+
+    function formatDisplayDate(ymd) {
+      const [y, m, d] = ymd.split('-').map(Number);
+      return new Date(y, m - 1, d).toLocaleDateString(undefined, {
+        month: 'short',
+        day: 'numeric',
+        year: 'numeric',
+      });
+    }
 
     function formatDate(iso) {
       if (!iso) return '—';
@@ -336,22 +460,48 @@
       });
     });
 
-    fetch('/api/dashboard/recent?days=7')
-      .then((res) => {
-        if (!res.ok) throw new Error('Failed to load');
-        return res.json();
-      })
-      .then((data) => {
-        allItems = data.items || [];
-        setStats(data.summary || { total: 0, sorted: 0, pending: 0, skipped: 0 });
-        document.getElementById('updated-at').textContent =
-          `Updated ${new Date().toLocaleTimeString()} · ${data.days || 7}-day window`;
-        renderTable();
-      })
-      .catch(() => {
-        document.getElementById('table-wrap').innerHTML =
-          '<div class="error">Could not load activity data.</div>';
+    document.querySelectorAll('.presets button[data-days]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        setDefaultDates(parseInt(btn.dataset.days, 10));
+        loadDashboard();
       });
+    });
+
+    document.getElementById('date-form').addEventListener('submit', (e) => {
+      e.preventDefault();
+      loadDashboard();
+    });
+
+    function loadDashboard() {
+      const from = document.getElementById('date-from').value;
+      const to = document.getElementById('date-to').value;
+      if (!from || !to) return;
+
+      updateUrl(from, to);
+      document.getElementById('page-title').textContent =
+        from === to ? formatDisplayDate(from) : `${formatDisplayDate(from)} – ${formatDisplayDate(to)}`;
+      document.getElementById('table-wrap').innerHTML = '<div class="loading">Loading…</div>';
+
+      fetch(`/api/dashboard/recent?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`)
+        .then((res) => {
+          if (!res.ok) throw new Error('Failed to load');
+          return res.json();
+        })
+        .then((data) => {
+          allItems = data.items || [];
+          setStats(data.summary || { total: 0, sorted: 0, pending: 0, skipped: 0 });
+          document.getElementById('updated-at').textContent =
+            `Updated ${new Date().toLocaleTimeString()} · received ${data.from} to ${data.to}`;
+          renderTable();
+        })
+        .catch(() => {
+          document.getElementById('table-wrap').innerHTML =
+            '<div class="error">Could not load activity data.</div>';
+        });
+    }
+
+    readDateParams();
+    loadDashboard();
   </script>
 </body>
 </html>
