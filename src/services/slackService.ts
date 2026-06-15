@@ -26,7 +26,7 @@ import {
   queueFolderLabel,
 } from '../utils/intakeDocumentSignals.js';
 import { parseUserMentionsFromSlackTopic } from '../utils/slackCaseParser.js';
-import { resolveQueueMentionUserIds } from './queueMentionService.js';
+import { pickQueueMentionUserIdsForNewCard } from './queueMentionService.js';
 import {
   getSlackChannelIdByNameMap,
   clearSlackChannelNameCache,
@@ -841,10 +841,10 @@ export const slackService = {
     items: FileSorterItem[],
     caseRow: Case | null,
     options?: { emailReceivedAt?: string | null }
-  ): Promise<{ channel: string; ts: string }> {
+  ): Promise<{ channel: string; ts: string; taggedUserIds: string[] }> {
     const channel = getEnv().SLACK_FILE_SORTER_QUEUE_CHANNEL_ID;
     await ensureBotInQueueChannel();
-    const mentionIds = await resolveQueueMentionUserIds();
+    const mentionIds = await pickQueueMentionUserIdsForNewCard();
     const mentionLine = formatSlackUserMentions(mentionIds);
     const blocks = buildQueueBlocks(items, caseRow, options);
     if (mentionLine) {
@@ -871,14 +871,14 @@ export const slackService = {
       text: fallbackText,
       blocks,
     });
-    return { channel: result.channel, ts: result.ts };
+    return { channel: result.channel, ts: result.ts, taggedUserIds: mentionIds };
   },
 
   async postQueueItem(
     item: FileSorterItem,
     caseRow: Case | null,
     options?: { emailReceivedAt?: string | null }
-  ): Promise<{ channel: string; ts: string }> {
+  ): Promise<{ channel: string; ts: string; taggedUserIds: string[] }> {
     return slackService.postQueueBatch([item], caseRow, options);
   },
 

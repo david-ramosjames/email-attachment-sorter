@@ -1,9 +1,8 @@
 import { Router } from 'express';
 import path from 'path';
 import { getEnv } from '../config/env.js';
-import {
-  listFileSorterItemsByReceivedDates,
-} from '../db/supabase.js';
+import { listFileSorterItemsByReceivedDates } from '../db/supabase.js';
+import { slackService } from '../services/slackService.js';
 import type { FileSorterItem, FileSorterItemStatus } from '../types/index.js';
 import { slackQueueMessageUrl } from '../utils/slackMessageUrl.js';
 import { logger } from '../utils/logger.js';
@@ -25,6 +24,17 @@ export interface DashboardItemRow {
   suggestedCaseNumber: string | null;
   receivedAt: string;
   slackUrl: string | null;
+  taggedUserIds: string[];
+  taggedUserLabel: string;
+}
+
+export interface DashboardUserMetric {
+  userId: string;
+  displayName: string;
+  tagged: number;
+  completed: number;
+  pending: number;
+  skipped: number;
 }
 
 export interface DashboardSummary {
@@ -37,7 +47,16 @@ export interface DashboardSummary {
     pending: number;
     skipped: number;
   };
+  userMetrics: DashboardUserMetric[];
   items: DashboardItemRow[];
+}
+
+export function parseTaggedUserIds(raw: string | null | undefined): string[] {
+  if (!raw?.trim()) return [];
+  return raw
+    .split(/[,\s]+/)
+    .map((part) => part.trim())
+    .filter(Boolean);
 }
 
 function statusLabel(status: FileSorterItemStatus): string {
@@ -68,6 +87,7 @@ function formatCaseConfidence(confidence: number | null): string {
 }
 
 function toDashboardRow(item: FileSorterItem): DashboardItemRow {
+  const taggedUserIds = parseTaggedUserIds(item.queue_tagged_slack_user_id);
   return {
     id: item.id,
     subject: item.subject?.trim() || '(no subject)',
@@ -80,16 +100,77 @@ function toDashboardRow(item: FileSorterItem): DashboardItemRow {
     suggestedCaseNumber: item.suggested_case_number,
     receivedAt: itemReceivedAt(item),
     slackUrl: slackQueueMessageUrl(item.slack_queue_channel_id, item.slack_queue_message_ts),
+    taggedUserIds,
+    taggedUserLabel: '—',
   };
 }
 
-export function buildDashboardSummary(
+export function buildUserMetrics(
+  rows: DashboardItemRow[],
+  displayNames: Map<string, string>
+): DashboardUserMetric[] {
+  const byUser = new Map<string, DashboardUserMetric>();
+
+  for (const row of rows) {
+    for (const userId of row.taggedUserIds) {
+      let metric = byUser.get(userId);
+      if (!metric) {
+        metric = {
+          userId,
+          displayName: displayNames.get(userId) ?? userId,
+          tagged: 0,
+          completed: 0,
+          pending: 0,
+          skipped: 0,
+        };
+        byUser.set(userId, metric);
+      }
+      metric.tagged++;
+      if (row.outcome === 'sorted') metric.completed++;
+      else if (row.outcome === 'skipped') metric.skipped++;
+      else metric.pending++;
+    }
+  }
+
+  return [...byUser.values()].sort(
+    (a, b) => b.tagged - a.tagged || a.displayName.localeCompare(b.displayName)
+  );
+}
+
+async function resolveTaggedUserLabels(
+  rows: DashboardItemRow[]
+): Promise<Map<string, string>> {
+  const userIds = new Set<string>();
+  for (const row of rows) {
+    for (const id of row.taggedUserIds) userIds.add(id);
+  }
+
+  const displayNames = new Map<string, string>();
+  await Promise.all(
+    [...userIds].map(async (userId) => {
+      displayNames.set(userId, await slackService.getUserDisplayName(userId));
+    })
+  );
+
+  for (const row of rows) {
+    row.taggedUserLabel = row.taggedUserIds.length
+      ? row.taggedUserIds.map((id) => displayNames.get(id) ?? id).join(', ')
+      : '—';
+  }
+
+  return displayNames;
+}
+
+export async function buildDashboardSummary(
   from: string,
   to: string,
   timeZone: string,
   items: FileSorterItem[]
-): DashboardSummary {
+): Promise<DashboardSummary> {
   const rows = items.map(toDashboardRow);
+  const displayNames = await resolveTaggedUserLabels(rows);
+  const userMetrics = buildUserMetrics(rows, displayNames);
+
   return {
     from,
     to,
@@ -100,6 +181,7 @@ export function buildDashboardSummary(
       pending: rows.filter((r) => r.outcome === 'pending').length,
       skipped: rows.filter((r) => r.outcome === 'skipped').length,
     },
+    userMetrics,
     items: rows,
   };
 }
@@ -140,7 +222,8 @@ dashboardRouter.get('/api/dashboard/recent', async (req, res) => {
     const timeZone = getEnv().SLACK_REMINDER_TIMEZONE.trim() || 'America/Chicago';
     const { from, to } = parseDateRangeQuery(req);
     const items = await listFileSorterItemsByReceivedDates(from, to, timeZone);
-    res.json(buildDashboardSummary(from, to, timeZone, items));
+    const summary = await buildDashboardSummary(from, to, timeZone, items);
+    res.json(summary);
   } catch (err) {
     logger.error('Dashboard recent items failed', { err: String(err) });
     res.status(500).json({ error: 'Failed to load dashboard data' });

@@ -1112,3 +1112,58 @@ export async function listAuditEvents(itemId: string): Promise<AuditEvent[]> {
   if (error) throw new Error(`List audit failed: ${error.message}`);
   return (data ?? []) as AuditEvent[];
 }
+
+export async function getAppSetting<T extends Record<string, unknown>>(
+  key: string
+): Promise<T | null> {
+  const { data, error } = await getSupabase()
+    .from('app_settings')
+    .select('value')
+    .eq('key', key)
+    .maybeSingle();
+  if (error) {
+    if (error.code === '42P01') return null;
+    throw new Error(`Get app setting failed: ${error.message}`);
+  }
+  if (!data?.value || typeof data.value !== 'object') return null;
+  return data.value as T;
+}
+
+export async function upsertAppSetting(
+  key: string,
+  value: Record<string, unknown>
+): Promise<void> {
+  const { error } = await getSupabase()
+    .from('app_settings')
+    .upsert({ key, value, updated_at: new Date().toISOString() }, { onConflict: 'key' });
+  if (error) {
+    if (error.code === '42P01') {
+      throw new Error('app_settings table missing — run migration 012_app_settings.sql');
+    }
+    throw new Error(`Upsert app setting failed: ${error.message}`);
+  }
+}
+
+interface QueueMentionRotationState {
+  poolKey: string;
+  index: number;
+  [key: string]: unknown;
+}
+
+/** Pick the next user id from a rotating pool (one mention per new queue card). */
+export async function pickNextQueueMentionUserId(pool: string[]): Promise<string | null> {
+  if (!pool.length) return null;
+  if (pool.length === 1) return pool[0]!;
+
+  const poolKey = pool.join('|');
+  const settingKey = 'queue_mention_rotation';
+  const existing = await getAppSetting<QueueMentionRotationState>(settingKey);
+  let index = 0;
+  if (existing?.poolKey === poolKey && Number.isFinite(existing.index)) {
+    index = existing.index;
+  }
+
+  const userId = pool[index % pool.length]!;
+  await upsertAppSetting(settingKey, { poolKey, index: index + 1 });
+  return userId;
+}

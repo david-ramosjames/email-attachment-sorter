@@ -67,6 +67,19 @@ function pickPrimaryItem(items: FileSorterItem[]): FileSorterItem {
   });
 }
 
+function parseTaggedUserIds(raw: string | null | undefined): string[] {
+  if (!raw?.trim()) return [];
+  return raw
+    .split(/[,\s]+/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+}
+
+function taggedUserIdsToStored(ids: string[]): string | null {
+  if (!ids.length) return null;
+  return ids.join(',');
+}
+
 async function postEmailItemsToSlackInner(
   payload: InboundEmailPayload,
   queued: QueuedInboundItem[],
@@ -90,12 +103,14 @@ async function postEmailItemsToSlackInner(
       await updateFileSorterItem(item.id, {
         slack_queue_channel_id: anchor.slack_queue_channel_id,
         slack_queue_message_ts: anchor.slack_queue_message_ts,
+        queue_tagged_slack_user_id: anchor.queue_tagged_slack_user_id,
       });
       await auditService.log(item.id, 'slack_queued', {
         channel: anchor.slack_queue_channel_id,
         ts: anchor.slack_queue_message_ts,
         batchSize: allItems.length,
         mergedIntoExisting: true,
+        taggedUserIds: parseTaggedUserIds(anchor.queue_tagged_slack_user_id),
       });
     }
 
@@ -115,16 +130,19 @@ async function postEmailItemsToSlackInner(
   const slackMsg = await slackService.postQueueBatch(allItems, caseRow, {
     emailReceivedAt: payload.receivedAt,
   });
+  const taggedStored = taggedUserIdsToStored(slackMsg.taggedUserIds);
 
   for (const item of allItems) {
     await updateFileSorterItem(item.id, {
       slack_queue_channel_id: slackMsg.channel,
       slack_queue_message_ts: slackMsg.ts,
+      queue_tagged_slack_user_id: taggedStored,
     });
     await auditService.log(item.id, 'slack_queued', {
       channel: slackMsg.channel,
       ts: slackMsg.ts,
       batchSize: allItems.length,
+      taggedUserIds: slackMsg.taggedUserIds,
     });
   }
 

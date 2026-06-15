@@ -62,6 +62,8 @@ export interface FileSorterItem {
   dropbox_permalink: string | null;
   slack_queue_message_ts: string | null;
   slack_queue_channel_id: string | null;
+  /** Slack user ID(s) tagged on the queue card when posted (comma-separated if multiple). */
+  queue_tagged_slack_user_id: string | null;
   reviewed_by_slack_user_id: string | null;
   reviewed_at: string | null;
   /** When the email arrived in Gmail (inbound payload), if provided */

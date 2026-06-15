@@ -110,6 +110,82 @@
     .stat.pending .stat-value { color: var(--amber); }
     .stat.skipped .stat-value { color: var(--gray); }
 
+    .section-title {
+      font-size: 1rem;
+      margin: 0 0 0.75rem;
+      color: var(--text-muted);
+      font-weight: 600;
+    }
+
+    .user-metrics {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 0.75rem;
+      margin-bottom: 1.5rem;
+    }
+
+    .user-metric-card {
+      background: #fff;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 0.9rem 1rem;
+      cursor: pointer;
+      transition: border-color 0.15s, box-shadow 0.15s;
+    }
+
+    .user-metric-card:hover {
+      border-color: rgba(11, 21, 38, 0.2);
+      box-shadow: 0 2px 8px rgba(11, 21, 38, 0.06);
+    }
+
+    .user-metric-card.active {
+      border-color: var(--navy);
+      box-shadow: 0 0 0 2px rgba(11, 21, 38, 0.08);
+    }
+
+    .user-metric-name {
+      font-weight: 700;
+      margin-bottom: 0.55rem;
+      font-size: 0.95rem;
+    }
+
+    .user-metric-row {
+      display: flex;
+      justify-content: space-between;
+      font-size: 0.86rem;
+      color: var(--text-muted);
+      margin-top: 0.2rem;
+    }
+
+    .user-metric-row strong {
+      color: var(--text);
+      font-size: 0.95rem;
+    }
+
+    .user-metric-row.completed strong { color: var(--green); }
+    .user-metric-row.pending strong { color: var(--amber); }
+
+    .tagged-filter {
+      display: flex;
+      flex-direction: column;
+      gap: 0.25rem;
+      font-size: 0.78rem;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    .tagged-filter select {
+      font: inherit;
+      padding: 0.35rem 0.55rem;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: #fff;
+      min-width: 160px;
+      text-transform: none;
+      letter-spacing: normal;
+    }
+
     .toolbar {
       display: flex;
       align-items: center;
@@ -306,6 +382,11 @@
       <div class="stat skipped"><div class="stat-label">Do not sort</div><div class="stat-value" id="stat-skipped">—</div></div>
     </div>
 
+    <h2 class="section-title">By assignee</h2>
+    <div class="user-metrics" id="user-metrics">
+      <p class="subtitle" style="margin:0;">Loading…</p>
+    </div>
+
     <div class="toolbar">
       <div class="filters">
         <button type="button" class="active" data-filter="all">All</button>
@@ -313,6 +394,12 @@
         <button type="button" data-filter="pending">Not sorted</button>
         <button type="button" data-filter="skipped">Do not sort</button>
       </div>
+      <label class="tagged-filter">
+        Tagged user
+        <select id="tagged-filter">
+          <option value="">All assignees</option>
+        </select>
+      </label>
       <div id="updated-at" class="subtitle" style="margin:0;font-size:0.85rem;"></div>
     </div>
 
@@ -323,7 +410,9 @@
 
   <script>
     let allItems = [];
+    let userMetrics = [];
     let activeFilter = 'all';
+    let activeTaggedUser = '';
 
     function formatYmd(d) {
       const y = d.getFullYear();
@@ -347,9 +436,11 @@
       if (from && to) {
         document.getElementById('date-from').value = from;
         document.getElementById('date-to').value = to;
-        return { from, to };
+      } else {
+        setDefaultDates(7);
       }
-      setDefaultDates(7);
+      const tagged = params.get('tagged');
+      if (tagged) activeTaggedUser = tagged;
       return {
         from: document.getElementById('date-from').value,
         to: document.getElementById('date-to').value,
@@ -358,6 +449,7 @@
 
     function updateUrl(from, to) {
       const params = new URLSearchParams({ from, to });
+      if (activeTaggedUser) params.set('tagged', activeTaggedUser);
       history.replaceState(null, '', `/dashboard?${params.toString()}`);
     }
 
@@ -386,8 +478,64 @@
     }
 
     function filteredItems() {
-      if (activeFilter === 'all') return allItems;
-      return allItems.filter((item) => item.outcome === activeFilter);
+      let items = allItems;
+      if (activeFilter !== 'all') {
+        items = items.filter((item) => item.outcome === activeFilter);
+      }
+      if (activeTaggedUser) {
+        items = items.filter((item) => item.taggedUserIds.includes(activeTaggedUser));
+      }
+      return items;
+    }
+
+    function renderUserMetrics() {
+      const wrap = document.getElementById('user-metrics');
+      if (!userMetrics.length) {
+        wrap.innerHTML =
+          '<p class="subtitle" style="margin:0;">No tagged assignments in this date range yet.</p>';
+        return;
+      }
+
+      wrap.innerHTML = userMetrics
+        .map(
+          (m) => `
+        <div class="user-metric-card ${activeTaggedUser === m.userId ? 'active' : ''}" data-user-id="${escapeHtml(m.userId)}">
+          <div class="user-metric-name">${escapeHtml(m.displayName)}</div>
+          <div class="user-metric-row"><span>Tagged</span><strong>${m.tagged}</strong></div>
+          <div class="user-metric-row completed"><span>Completed</span><strong>${m.completed}</strong></div>
+          <div class="user-metric-row pending"><span>Pending</span><strong>${m.pending}</strong></div>
+        </div>
+      `
+        )
+        .join('');
+
+      wrap.querySelectorAll('.user-metric-card').forEach((card) => {
+        card.addEventListener('click', () => {
+          const id = card.dataset.userId || '';
+          activeTaggedUser = activeTaggedUser === id ? '' : id;
+          document.getElementById('tagged-filter').value = activeTaggedUser;
+          renderUserMetrics();
+          renderTable();
+          updateUrl(
+            document.getElementById('date-from').value,
+            document.getElementById('date-to').value
+          );
+        });
+      });
+    }
+
+    function populateTaggedFilter() {
+      const select = document.getElementById('tagged-filter');
+      const current = activeTaggedUser;
+      select.innerHTML =
+        '<option value="">All assignees</option>' +
+        userMetrics
+          .map(
+            (m) =>
+              `<option value="${escapeHtml(m.userId)}">${escapeHtml(m.displayName)}</option>`
+          )
+          .join('');
+      select.value = current;
     }
 
     function renderTable() {
@@ -411,6 +559,7 @@
               <div>${escapeHtml(item.subject)}</div>
               <div class="filename">${escapeHtml(item.attachmentFilename)}</div>
             </td>
+            <td>${escapeHtml(item.taggedUserLabel)}</td>
             <td><span class="badge ${badgeClass(item)}">${escapeHtml(item.statusLabel)}</span></td>
             <td>${escapeHtml(item.caseConfidenceLabel)}</td>
             <td>${escapeHtml(caseNum)}</td>
@@ -425,6 +574,7 @@
             <tr>
               <th>Received</th>
               <th>Subject</th>
+              <th>Tagged</th>
               <th>Status</th>
               <th>Case confidence</th>
               <th>Suggested case</th>
@@ -450,6 +600,16 @@
       document.getElementById('stat-pending').textContent = summary.pending;
       document.getElementById('stat-skipped').textContent = summary.skipped;
     }
+
+    document.getElementById('tagged-filter').addEventListener('change', (e) => {
+      activeTaggedUser = e.target.value;
+      renderUserMetrics();
+      renderTable();
+      updateUrl(
+        document.getElementById('date-from').value,
+        document.getElementById('date-to').value
+      );
+    });
 
     document.querySelectorAll('.filters button').forEach((btn) => {
       btn.addEventListener('click', () => {
@@ -489,7 +649,10 @@
         })
         .then((data) => {
           allItems = data.items || [];
+          userMetrics = data.userMetrics || [];
           setStats(data.summary || { total: 0, sorted: 0, pending: 0, skipped: 0 });
+          populateTaggedFilter();
+          renderUserMetrics();
           document.getElementById('updated-at').textContent =
             `Updated ${new Date().toLocaleTimeString()} · received ${data.from} to ${data.to}`;
           renderTable();
