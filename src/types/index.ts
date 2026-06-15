@@ -64,6 +64,8 @@ export interface FileSorterItem {
   slack_queue_channel_id: string | null;
   /** Slack user ID(s) tagged on the queue card when posted (comma-separated if multiple). */
   queue_tagged_slack_user_id: string | null;
+  /** Display name(s) for tagged user(s), captured when the queue card was posted. */
+  queue_tagged_slack_user_name: string | null;
   reviewed_by_slack_user_id: string | null;
   reviewed_at: string | null;
   /** When the email arrived in Gmail (inbound payload), if provided */

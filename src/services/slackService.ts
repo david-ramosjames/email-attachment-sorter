@@ -27,6 +27,7 @@ import {
 } from '../utils/intakeDocumentSignals.js';
 import { parseUserMentionsFromSlackTopic } from '../utils/slackCaseParser.js';
 import { pickQueueMentionUserIdsForNewCard } from './queueMentionService.js';
+import { getSlackUserDisplayName, getSlackUserDisplayNames } from './slackUserDirectory.js';
 import {
   getSlackChannelIdByNameMap,
   clearSlackChannelNameCache,
@@ -841,10 +842,12 @@ export const slackService = {
     items: FileSorterItem[],
     caseRow: Case | null,
     options?: { emailReceivedAt?: string | null }
-  ): Promise<{ channel: string; ts: string; taggedUserIds: string[] }> {
+  ): Promise<{ channel: string; ts: string; taggedUserIds: string[]; taggedUserNames: string[] }> {
     const channel = getEnv().SLACK_FILE_SORTER_QUEUE_CHANNEL_ID;
     await ensureBotInQueueChannel();
     const mentionIds = await pickQueueMentionUserIdsForNewCard();
+    const nameMap = await getSlackUserDisplayNames(mentionIds);
+    const taggedUserNames = mentionIds.map((id) => nameMap.get(id) ?? id);
     const mentionLine = formatSlackUserMentions(mentionIds);
     const blocks = buildQueueBlocks(items, caseRow, options);
     if (mentionLine) {
@@ -871,14 +874,14 @@ export const slackService = {
       text: fallbackText,
       blocks,
     });
-    return { channel: result.channel, ts: result.ts, taggedUserIds: mentionIds };
+    return { channel: result.channel, ts: result.ts, taggedUserIds: mentionIds, taggedUserNames };
   },
 
   async postQueueItem(
     item: FileSorterItem,
     caseRow: Case | null,
     options?: { emailReceivedAt?: string | null }
-  ): Promise<{ channel: string; ts: string; taggedUserIds: string[] }> {
+  ): Promise<{ channel: string; ts: string; taggedUserIds: string[]; taggedUserNames: string[] }> {
     return slackService.postQueueBatch([item], caseRow, options);
   },
 
@@ -992,20 +995,7 @@ export const slackService = {
   },
 
   async getUserDisplayName(userId: string): Promise<string> {
-    try {
-      const result = await slackApi<{
-        user: {
-          real_name?: string;
-          name?: string;
-          profile?: { display_name?: string; real_name?: string };
-        };
-      }>('users.info', { user: userId });
-      const u = result.user;
-      const fromProfile = u.profile?.display_name?.trim() || u.profile?.real_name?.trim();
-      return fromProfile || u.real_name?.trim() || u.name?.trim() || userId;
-    } catch {
-      return userId;
-    }
+    return getSlackUserDisplayName(userId);
   },
 
   async postEphemeral(channel: string, userId: string, text: string): Promise<void> {

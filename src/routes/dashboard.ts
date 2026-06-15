@@ -2,7 +2,7 @@ import { Router } from 'express';
 import path from 'path';
 import { getEnv } from '../config/env.js';
 import { listFileSorterItemsByReceivedDates } from '../db/supabase.js';
-import { slackService } from '../services/slackService.js';
+import { getSlackUserDisplayNames } from '../services/slackUserDirectory.js';
 import type { FileSorterItem, FileSorterItemStatus } from '../types/index.js';
 import { slackQueueMessageUrl } from '../utils/slackMessageUrl.js';
 import { logger } from '../utils/logger.js';
@@ -88,6 +88,7 @@ function formatCaseConfidence(confidence: number | null): string {
 
 function toDashboardRow(item: FileSorterItem): DashboardItemRow {
   const taggedUserIds = parseTaggedUserIds(item.queue_tagged_slack_user_id);
+  const storedName = item.queue_tagged_slack_user_name?.trim();
   return {
     id: item.id,
     subject: item.subject?.trim() || '(no subject)',
@@ -101,7 +102,7 @@ function toDashboardRow(item: FileSorterItem): DashboardItemRow {
     receivedAt: itemReceivedAt(item),
     slackUrl: slackQueueMessageUrl(item.slack_queue_channel_id, item.slack_queue_message_ts),
     taggedUserIds,
-    taggedUserLabel: '—',
+    taggedUserLabel: storedName || (taggedUserIds.length ? '' : '—'),
   };
 }
 
@@ -140,19 +141,26 @@ export function buildUserMetrics(
 async function resolveTaggedUserLabels(
   rows: DashboardItemRow[]
 ): Promise<Map<string, string>> {
-  const userIds = new Set<string>();
+  const displayNames = new Map<string, string>();
+  const idsNeedingLookup = new Set<string>();
+
   for (const row of rows) {
-    for (const id of row.taggedUserIds) userIds.add(id);
+    if (row.taggedUserLabel && row.taggedUserLabel !== '—') {
+      if (row.taggedUserIds.length === 1) {
+        displayNames.set(row.taggedUserIds[0]!, row.taggedUserLabel);
+      }
+      continue;
+    }
+    for (const id of row.taggedUserIds) idsNeedingLookup.add(id);
   }
 
-  const displayNames = new Map<string, string>();
-  await Promise.all(
-    [...userIds].map(async (userId) => {
-      displayNames.set(userId, await slackService.getUserDisplayName(userId));
-    })
-  );
+  if (idsNeedingLookup.size > 0) {
+    const lookedUp = await getSlackUserDisplayNames([...idsNeedingLookup]);
+    for (const [id, name] of lookedUp) displayNames.set(id, name);
+  }
 
   for (const row of rows) {
+    if (row.taggedUserLabel && row.taggedUserLabel !== '—') continue;
     row.taggedUserLabel = row.taggedUserIds.length
       ? row.taggedUserIds.map((id) => displayNames.get(id) ?? id).join(', ')
       : '—';

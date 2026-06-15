@@ -342,6 +342,7 @@ async function processSingleAttachment(
     slack_queue_message_ts: null,
     slack_queue_channel_id: null,
     queue_tagged_slack_user_id: null,
+    queue_tagged_slack_user_name: null,
     reviewed_by_slack_user_id: null,
     reviewed_at: null,
     email_received_at: payload.receivedAt,
