@@ -50,7 +50,7 @@ const envSchema = z.object({
   /** Post end-of-day status to the queue channel on weekdays. */
   SLACK_EOD_REPORT_ENABLED: envBoolean(true),
   /** Local time (24h HH:MM) to post the daily status report. */
-  SLACK_EOD_REPORT_TIME: z.string().default('17:30'),
+  SLACK_EOD_REPORT_TIME: z.string().default('17:00'),
   /** Rolling window length for the daily report (hours). */
   SLACK_EOD_REPORT_HOURS: z.coerce.number().min(1).max(168).default(24),
   /** How often to check whether the EOD report is due (minutes). 0 = disabled. */

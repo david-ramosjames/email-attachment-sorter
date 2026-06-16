@@ -6,7 +6,7 @@ import {
 } from '../routes/dashboard.js';
 import { ensureBotInQueueChannel } from './slackChannels.js';
 import { isWorkdayInTimezone } from './queueReminderService.js';
-import { slackMrkdwnLink } from '../utils/slackText.js';
+import { formatSlackUserMentions, slackMrkdwnLink } from '../utils/slackText.js';
 import { logger } from '../utils/logger.js';
 
 const SLACK_API = 'https://slack.com/api';
@@ -127,7 +127,7 @@ export function formatEodStatusSlackMessage(
     lines.push('', '*By assignee*');
     for (const metric of summary.userMetrics) {
       lines.push(
-        `• *${metric.displayName}* — Tagged ${metric.tagged} · Completed ${metric.completed} · Pending ${metric.pending}`
+        `• ${formatSlackUserMentions([metric.userId])} — Tagged ${metric.tagged} · Completed ${metric.completed} · Pending ${metric.pending} · Do not sort ${metric.skipped}`
       );
     }
   } else {
