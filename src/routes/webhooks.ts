@@ -14,7 +14,8 @@ import {
   slackService,
 } from '../services/slackService.js';
 import { logger } from '../utils/logger.js';
-import { formatApproveError, isRecoverableApproveError } from '../utils/approveErrors.js';
+import { formatApproveError, formatSortFailureThreadMessage, isRecoverableApproveError } from '../utils/approveErrors.js';
+import { auditService } from '../services/auditService.js';
 import { handleSlackEventsWebhook } from '../services/slackCaseEventService.js';
 
 export const webhooksRouter = Router();
@@ -141,6 +142,7 @@ webhooksRouter.post('/webhooks/slack/interactions', async (req, res) => {
       const message = err instanceof Error ? err.message : String(err);
       const stack = err instanceof Error ? err.stack : undefined;
       const userMessage = formatApproveError(err);
+      const threadText = formatSortFailureThreadMessage(err);
       logger.error('Slack action handler failed', {
         itemId,
         action: action.action_id,
@@ -156,7 +158,10 @@ webhooksRouter.post('/webhooks/slack/interactions', async (req, res) => {
           : null;
         if (!isRecoverableApproveError(err)) {
           await db.updateFileSorterItem(itemId, { status: 'failed' });
-          await slackService.updateQueueMessage({ ...item, status: 'failed' }, caseRow);
+          await slackService.updateQueueMessage({ ...item, status: 'failed' }, caseRow, {
+            failureReason: userMessage,
+          });
+          await auditService.log(itemId, 'failed', { error: message, userMessage }, userId);
         } else {
           const refreshed = await db.getFileSorterItem(itemId);
           if (refreshed) {
@@ -165,7 +170,6 @@ webhooksRouter.post('/webhooks/slack/interactions', async (req, res) => {
         }
       }
       const threadItem = item ?? (await db.getFileSorterItem(itemId));
-      const threadText = `:warning: *File Sorter* — ${userMessage}`;
       if (threadItem?.slack_queue_channel_id && threadItem.slack_queue_message_ts) {
         try {
           await slackService.postQueueCardThreadNotice(threadItem, threadText);

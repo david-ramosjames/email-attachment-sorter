@@ -151,6 +151,14 @@ async function postEmailItemsToSlackInner(
 
     await slackService.updateQueueMessage(primary, caseRow);
 
+    if (withoutSlack.length > 0 && anchor.slack_queue_channel_id && anchor.slack_queue_message_ts) {
+      await slackService.attachFilesToQueueCard(
+        anchor.slack_queue_channel_id,
+        anchor.slack_queue_message_ts,
+        withoutSlack
+      );
+    }
+
     logger.info('Slack queue batch merged into existing card', {
       gmailMessageId,
       attachmentCount: batchItems.length,

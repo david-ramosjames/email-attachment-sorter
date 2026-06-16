@@ -39,6 +39,17 @@ export function formatApproveError(err: unknown): string {
   return raw;
 }
 
+/** Thread reply when Approve / queue actions fail. */
+export function formatSortFailureThreadMessage(err: unknown): string {
+  const reason = formatApproveError(err);
+  return [
+    ':x: *Sort failed*',
+    reason,
+    '',
+    '_Press *Approve* on the card to retry after fixing, or use *Change Case/Folder* / thread overrides (`case:`, `folder:`)._',
+  ].join('\n');
+}
+
 export function isRecoverableApproveError(err: unknown): boolean {
   const raw = err instanceof Error ? err.message : String(err);
   return (

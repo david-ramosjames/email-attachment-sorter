@@ -1,6 +1,7 @@
 import { RJL_STANDARD_SUBFOLDERS, type RjlSubfolder } from '../constants/rjlFolders.js';
 import { getEnv } from '../config/env.js';
 import {
+  downloadTempAttachment,
   getQueueBatchItems,
   getSlackChannelForCase,
   updateCaseSlackChannelId,
@@ -613,6 +614,7 @@ function buildQueueBlocks(
     dropboxLink?: string;
     savedFiles?: Array<{ filename: string; dropboxLink: string }>;
     disabled?: boolean;
+    failureReason?: string;
     emailReceivedAt?: string | null;
   }
 ): Record<string, unknown>[] {
@@ -771,6 +773,20 @@ function buildQueueBlocks(
         ),
       },
     });
+  } else if (status === 'failed') {
+    const reason = options?.failureReason?.trim();
+    blocks.unshift({
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: slackSectionWithExtras(
+          reason
+            ? `:x: *Sort failed*\n${reason}`
+            : ':x: *Sort failed* — see thread for details.',
+          ['Press *Approve* to retry, or *Change Case/Folder* / thread overrides first.']
+        ),
+      },
+    });
   }
 
   if (!disabled) {
@@ -872,6 +888,42 @@ async function resolveCaseSlackChannelId(caseRow: Case): Promise<string | null> 
   return resolved;
 }
 
+async function loadAttachableQueueFiles(
+  items: FileSorterItem[]
+): Promise<{
+  files: Array<{ filename: string; buffer: Buffer; mimeType?: string | null }>;
+  failed: string[];
+  externalLinkCount: number;
+}> {
+  const files: Array<{ filename: string; buffer: Buffer; mimeType?: string | null }> = [];
+  const failed: string[] = [];
+  let externalLinkCount = 0;
+
+  for (const item of items) {
+    if (isExternalLinkItem(item)) {
+      externalLinkCount++;
+      continue;
+    }
+    try {
+      const buffer = await downloadTempAttachment(item.id, item.attachment_filename);
+      files.push({
+        filename: item.attachment_filename,
+        buffer,
+        mimeType: item.attachment_mime_type,
+      });
+    } catch (err) {
+      failed.push(item.attachment_filename);
+      logger.warn('Queue card attachment download skipped', {
+        itemId: item.id,
+        filename: item.attachment_filename,
+        err: String(err),
+      });
+    }
+  }
+
+  return { files, failed, externalLinkCount };
+}
+
 export const slackService = {
   async postQueueBatch(
     items: FileSorterItem[],
@@ -902,7 +954,94 @@ export const slackService = {
       text: fallbackText,
       blocks: blocksWithMention,
     });
+    await slackService.attachFilesToQueueCard(result.channel, result.ts, items);
     return { channel: result.channel, ts: result.ts, taggedUserIds: mentionIds, taggedUserNames };
+  },
+
+  /** Upload email attachments into the queue card thread for reviewer preview. */
+  async attachFilesToQueueCard(
+    channelId: string,
+    threadTs: string,
+    items: FileSorterItem[]
+  ): Promise<{ attached: number; failed: string[] }> {
+    if (!channelId?.trim() || !threadTs?.trim() || !items.length) {
+      return { attached: 0, failed: [] };
+    }
+
+    const { files, failed, externalLinkCount } = await loadAttachableQueueFiles(items);
+    if (!files.length) {
+      if (failed.length) {
+        try {
+          await slackService.postThreadReply(
+            channelId,
+            threadTs,
+            `:warning: *Attachments not posted* — could not load: ${failed.join(', ')}`
+          );
+        } catch {
+          /* ignore */
+        }
+      }
+      return { attached: 0, failed };
+    }
+
+    try {
+      await slackUploadMultipleFilesToChannelWithFallback({
+        channelId,
+        threadTs,
+        files,
+      });
+      logger.info('Queue card attachments posted', {
+        channelId,
+        threadTs,
+        attached: files.length,
+        filenames: files.map((f) => f.filename),
+        externalLinkCount,
+        downloadFailed: failed,
+      });
+
+      if (failed.length || externalLinkCount > 0) {
+        const notes: string[] = [];
+        if (failed.length) {
+          notes.push(`Could not load: ${failed.join(', ')}`);
+        }
+        if (externalLinkCount > 0) {
+          notes.push(
+            `${externalLinkCount} external link${externalLinkCount === 1 ? '' : 's'} — open from the card (not attachable).`
+          );
+        }
+        try {
+          await slackService.postThreadReply(
+            channelId,
+            threadTs,
+            `:information_source: *Some attachments not posted* — ${notes.join(' ')}`
+          );
+        } catch {
+          /* ignore */
+        }
+      }
+
+      return { attached: files.length, failed };
+    } catch (err) {
+      const errMsg = String(err);
+      logger.error('Queue card file attachment failed', {
+        channelId,
+        threadTs,
+        fileCount: files.length,
+        filenames: files.map((f) => f.filename),
+        err: errMsg,
+      });
+      try {
+        await slackService.postThreadReply(
+          channelId,
+          threadTs,
+          `:warning: *Attachments not posted in Slack* — ${slackFileUploadHint(errMsg, 'file-sorter-queue')}\n` +
+            `Files: ${files.map((f) => f.filename).join(', ')}`
+        );
+      } catch {
+        /* ignore */
+      }
+      return { attached: 0, failed: [...failed, ...files.map((f) => f.filename)] };
+    }
   },
 
   async postQueueItem(
@@ -921,6 +1060,7 @@ export const slackService = {
       dropboxLink?: string;
       savedFiles?: Array<{ filename: string; dropboxLink: string }>;
       disabled?: boolean;
+      failureReason?: string;
     }
   ): Promise<void> {
     if (!item.slack_queue_channel_id || !item.slack_queue_message_ts) return;
@@ -933,8 +1073,9 @@ export const slackService = {
       reviewedByUserId,
       dropboxLink: options?.dropboxLink,
       savedFiles: options?.savedFiles,
+      failureReason: options?.failureReason,
       disabled:
-        options?.disabled ?? ['saved', 'ignored', 'failed'].includes(status),
+        options?.disabled ?? ['saved', 'ignored'].includes(status),
     });
     const mentionIds = taggedMentionIdsFromBatchItems(batchItems);
     const { blocks: blocksWithMention, mentionLine } = insertQueueMentionBlock(blocks, mentionIds);
