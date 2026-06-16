@@ -93,6 +93,8 @@ export async function syncCaseChannelById(
     caseNumber: parsed.case_number,
     channelName: parsed.slack_channel_name,
     topicStage: parsed.topic_stage,
+    attorney: parsed.attorney_name,
+    paralegal: parsed.paralegal_name,
   });
   return 'ok';
 }

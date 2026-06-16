@@ -40,6 +40,10 @@ export function mapSlackChannelToCase(row: CaseSlackChannel): Case {
     slack_channel_name: row.slack_channel_name,
     slack_channel_id: row.slack_channel_id,
     topic_stage: row.topic_stage,
+    attorney_slack_user_id: row.attorney_slack_user_id ?? null,
+    attorney_name: row.attorney_name ?? null,
+    paralegal_slack_user_id: row.paralegal_slack_user_id ?? null,
+    paralegal_name: row.paralegal_name ?? null,
     dropbox_root_path: dropboxRootForCase(row),
     dropbox_folder_name: row.dropbox_folder_name,
   };
@@ -1025,6 +1029,10 @@ export async function batchUpsertCaseSlackChannels(
     slack_channel_name: string;
     slack_channel_id?: string | null;
     topic_stage?: string | null;
+    attorney_slack_user_id?: string | null;
+    attorney_name?: string | null;
+    paralegal_slack_user_id?: string | null;
+    paralegal_name?: string | null;
     dropbox_folder_name?: string | null;
   }>,
   options?: { preserveDropboxFolder?: boolean }
@@ -1053,6 +1061,10 @@ export async function batchUpsertCaseSlackChannels(
     slack_channel_name: r.slack_channel_name,
     slack_channel_id: r.slack_channel_id ?? null,
     topic_stage: r.topic_stage ?? null,
+    attorney_slack_user_id: r.attorney_slack_user_id ?? null,
+    attorney_name: r.attorney_name ?? null,
+    paralegal_slack_user_id: r.paralegal_slack_user_id ?? null,
+    paralegal_name: r.paralegal_name ?? null,
     dropbox_folder_name: options?.preserveDropboxFolder
       ? (r.dropbox_folder_name ?? dropboxByCase.get(r.case_number) ?? null)
       : (r.dropbox_folder_name ?? null),

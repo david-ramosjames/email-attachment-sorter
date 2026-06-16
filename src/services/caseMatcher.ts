@@ -21,6 +21,7 @@ import {
 } from '../utils/caseNameMatch.js';
 import { logger } from '../utils/logger.js';
 import { mergeMatchingHints } from '../utils/matchingHints.js';
+import { scoreCaseStaffMatch } from '../utils/caseStaffMatch.js';
 import { isPhoneLikeNumber, maskPhoneAndFaxNumbers } from '../utils/phoneMask.js';
 
 const SEARCH_STOPWORDS = new Set([
@@ -345,6 +346,12 @@ function scoreCase(
   if (labeled && caseRow.case_number.toLowerCase().includes(labeled.toLowerCase())) {
     score += 15;
     reasons.push(`Labeled reference ${labeled} matches case number`);
+  }
+
+  const staff = scoreCaseStaffMatch(caseRow, ctx);
+  if (staff.score > 0) {
+    score += staff.score;
+    reasons.push(...staff.reasons);
   }
 
   return { score, reasons };

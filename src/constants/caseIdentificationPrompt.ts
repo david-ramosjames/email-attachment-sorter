@@ -59,7 +59,8 @@ If last names differ, suggested_case_number = null and case_confidence below 0.6
 3. Search the full case index for a row where BOTH names match that person
 4. Compare against near-miss names (same last name, similar first name) and explain why you rejected them
 5. Staff Teach Case hints (e.g. cause number → case) — treat as authoritative when the cause number appears in the document
-6. Email body, forwarded chain, subject, filename, sender (weakest)
+6. Assigned **attorney** / **paralegal** on the case index row (from Slack channel topic) — when the sender or email clearly involves that staff member, that supports the case assignment but does **not** replace PI client name matching
+7. Email body, forwarded chain, subject, filename, sender (weakest)
 
 ---
 

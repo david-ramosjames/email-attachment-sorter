@@ -14,6 +14,10 @@ export interface Case {
   slack_channel_name: string;
   slack_channel_id: string | null;
   topic_stage: string | null;
+  attorney_slack_user_id: string | null;
+  attorney_name: string | null;
+  paralegal_slack_user_id: string | null;
+  paralegal_name: string | null;
   dropbox_root_path: string;
   dropbox_folder_name: string | null;
 }
@@ -24,6 +28,10 @@ export interface CaseSlackChannel {
   slack_channel_name: string;
   dropbox_folder_name: string | null;
   topic_stage: string | null;
+  attorney_slack_user_id: string | null;
+  attorney_name: string | null;
+  paralegal_slack_user_id: string | null;
+  paralegal_name: string | null;
   synced_at: string;
   updated_at: string;
 }

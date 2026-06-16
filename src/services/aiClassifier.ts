@@ -21,6 +21,7 @@ import { clientIdentityIsUnknown, emailRequestsClientIdentification } from '../u
 import { buildCaseIdentificationPrompt } from '../constants/caseIdentificationPrompt.js';
 import { buildFolderClassificationPrompt, folderPromptCaseStageLine } from '../constants/folderClassificationPrompt.js';
 import { clientNameExactlyMatchesCase } from '../utils/caseNameMatch.js';
+import { scoreCaseStaffMatch } from '../utils/caseStaffMatch.js';
 import { isNewClientIntakeContext, INTAKE_NO_CASE_MARKER } from '../utils/intakeDocumentSignals.js';
 import { extractForwardedEmailContext } from '../utils/forwardedEmailContext.js';
 import { foldersForCaseNumber, loadCaseCatalogForAi } from './caseCatalogForAi.js';
@@ -337,6 +338,17 @@ export async function classifyDocument(ctx: MatchContext): Promise<Classificatio
           ' (intake@ request — no matching case channel yet; use thread Case: before Approve)';
       }
       caseConfidence = Math.min(caseConfidence, 0.35);
+    }
+  }
+
+  if (suggestedCaseNumber) {
+    const caseRowForStaff = await getCaseById(suggestedCaseNumber);
+    if (caseRowForStaff) {
+      const staff = scoreCaseStaffMatch(caseRowForStaff, ctx);
+      if (staff.confidenceBoost > 0) {
+        caseConfidence = Math.min(1, caseConfidence + staff.confidenceBoost);
+        reason += ` (${staff.reasons.join('; ')})`;
+      }
     }
   }
 

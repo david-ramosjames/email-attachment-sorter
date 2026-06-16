@@ -1,5 +1,6 @@
 import { getFoldersForCase, listAllCases } from '../db/supabase.js';
 import type { Case, CaseCandidate } from '../types/index.js';
+import { caseStaffCatalogAttributes } from '../utils/caseStaffMatch.js';
 import { logger } from '../utils/logger.js';
 
 /** Keep catalog compact but include every indexed case for LLM matching. */
@@ -16,7 +17,9 @@ function clientLabelFromCase(caseRow: Case): string {
 function buildCatalogLines(cases: Case[]): string[] {
   return cases.map((c) => {
     const stage = c.topic_stage?.trim() ? ` stage="${c.topic_stage.trim()}"` : '';
-    return `case_number="${c.case_number}" client="${clientLabelFromCase(c)}"${stage}`;
+    const staff = caseStaffCatalogAttributes(c);
+    const staffSuffix = staff ? ` ${staff}` : '';
+    return `case_number="${c.case_number}" client="${clientLabelFromCase(c)}"${stage}${staffSuffix}`;
   });
 }
 

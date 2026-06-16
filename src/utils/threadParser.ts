@@ -15,6 +15,8 @@ export interface ThreadOverride {
   folderLabel?: string;
   caseHints?: string[];
   sortHints?: string[];
+  /** Filenames (or partial unique names) to exclude from Approve. */
+  skipFilenames?: string[];
 }
 
 /** Strip Slack code formatting (backticks) from a single line. */
@@ -37,6 +39,10 @@ export function threadOverrideHasValues(override: ThreadOverride): boolean {
       override.caseHints?.length ||
       override.sortHints?.length
   );
+}
+
+export function threadSkipHasValues(override: ThreadOverride): boolean {
+  return (override.skipFilenames?.length ?? 0) > 0;
 }
 
 export function parseThreadReply(text: string): ThreadOverride {
@@ -80,6 +86,15 @@ export function parseThreadReply(text: string): ThreadOverride {
     const legacyHintMatch = trimmed.match(/^hint:\s*(.+)$/i);
     if (legacyHintMatch) {
       result.sortHints = [...(result.sortHints ?? []), cleanThreadLine(legacyHintMatch[1]!)];
+      continue;
+    }
+    const skipMatch = trimmed.match(/^(?:skip|do not sort):\s*(.+)$/i);
+    if (skipMatch) {
+      const names = cleanThreadLine(skipMatch[1]!)
+        .split(/[,;]+/)
+        .map((part) => part.trim())
+        .filter(Boolean);
+      result.skipFilenames = [...(result.skipFilenames ?? []), ...names];
     }
   }
 
@@ -98,6 +113,9 @@ export function parseThreadReplies(replies: string[]): ThreadOverride {
     }
     if (parsed.sortHints?.length) {
       merged.sortHints = [...(merged.sortHints ?? []), ...parsed.sortHints];
+    }
+    if (parsed.skipFilenames?.length) {
+      merged.skipFilenames = [...(merged.skipFilenames ?? []), ...parsed.skipFilenames];
     }
   }
   return merged;

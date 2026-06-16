@@ -47,6 +47,7 @@ const ACTION_PREFIX = {
   change: 'fs_chg_',
   needs_attention: 'fs_attn_',
   do_not_sort: 'fs_skip_',
+  skip_file: 'fs_sfile_',
 } as const;
 
 type SlackActionType = keyof typeof ACTION_PREFIX;
@@ -479,6 +480,11 @@ function threadOverrideHelpText(): string {
     'Teach Folder: MoveDocs records belong in Medical.\n' +
     'Teach Folder: Law360 newsletters should not be sorted.\n' +
     'Teach Folder: Photos from this sender belong in Photos.\n\n' +
+    'To skip specific attachments (multi-file emails):\n\n' +
+    'skip: logo.png\n' +
+    'skip: signature.gif\n\n' +
+    'Or use the *Skip* button next to each file on the card.\n' +
+    '*Skip all* skips every remaining attachment.\n\n' +
     'Then click *Approve*.'
   );
 }
@@ -493,20 +499,29 @@ function pickPrimaryQueueItem(items: FileSorterItem[]): FileSorterItem {
 function aggregateBatchStatus(items: FileSorterItem[]): string {
   if (items.every((i) => i.status === 'saved')) return 'saved';
   if (items.every((i) => i.status === 'ignored')) return 'ignored';
+  if (items.every((i) => ['saved', 'ignored'].includes(i.status))) return 'saved';
   if (items.some((i) => i.status === 'needs_attention')) return 'needs_attention';
   if (items.some((i) => i.status === 'failed')) return 'failed';
-  return items[0]!.status;
+  return items.find((i) => !['saved', 'ignored'].includes(i.status))?.status ?? items[0]!.status;
+}
+
+function attachmentStatusPrefix(status: string): string {
+  if (status === 'saved') return '✅ ';
+  if (status === 'ignored') return '🚫 ';
+  return '• ';
 }
 
 function formatAttachmentList(items: FileSorterItem[]): string {
   return items
     .map((i) => {
+      const prefix = attachmentStatusPrefix(i.status);
       const folder = i.suggested_folder_path
         ? folderLabelFromPath(i.suggested_folder_path)
         : null;
       const folderNote = folder && folder !== '—' ? ` → ${folder}` : '';
       const external = isExternalLinkItem(i) ? ' _(external link)_' : '';
-      return `• ${i.attachment_filename}${external}${folderNote}`;
+      const skipped = i.status === 'ignored' ? ' _(skip)_' : '';
+      return `${prefix}${i.attachment_filename}${external}${folderNote}${skipped}`;
     })
     .join('\n');
 }
@@ -714,6 +729,40 @@ function buildQueueBlocks(
     });
   }
 
+  if (batch && !disabled) {
+    const pendingItems = items.filter((i) => !['saved', 'ignored'].includes(i.status));
+    if (pendingItems.length > 0) {
+      blocks.push({
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: '*Skip individual files* — these will not be filed when you Approve:',
+        },
+      });
+      for (const fileItem of pendingItems) {
+        const folder = fileItem.suggested_folder_path
+          ? folderLabelFromPath(fileItem.suggested_folder_path)
+          : null;
+        const folderNote = folder && folder !== '—' ? ` → ${folder}` : '';
+        const external = isExternalLinkItem(fileItem) ? ' _(external link)_' : '';
+        blocks.push({
+          type: 'section',
+          block_id: `fs_skip_${fileItem.id}`,
+          text: {
+            type: 'mrkdwn',
+            text: slackFieldText(`${fileItem.attachment_filename}${external}${folderNote}`, 300),
+          },
+          accessory: {
+            type: 'button',
+            text: { type: 'plain_text', text: 'Skip', emoji: true },
+            action_id: actionIdFor('skip_file', fileItem.id),
+            value: fileItem.id,
+          },
+        });
+      }
+    }
+  }
+
   if (items.some(isExternalLinkItem)) {
     blocks.push({
       type: 'context',
@@ -791,6 +840,7 @@ function buildQueueBlocks(
 
   if (!disabled) {
     const itemId = item.id;
+    const pendingCount = items.filter((i) => !['saved', 'ignored'].includes(i.status)).length;
     const actionElements: Record<string, unknown>[] = [
       {
         type: 'button',
@@ -816,7 +866,11 @@ function buildQueueBlocks(
     }
     actionElements.push({
       type: 'button',
-      text: { type: 'plain_text', text: 'Do Not Sort', emoji: true },
+      text: {
+        type: 'plain_text',
+        text: batch && pendingCount > 1 ? 'Skip all' : 'Do Not Sort',
+        emoji: true,
+      },
       action_id: actionIdFor('do_not_sort', itemId),
       value: itemId,
     });
@@ -1068,6 +1122,7 @@ export const slackService = {
     const reviewedByUserId =
       options?.reviewedByUserId ?? item.reviewed_by_slack_user_id ?? undefined;
     const status = aggregateBatchStatus(batchItems);
+    const allDone = batchItems.every((i) => ['saved', 'ignored'].includes(i.status));
     let blocks = buildQueueBlocks(batchItems, caseRow, {
       statusOverride: status,
       reviewedByUserId,
@@ -1075,7 +1130,7 @@ export const slackService = {
       savedFiles: options?.savedFiles,
       failureReason: options?.failureReason,
       disabled:
-        options?.disabled ?? ['saved', 'ignored'].includes(status),
+        options?.disabled ?? (['saved', 'ignored'].includes(status) || allDone),
     });
     const mentionIds = taggedMentionIdsFromBatchItems(batchItems);
     const { blocks: blocksWithMention, mentionLine } = insertQueueMentionBlock(blocks, mentionIds);

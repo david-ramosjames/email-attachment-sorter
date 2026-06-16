@@ -7,6 +7,7 @@ import {
   handleChange,
   handleDoNotSort,
   handleNeedsAttention,
+  handleSkipAttachment,
 } from '../services/fileSorterWorkflow.js';
 import {
   extractItemIdFromAction,
@@ -134,6 +135,9 @@ webhooksRouter.post('/webhooks/slack/interactions', async (req, res) => {
           break;
         case 'do_not_sort':
           await handleDoNotSort(itemId, userId);
+          break;
+        case 'skip_file':
+          await handleSkipAttachment(itemId, userId);
           break;
         default:
           logger.warn('Unknown Slack action', { actionId: action.action_id });

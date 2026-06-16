@@ -22,7 +22,6 @@ import {
   listCaseFolders,
   uploadFileToDropbox,
 } from './dropboxService.js';
-import { FILE_ALREADY_IN_DROPBOX } from '../utils/approveErrors.js';
 import {
   extractCauseNumbersFromTexts,
   formatCauseNumberCaseHint,
@@ -483,6 +482,80 @@ async function persistMatchingHintsFromApproval(opts: {
   }
 }
 
+function dropboxFilePath(folderPath: string, filename: string): string {
+  const normalized = folderPath.startsWith('/') ? folderPath : `/${folderPath}`;
+  return `${normalized}/${filename}`.replace(/\/+/g, '/');
+}
+
+async function completeAsAlreadyInDropbox(opts: {
+  batchItem: FileSorterItem;
+  folderPath: string;
+  caseNumber: string;
+  slackUserId: string;
+  reviewedAt: string;
+  source: 'pre_check' | 'upload_409';
+}): Promise<{ saved: FileSorterItem; permalink: string }> {
+  const fullPath = dropboxFilePath(opts.folderPath, opts.batchItem.attachment_filename);
+  let permalink = fullPath;
+  try {
+    permalink = await generateDropboxPermalink(fullPath);
+  } catch (err) {
+    logger.warn('Could not generate permalink for existing Dropbox file', {
+      itemId: opts.batchItem.id,
+      path: fullPath,
+      err: String(err),
+    });
+  }
+
+  const saved = await updateFileSorterItem(opts.batchItem.id, {
+    status: 'saved',
+    final_case_number: opts.caseNumber,
+    final_dropbox_path: fullPath,
+    dropbox_permalink: permalink,
+    reviewed_by_slack_user_id: opts.slackUserId,
+    reviewed_at: opts.reviewedAt,
+  });
+
+  await auditService.log(
+    opts.batchItem.id,
+    'duplicate_detected',
+    {
+      folderPath: opts.folderPath,
+      filename: opts.batchItem.attachment_filename,
+      source: opts.source,
+    },
+    opts.slackUserId
+  );
+  await auditService.log(
+    opts.batchItem.id,
+    'approved',
+    { caseNumber: opts.caseNumber, folderPath: opts.folderPath, alreadyInDropbox: true },
+    opts.slackUserId
+  );
+  await auditService.log(
+    opts.batchItem.id,
+    'saved_to_dropbox',
+    { path: fullPath, permalink, alreadyInDropbox: true },
+    opts.slackUserId
+  );
+
+  const folderLabel = opts.folderPath.split('/').filter(Boolean).pop();
+  if (folderLabel) {
+    try {
+      await upsertCaseFolder(opts.caseNumber, folderLabel, opts.folderPath);
+    } catch (err) {
+      logger.warn('Could not index folder for existing Dropbox file', {
+        caseNumber: opts.caseNumber,
+        folderLabel,
+        err: String(err),
+      });
+    }
+  }
+
+  scheduleTempStorageDeletionAfterRouted(saved);
+  return { saved, permalink };
+}
+
 export async function handleApprove(
   itemId: string,
   slackUserId: string,
@@ -535,7 +608,6 @@ export async function handleApprove(
   }> = [];
   let confirmedFolderLabel: string | null = threadFolderLabel;
   const reviewedAt = new Date().toISOString();
-  let duplicateCount = 0;
   let externalLinkCount = 0;
   const documentTextsForCauseLearning: string[] = [];
 
@@ -554,19 +626,25 @@ export async function handleApprove(
 
     const exists = await fileExistsInDropbox(folderPath, batchItem.attachment_filename);
     if (exists) {
-      logger.warn('Dropbox duplicate skipped at pre-check', {
+      logger.info('Dropbox file already present — marking sorted', {
         itemId: batchItem.id,
         folderPath,
         filename: batchItem.attachment_filename,
       });
-      await updateFileSorterItem(batchItem.id, { status: 'needs_attention' });
-      await auditService.log(
-        batchItem.id,
-        'duplicate_detected',
-        { folderPath, filename: batchItem.attachment_filename },
-        slackUserId
-      );
-      duplicateCount++;
+      const { permalink } = await completeAsAlreadyInDropbox({
+        batchItem,
+        folderPath,
+        caseNumber,
+        slackUserId,
+        reviewedAt,
+        source: 'pre_check',
+      });
+      savedFiles.push({ filename: batchItem.attachment_filename, dropboxLink: permalink });
+      savedAttachmentFilenames.push(batchItem.attachment_filename);
+      const folderLabel = folderPath.split('/').filter(Boolean).pop();
+      if (folderLabel) {
+        confirmedFolderLabel = folderLabelFromDropboxPath(folderPath) ?? folderLabel;
+      }
       continue;
     }
 
@@ -600,19 +678,25 @@ export async function handleApprove(
       upload = await uploadFileToDropbox(folderPath, batchItem.attachment_filename, buffer);
     } catch (err) {
       if (isDropboxFileConflict(err)) {
-        logger.warn('Dropbox upload conflict (409)', {
+        logger.info('Dropbox upload conflict — file already present, marking sorted', {
           itemId: batchItem.id,
           folderPath,
           filename: batchItem.attachment_filename,
         });
-        await updateFileSorterItem(batchItem.id, { status: 'needs_attention' });
-        await auditService.log(
-          batchItem.id,
-          'duplicate_detected',
-          { folderPath, filename: batchItem.attachment_filename, source: 'upload_409' },
-          slackUserId
-        );
-        duplicateCount++;
+        const { permalink } = await completeAsAlreadyInDropbox({
+          batchItem,
+          folderPath,
+          caseNumber,
+          slackUserId,
+          reviewedAt,
+          source: 'upload_409',
+        });
+        savedFiles.push({ filename: batchItem.attachment_filename, dropboxLink: permalink });
+        savedAttachmentFilenames.push(batchItem.attachment_filename);
+        const folderLabel = folderPath.split('/').filter(Boolean).pop();
+        if (folderLabel) {
+          confirmedFolderLabel = folderLabelFromDropboxPath(folderPath) ?? folderLabel;
+        }
         continue;
       }
       logger.error('Dropbox upload failed', {
@@ -692,9 +776,6 @@ export async function handleApprove(
   });
 
   if (!savedFiles.length) {
-    if (duplicateCount > 0) {
-      throw new Error(FILE_ALREADY_IN_DROPBOX);
-    }
     if (externalLinkCount > 0) {
       throw new Error(
         'External file links (Google Drive, etc.) cannot be auto-filed — open the links in the queue card, download, and file manually.'
@@ -770,6 +851,40 @@ export async function handleNeedsAttention(
     : null;
   await slackService.updateQueueMessage(primary, caseRow, {
     reviewedByUserId: slackUserId,
+  });
+}
+
+export async function handleSkipAttachment(
+  itemId: string,
+  slackUserId: string
+): Promise<void> {
+  const item = await getFileSorterItem(itemId);
+  if (!item) throw new Error('Item not found');
+  if (['saved', 'ignored'].includes(item.status)) {
+    throw new Error('This attachment is already processed');
+  }
+
+  const batch = await getQueueBatchItems(item);
+  const reviewedAt = new Date().toISOString();
+
+  await updateFileSorterItem(itemId, {
+    status: 'ignored',
+    reviewed_by_slack_user_id: slackUserId,
+    reviewed_at: reviewedAt,
+  });
+  await auditService.log(itemId, 'ignored', { singleAttachment: true }, slackUserId);
+  await clearTempStorageForItems([{ ...item, status: 'ignored' }]);
+
+  const primary = batch[0] ?? item;
+  const refreshedBatch = await getQueueBatchItems(primary);
+  const caseRow = primary.suggested_case_number
+    ? await getCaseById(primary.suggested_case_number)
+    : null;
+  const allDone = refreshedBatch.every((i) => ['saved', 'ignored'].includes(i.status));
+
+  await slackService.updateQueueMessage(primary, caseRow, {
+    reviewedByUserId: slackUserId,
+    disabled: allDone,
   });
 }
 
