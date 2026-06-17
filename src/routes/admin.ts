@@ -11,6 +11,7 @@ import type { FileSorterItemStatus, MatchingHintType } from '../types/index.js';
 import { reindexDropboxFoldersForCase } from '../services/fileSorterWorkflow.js';
 import { cleanupExpiredTempStorage } from '../services/tempStorageCleanupService.js';
 import { runEodStatusReport } from '../services/eodStatusReportService.js';
+import { refreshPendingQueueCards } from '../services/queueReminderService.js';
 import {
   getLastCaseSheetSyncAt,
   syncCasesFromGoogleSheet,
@@ -180,6 +181,19 @@ adminRouter.post('/admin/sync-cases-from-slack', async (_req, res) => {
 
 adminRouter.get('/admin/slack-case-sync-status', (_req, res) => {
   res.json({ lastSyncAt: getLastSlackCaseSyncAt() });
+});
+
+/** Re-render pending Slack queue cards (adds new buttons after deploy). */
+adminRouter.post('/admin/refresh-queue-cards', async (_req, res) => {
+  try {
+    const result = await refreshPendingQueueCards();
+    res.json(result);
+  } catch (err) {
+    logger.error('Queue card refresh failed', { err: String(err) });
+    res.status(500).json({
+      error: err instanceof Error ? err.message : 'Queue card refresh failed',
+    });
+  }
 });
 
 /** Join all public Slack channels (for file cross-post). Runs synchronously — may take a few minutes. */

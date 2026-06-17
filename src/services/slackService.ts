@@ -736,14 +736,17 @@ function buildQueueBlocks(
     });
   }
 
-  if (batch && !disabled) {
+  if (!disabled) {
     const pendingItems = items.filter((i) => !['saved', 'ignored'].includes(i.status));
     if (pendingItems.length > 0) {
       blocks.push({
         type: 'section',
         text: {
           type: 'mrkdwn',
-          text: '*Per-file actions* — skip or rename before you Approve:',
+          text:
+            pendingItems.length === 1
+              ? '*File actions* — skip or rename before you Approve:'
+              : '*Per-file actions* — skip or rename before you Approve:',
         },
       });
       for (const fileItem of pendingItems) {
@@ -782,22 +785,6 @@ function buildQueueBlocks(
           ],
         });
       }
-    }
-  } else if (!batch && !disabled) {
-    const pendingItem = items.find((i) => !['saved', 'ignored'].includes(i.status));
-    if (pendingItem) {
-      blocks.push({
-        type: 'actions',
-        block_id: `fs_rename_${pendingItem.id}`,
-        elements: [
-          {
-            type: 'button',
-            text: { type: 'plain_text', text: 'Rename file', emoji: true },
-            action_id: actionIdFor('rename_file', pendingItem.id),
-            value: pendingItem.id,
-          },
-        ],
-      });
     }
   }
 
@@ -931,6 +918,14 @@ function buildQueueBlocks(
       },
     ],
   });
+
+  if (blocks.length > 50) {
+    logger.warn('Queue card exceeds Slack block limit — buttons may be dropped', {
+      blockCount: blocks.length,
+      attachmentCount: items.length,
+      itemId: item.id,
+    });
+  }
 
   return blocks;
 }

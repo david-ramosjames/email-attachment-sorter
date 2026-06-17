@@ -1,6 +1,7 @@
 import {
   hasQueueReminderBeenSent,
   listPendingQueueItemsWithSlackCard,
+  getCaseById,
 } from '../db/supabase.js';
 import { getEnv } from '../config/env.js';
 import { auditService } from './auditService.js';
@@ -31,6 +32,44 @@ function itemQueuedAtMs(item: FileSorterItem): number {
 function batchKey(item: FileSorterItem): string | null {
   if (!item.slack_queue_channel_id || !item.slack_queue_message_ts) return null;
   return `${item.slack_queue_channel_id}:${item.slack_queue_message_ts}`;
+}
+
+/** Re-render Slack queue cards (e.g. after deploy adds new buttons). One update per card. */
+export async function refreshPendingQueueCards(): Promise<{
+  refreshed: number;
+  failed: number;
+}> {
+  const items = await listPendingQueueItemsWithSlackCard();
+  const seen = new Set<string>();
+  let refreshed = 0;
+  let failed = 0;
+
+  for (const item of items) {
+    const key = batchKey(item);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+
+    try {
+      const caseRow = item.suggested_case_number
+        ? await getCaseById(item.suggested_case_number)
+        : null;
+      await slackService.updateQueueMessage(item, caseRow);
+      refreshed++;
+    } catch (err) {
+      failed++;
+      logger.warn('Failed to refresh queue card', {
+        key,
+        itemId: item.id,
+        err: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  if (refreshed > 0 || failed > 0) {
+    logger.info('Pending queue card refresh complete', { refreshed, failed });
+  }
+
+  return { refreshed, failed };
 }
 
 /** One reminder per Slack queue card (batch). */

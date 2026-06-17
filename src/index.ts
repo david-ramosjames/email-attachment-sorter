@@ -6,7 +6,7 @@ import { startCaseSheetSyncScheduler } from './services/caseSheetSyncService.js'
 import { startSlackCaseSyncScheduler } from './services/slackCaseSyncService.js';
 import { ensureBotInQueueChannel } from './services/slackChannels.js';
 import { startDropboxSyncScheduler } from './services/dropboxSyncService.js';
-import { startQueueReminderScheduler } from './services/queueReminderService.js';
+import { startQueueReminderScheduler, refreshPendingQueueCards } from './services/queueReminderService.js';
 import { startEodStatusReportScheduler } from './services/eodStatusReportService.js';
 import { startTempStorageCleanupScheduler } from './services/tempStorageCleanupService.js';
 import { logger } from './utils/logger.js';
@@ -51,5 +51,9 @@ app.listen(env.PORT, () => {
 
   void ensureBotInQueueChannel().catch((err) => {
     logger.error('Queue channel join on startup failed', { err: String(err) });
+  });
+
+  void refreshPendingQueueCards().catch((err) => {
+    logger.error('Pending queue card refresh on startup failed', { err: String(err) });
   });
 });
