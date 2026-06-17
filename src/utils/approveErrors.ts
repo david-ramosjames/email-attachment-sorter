@@ -59,6 +59,18 @@ export function isRecoverableApproveError(err: unknown): boolean {
     raw === FILE_ALREADY_IN_DROPBOX ||
     /temp download failed/i.test(raw) ||
     /no files were saved/i.test(raw) ||
-    /duplicate/i.test(raw)
+    /duplicate/i.test(raw) ||
+    isAlreadyProcessedError(err)
   );
+}
+
+export function isAlreadyProcessedError(err: unknown): boolean {
+  const raw = err instanceof Error ? err.message : String(err);
+  return /already processed/i.test(raw);
+}
+
+/** Informational thread reply when Approve is clicked after work is already done. */
+export function formatAlreadyProcessedThreadMessage(err: unknown): string {
+  const reason = formatApproveError(err);
+  return `:warning: *File Sorter* — ${reason}`;
 }

@@ -488,9 +488,8 @@ function threadOverrideHelpText(): string {
     'To rename before filing:\n\n' +
     'rename: scan.pdf to 1195 Medical Records 03-15-24.pdf\n' +
     'name: image001.png | 1195 ID front.jpg\n\n' +
-    'Or use the *Rename* button next to each file on the card.\n' +
-    'Or use the *Skip* button next to each file on the card.\n' +
-    '*Skip all* skips every remaining attachment.\n\n' +
+    'Or use the *Rename file* button on the card.\n' +
+    'On multi-attachment emails, use *Skip file* for one attachment or *Skip all* for the rest.\n\n' +
     'Then click *Approve*.'
   );
 }
@@ -507,7 +506,14 @@ function aggregateBatchStatus(items: FileSorterItem[]): string {
   if (items.every((i) => i.status === 'ignored')) return 'ignored';
   if (items.every((i) => ['saved', 'ignored'].includes(i.status))) return 'saved';
   if (items.some((i) => i.status === 'needs_attention')) return 'needs_attention';
-  if (items.some((i) => i.status === 'failed')) return 'failed';
+  if (items.some((i) => i.status === 'failed')) {
+    const needsWork = items.some(
+      (i) => !['saved', 'ignored', 'failed'].includes(i.status)
+    );
+    const hasCompleted = items.some((i) => ['saved', 'ignored'].includes(i.status));
+    if (!needsWork && hasCompleted) return 'saved';
+    return 'failed';
+  }
   return items.find((i) => !['saved', 'ignored'].includes(i.status))?.status ?? items[0]!.status;
 }
 
@@ -739,14 +745,14 @@ function buildQueueBlocks(
   if (!disabled) {
     const pendingItems = items.filter((i) => !['saved', 'ignored'].includes(i.status));
     if (pendingItems.length > 0) {
+      const multiAttachment = batch || pendingItems.length > 1;
       blocks.push({
         type: 'section',
         text: {
           type: 'mrkdwn',
-          text:
-            pendingItems.length === 1
-              ? '*File actions* — skip or rename before you Approve:'
-              : '*Per-file actions* — skip or rename before you Approve:',
+          text: multiAttachment
+            ? '*Per attachment* — optional before you Approve:'
+            : '*Rename* — optional before you Approve:',
         },
       });
       for (const fileItem of pendingItems) {
@@ -766,25 +772,39 @@ function buildQueueBlocks(
             ),
           },
         });
+        const fileActionElements: Record<string, unknown>[] = [];
+        if (multiAttachment) {
+          fileActionElements.push({
+            type: 'button',
+            text: { type: 'plain_text', text: 'Skip file', emoji: true },
+            action_id: actionIdFor('skip_file', fileItem.id),
+            value: fileItem.id,
+          });
+        }
+        fileActionElements.push({
+          type: 'button',
+          text: { type: 'plain_text', text: 'Rename file', emoji: true },
+          action_id: actionIdFor('rename_file', fileItem.id),
+          value: fileItem.id,
+        });
         blocks.push({
           type: 'actions',
           block_id: `fs_file_actions_${fileItem.id}`,
+          elements: fileActionElements,
+        });
+      }
+      if (multiAttachment) {
+        blocks.push({
+          type: 'context',
           elements: [
             {
-              type: 'button',
-              text: { type: 'plain_text', text: 'Skip', emoji: true },
-              action_id: actionIdFor('skip_file', fileItem.id),
-              value: fileItem.id,
-            },
-            {
-              type: 'button',
-              text: { type: 'plain_text', text: 'Rename', emoji: true },
-              action_id: actionIdFor('rename_file', fileItem.id),
-              value: fileItem.id,
+              type: 'mrkdwn',
+              text: '_Skip file affects only that attachment. Use *Skip all* below to skip every remaining file in this email._',
             },
           ],
         });
       }
+      blocks.push({ type: 'divider' });
     }
   }
 
@@ -866,6 +886,16 @@ function buildQueueBlocks(
   if (!disabled) {
     const itemId = item.id;
     const pendingCount = items.filter((i) => !['saved', 'ignored'].includes(i.status)).length;
+    const multiAttachment = batch || pendingCount > 1;
+    blocks.push({
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: multiAttachment
+          ? '*Entire email* — file or dismiss all remaining attachments:'
+          : '*Entire email* — file or dismiss this attachment:',
+      },
+    });
     const actionElements: Record<string, unknown>[] = [
       {
         type: 'button',
@@ -893,7 +923,7 @@ function buildQueueBlocks(
       type: 'button',
       text: {
         type: 'plain_text',
-        text: batch && pendingCount > 1 ? 'Skip all' : 'Do Not Sort',
+        text: multiAttachment ? 'Skip all' : 'Do not sort email',
         emoji: true,
       },
       action_id: actionIdFor('do_not_sort', itemId),

@@ -578,7 +578,22 @@ export async function handleApprove(
   const batch = await getQueueBatchItems(trigger);
   const pending = batch.filter((i) => !['saved', 'ignored'].includes(i.status));
   if (!pending.length) {
-    throw new Error('All attachments in this email are already processed');
+    const primary = batch[0] ?? trigger;
+    const caseRow = primary.suggested_case_number
+      ? await getCaseById(primary.suggested_case_number)
+      : null;
+    await slackService.updateQueueMessage(primary, caseRow, { disabled: true });
+    if (primary.slack_queue_channel_id && primary.slack_queue_message_ts) {
+      await slackService.postQueueCardThreadNotice(
+        primary,
+        ':warning: *File Sorter* — All attachments in this email are already processed.'
+      );
+    }
+    logger.info('Approve skipped — batch already processed', {
+      itemId,
+      batchSize: batch.length,
+    });
+    return;
   }
 
   logger.info('Approve started', {

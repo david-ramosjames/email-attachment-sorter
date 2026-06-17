@@ -17,7 +17,7 @@ import {
   slackService,
 } from '../services/slackService.js';
 import { logger } from '../utils/logger.js';
-import { formatApproveError, formatSortFailureThreadMessage, isRecoverableApproveError } from '../utils/approveErrors.js';
+import { formatApproveError, formatSortFailureThreadMessage, formatAlreadyProcessedThreadMessage, isAlreadyProcessedError, isRecoverableApproveError } from '../utils/approveErrors.js';
 import { auditService } from '../services/auditService.js';
 import { handleSlackEventsWebhook } from '../services/slackCaseEventService.js';
 
@@ -110,7 +110,9 @@ async function runSlackBlockAction(
     const message = err instanceof Error ? err.message : String(err);
     const stack = err instanceof Error ? err.stack : undefined;
     const userMessage = formatApproveError(err);
-    const threadText = formatSortFailureThreadMessage(err);
+    const threadText = isAlreadyProcessedError(err)
+      ? formatAlreadyProcessedThreadMessage(err)
+      : formatSortFailureThreadMessage(err);
     logger.error('Slack action handler failed', {
       itemId,
       action: action.action_id,
@@ -130,6 +132,10 @@ async function runSlackBlockAction(
           failureReason: userMessage,
         });
         await auditService.log(itemId, 'failed', { error: message, userMessage }, userId);
+      } else if (isAlreadyProcessedError(err)) {
+        const batch = await db.getQueueBatchItems(item);
+        const primary = batch[0] ?? item;
+        await slackService.updateQueueMessage(primary, caseRow, { disabled: true });
       } else {
         const refreshed = await db.getFileSorterItem(itemId);
         if (refreshed) {
