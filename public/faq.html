@@ -392,6 +392,7 @@
         <a href="#thread">Thread commands</a>
         <a href="#folders">Folders</a>
         <a href="#teach">Teach</a>
+        <a href="#multiple-attachments">Multiple attachments</a>
         <a href="#faq">FAQ</a>
       </nav>
     </div>
@@ -513,7 +514,7 @@ case: Juan Garcia
 folder: Medical</div>
         <ul>
           <li><code>case:</code> — case number or client name (must match the case index)</li>
-          <li><code>folder:</code> — applies to <strong>all attachments</strong> in that email unless each file already has its own suggestion</li>
+          <li><code>folder:</code> — sets <strong>one folder for every attachment</strong> on that card (overrides each file's AI suggestion). Skip this if you want different folders per file.</li>
         </ul>
         <p>Click <strong>Change Case/Folder</strong> on the card for the same instructions in Slack.</p>
       </div>
@@ -609,19 +610,46 @@ Teach Folder: Photos from this sender belong in Photos.</div>
       </div>
     </section>
 
-    <section>
+    <section id="multiple-attachments">
       <h2>Multiple attachments</h2>
       <div class="card">
         <p>One email with several attachments produces <strong>one Slack card</strong>, not one card per file. One <strong>Approve</strong> files everything to the same case.</p>
         <ul>
-          <li>Each file can have its own suggested folder unless you set a thread <code>folder:</code> override (then all files use that folder).</li>
-          <li>If the first attachment identifies the case, later attachments in the same email inherit that case.</li>
+          <li>The AI classifies <strong>each attachment separately</strong>, so different files can have different suggested folders (shown as <code>filename.pdf → Medical</code> on the card).</li>
+          <li>If the first attachment identifies the case, later attachments in the same email usually inherit that case.</li>
+          <li>A thread <code>folder:</code> line forces <strong>one folder for all files</strong> on the card — don't use it when you want split folders.</li>
         </ul>
+      </div>
+
+      <div class="card card-accent">
+        <h3>Different folders on the same card</h3>
+        <p>When an email has, for example, medical records and photos, the bot can suggest <strong>Medical</strong> for one file and <strong>Photos</strong> for another. You do not need a special command for that — it is the default when the AI gets each suggestion right.</p>
+        <ol>
+          <li>Check the <strong>Attachments</strong> list and each row under <strong>Per attachment</strong> for the <code>→ folder</code> next to every filename.</li>
+          <li>Do <strong>not</strong> reply with <code>folder: …</code> in the thread unless every file should go to the same place.</li>
+          <li>Click <strong>Approve</strong> once — each file saves to its own suggested subfolder in Dropbox.</li>
+        </ol>
+        <p><strong>If one file has the wrong folder</strong> but the others look correct: use <strong>Skip file</strong> on that attachment, <strong>Approve</strong> to file the rest, then file the skipped file manually (or re-forward it alone so it gets its own queue card). There is no per-file <code>folder:</code> thread command yet.</p>
+        <div class="code-block"># Good — AI suggested different folders; Approve files each one separately
+MRI-report.pdf → Medical
+accident-photo.jpg → Photos
+
+# Avoid when you want split folders — this overrides ALL attachments
+folder: Medical</div>
       </div>
     </section>
 
     <section id="faq">
       <h2>Frequently asked questions</h2>
+
+      <details>
+        <summary>How do I file different attachments to different folders on one card?</summary>
+        <div class="answer">
+          <p>Usually you don't need to do anything special. Each attachment is analyzed on its own, and the card shows a folder suggestion per file (e.g. <code>labs.pdf → Medical</code>, <code>id-front.jpg → Photos</code>). Click <strong>Approve</strong> once and each file goes to its own subfolder under the same case.</p>
+          <p>Important: a thread line like <code>folder: Medical</code> overrides <strong>every</strong> attachment on that card. Leave that out when you want split folders.</p>
+          <p>If only one file has the wrong folder, use <strong>Skip file</strong> on it, <strong>Approve</strong> the rest, and handle the skipped file separately. See <a href="#multiple-attachments">Multiple attachments</a> for the full walkthrough.</p>
+        </div>
+      </details>
 
       <details>
         <summary>Why didn't the bot pick a case?</summary>
