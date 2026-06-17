@@ -20,6 +20,7 @@ import {
   externalLinkUrlFromItem,
   isExternalLinkItem,
 } from '../utils/externalFileLinks.js';
+import { formatQueueFilenameDisplay, sanitizeDropboxFilename } from '../utils/filenameRename.js';
 import {
   isIntakeNoCaseItem,
   queueCaseLabel,
@@ -48,6 +49,7 @@ const ACTION_PREFIX = {
   needs_attention: 'fs_attn_',
   do_not_sort: 'fs_skip_',
   skip_file: 'fs_sfile_',
+  rename_file: 'fs_rnfile_',
 } as const;
 
 type SlackActionType = keyof typeof ACTION_PREFIX;
@@ -483,6 +485,10 @@ function threadOverrideHelpText(): string {
     'To skip specific attachments (multi-file emails):\n\n' +
     'skip: logo.png\n' +
     'skip: signature.gif\n\n' +
+    'To rename before filing:\n\n' +
+    'rename: scan.pdf to 1195 Medical Records 03-15-24.pdf\n' +
+    'name: image001.png | 1195 ID front.jpg\n\n' +
+    'Or use the *Rename* button next to each file on the card.\n' +
     'Or use the *Skip* button next to each file on the card.\n' +
     '*Skip all* skips every remaining attachment.\n\n' +
     'Then click *Approve*.'
@@ -521,7 +527,8 @@ function formatAttachmentList(items: FileSorterItem[]): string {
       const folderNote = folder && folder !== '—' ? ` → ${folder}` : '';
       const external = isExternalLinkItem(i) ? ' _(external link)_' : '';
       const skipped = i.status === 'ignored' ? ' _(skip)_' : '';
-      return `${prefix}${i.attachment_filename}${external}${folderNote}${skipped}`;
+      const name = formatQueueFilenameDisplay(i);
+      return `${prefix}${name}${external}${folderNote}${skipped}`;
     })
     .join('\n');
 }
@@ -736,7 +743,7 @@ function buildQueueBlocks(
         type: 'section',
         text: {
           type: 'mrkdwn',
-          text: '*Skip individual files* — these will not be filed when you Approve:',
+          text: '*Per-file actions* — skip or rename before you Approve:',
         },
       });
       for (const fileItem of pendingItems) {
@@ -747,19 +754,50 @@ function buildQueueBlocks(
         const external = isExternalLinkItem(fileItem) ? ' _(external link)_' : '';
         blocks.push({
           type: 'section',
-          block_id: `fs_skip_${fileItem.id}`,
+          block_id: `fs_file_${fileItem.id}`,
           text: {
             type: 'mrkdwn',
-            text: slackFieldText(`${fileItem.attachment_filename}${external}${folderNote}`, 300),
-          },
-          accessory: {
-            type: 'button',
-            text: { type: 'plain_text', text: 'Skip', emoji: true },
-            action_id: actionIdFor('skip_file', fileItem.id),
-            value: fileItem.id,
+            text: slackFieldText(
+              `${formatQueueFilenameDisplay(fileItem)}${external}${folderNote}`,
+              300
+            ),
           },
         });
+        blocks.push({
+          type: 'actions',
+          block_id: `fs_file_actions_${fileItem.id}`,
+          elements: [
+            {
+              type: 'button',
+              text: { type: 'plain_text', text: 'Skip', emoji: true },
+              action_id: actionIdFor('skip_file', fileItem.id),
+              value: fileItem.id,
+            },
+            {
+              type: 'button',
+              text: { type: 'plain_text', text: 'Rename', emoji: true },
+              action_id: actionIdFor('rename_file', fileItem.id),
+              value: fileItem.id,
+            },
+          ],
+        });
       }
+    }
+  } else if (!batch && !disabled) {
+    const pendingItem = items.find((i) => !['saved', 'ignored'].includes(i.status));
+    if (pendingItem) {
+      blocks.push({
+        type: 'actions',
+        block_id: `fs_rename_${pendingItem.id}`,
+        elements: [
+          {
+            type: 'button',
+            text: { type: 'plain_text', text: 'Rename file', emoji: true },
+            action_id: actionIdFor('rename_file', pendingItem.id),
+            value: pendingItem.id,
+          },
+        ],
+      });
     }
   }
 
@@ -978,6 +1016,41 @@ async function loadAttachableQueueFiles(
   return { files, failed, externalLinkCount };
 }
 
+export const RENAME_FILE_MODAL_CALLBACK = 'fs_rename_file_modal';
+
+function buildRenameFileModalView(item: FileSorterItem): Record<string, unknown> {
+  const current =
+    item.queue_save_as_filename?.trim() || item.attachment_filename;
+  return {
+    type: 'modal',
+    callback_id: RENAME_FILE_MODAL_CALLBACK,
+    title: { type: 'plain_text', text: 'Rename file' },
+    submit: { type: 'plain_text', text: 'Save' },
+    close: { type: 'plain_text', text: 'Cancel' },
+    private_metadata: JSON.stringify({ itemId: item.id }),
+    blocks: [
+      {
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: `Original attachment: *${slackFieldText(item.attachment_filename, 180)}*`,
+        },
+      },
+      {
+        type: 'input',
+        block_id: 'dropbox_filename',
+        label: { type: 'plain_text', text: 'Save to Dropbox as' },
+        element: {
+          type: 'plain_text_input',
+          action_id: 'filename_value',
+          initial_value: current.slice(0, 240),
+          max_length: 240,
+        },
+      },
+    ],
+  };
+}
+
 export const slackService = {
   async postQueueBatch(
     items: FileSorterItem[],
@@ -1149,6 +1222,25 @@ export const slackService = {
       text: fallbackText,
       blocks,
     });
+  },
+
+  async openRenameFileModal(triggerId: string, item: FileSorterItem): Promise<void> {
+    if (!triggerId?.trim()) throw new Error('Missing Slack trigger_id for rename modal');
+    if (['saved', 'ignored'].includes(item.status)) {
+      throw new Error('This attachment is already processed');
+    }
+    await slackApi('views.open', {
+      trigger_id: triggerId,
+      view: buildRenameFileModalView(item),
+    });
+  },
+
+  extractRenameModalFilename(view: Record<string, unknown>): string | null {
+    const state = view.state as
+      | { values?: Record<string, Record<string, { value?: string }>> }
+      | undefined;
+    const raw = state?.values?.dropbox_filename?.filename_value?.value ?? '';
+    return sanitizeDropboxFilename(raw);
   },
 
   async postChangeInstructions(item: FileSorterItem): Promise<void> {

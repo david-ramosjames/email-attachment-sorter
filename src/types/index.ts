@@ -74,6 +74,8 @@ export interface FileSorterItem {
   queue_tagged_slack_user_id: string | null;
   /** Display name(s) for tagged user(s), captured when the queue card was posted. */
   queue_tagged_slack_user_name: string | null;
+  /** Dropbox filename chosen before Approve (Rename modal / thread). */
+  queue_save_as_filename: string | null;
   reviewed_by_slack_user_id: string | null;
   reviewed_at: string | null;
   /** When the email arrived in Gmail (inbound payload), if provided */

@@ -7,10 +7,12 @@ import {
   handleChange,
   handleDoNotSort,
   handleNeedsAttention,
+  handleSaveQueueFilenameRename,
   handleSkipAttachment,
 } from '../services/fileSorterWorkflow.js';
 import {
   extractItemIdFromAction,
+  RENAME_FILE_MODAL_CALLBACK,
   slackActionType,
   slackService,
 } from '../services/slackService.js';
@@ -48,11 +50,108 @@ webhooksRouter.post('/webhooks/inbound-email', async (req, res) => {
 
 interface SlackInteractionPayload {
   type: string;
+  trigger_id?: string;
   user: { id: string; name?: string };
   channel?: { id: string };
   message?: { ts?: string; thread_ts?: string };
   actions?: Array<{ action_id: string; value?: string }>;
   response_url?: string;
+  view?: {
+    callback_id?: string;
+    private_metadata?: string;
+    state?: Record<string, unknown>;
+  };
+}
+
+async function runSlackBlockAction(
+  action: { action_id: string; value?: string },
+  userId: string,
+  channelId?: string,
+  message?: SlackInteractionPayload['message']
+): Promise<void> {
+  const itemId = extractItemIdFromAction(action.action_id, action.value);
+  if (!itemId) {
+    logger.warn('Slack interaction missing item id', { actionId: action.action_id });
+    return;
+  }
+
+  try {
+    const actionType = slackActionType(action.action_id);
+    const db = await import('../db/supabase.js');
+    const item = await db.getFileSorterItem(itemId);
+    const resolvedChannelId = channelId ?? item?.slack_queue_channel_id;
+    const resolvedMessageTs =
+      item?.slack_queue_message_ts ?? message?.thread_ts ?? message?.ts;
+    const slackThread =
+      resolvedChannelId && resolvedMessageTs
+        ? { channelId: resolvedChannelId, messageTs: resolvedMessageTs }
+        : undefined;
+
+    switch (actionType) {
+      case 'approve':
+        await handleApprove(itemId, userId, slackThread);
+        break;
+      case 'change':
+        await handleChange(itemId, userId, slackThread);
+        break;
+      case 'needs_attention':
+        await handleNeedsAttention(itemId, userId);
+        break;
+      case 'do_not_sort':
+        await handleDoNotSort(itemId, userId);
+        break;
+      case 'skip_file':
+        await handleSkipAttachment(itemId, userId);
+        break;
+      default:
+        logger.warn('Unknown Slack action', { actionId: action.action_id });
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    const stack = err instanceof Error ? err.stack : undefined;
+    const userMessage = formatApproveError(err);
+    const threadText = formatSortFailureThreadMessage(err);
+    logger.error('Slack action handler failed', {
+      itemId,
+      action: action.action_id,
+      err: message,
+      stack,
+      recoverable: isRecoverableApproveError(err),
+    });
+    const db = await import('../db/supabase.js');
+    const item = await db.getFileSorterItem(itemId);
+    if (item) {
+      const caseRow = item.suggested_case_number
+        ? await db.getCaseById(item.suggested_case_number)
+        : null;
+      if (!isRecoverableApproveError(err)) {
+        await db.updateFileSorterItem(itemId, { status: 'failed' });
+        await slackService.updateQueueMessage({ ...item, status: 'failed' }, caseRow, {
+          failureReason: userMessage,
+        });
+        await auditService.log(itemId, 'failed', { error: message, userMessage }, userId);
+      } else {
+        const refreshed = await db.getFileSorterItem(itemId);
+        if (refreshed) {
+          await slackService.updateQueueMessage(refreshed, caseRow);
+        }
+      }
+    }
+    const threadItem = item ?? (await db.getFileSorterItem(itemId));
+    if (threadItem?.slack_queue_channel_id && threadItem.slack_queue_message_ts) {
+      try {
+        await slackService.postQueueCardThreadNotice(threadItem, threadText);
+      } catch {
+        /* ignore */
+      }
+    } else if (channelId) {
+      try {
+        await slackService.postEphemeral(channelId, userId, `File Sorter error: ${userMessage}`);
+      } catch {
+        /* ignore */
+      }
+    }
+  }
 }
 
 webhooksRouter.post('/webhooks/slack/interactions', async (req, res) => {
@@ -83,6 +182,45 @@ webhooksRouter.post('/webhooks/slack/interactions', async (req, res) => {
     return;
   }
 
+  if (payload.type === 'view_submission' && payload.view?.callback_id === RENAME_FILE_MODAL_CALLBACK) {
+    let itemId: string | null = null;
+    try {
+      const meta = payload.view.private_metadata
+        ? (JSON.parse(payload.view.private_metadata) as { itemId?: string })
+        : {};
+      itemId = meta.itemId?.trim() ?? null;
+    } catch {
+      itemId = null;
+    }
+
+    if (!itemId) {
+      res.status(200).json({
+        response_action: 'errors',
+        errors: { dropbox_filename: 'Missing queue item — close and try again.' },
+      });
+      return;
+    }
+
+    const filename = slackService.extractRenameModalFilename(payload.view);
+    if (!filename) {
+      res.status(200).json({
+        response_action: 'errors',
+        errors: { dropbox_filename: 'Enter a valid filename (include an extension).' },
+      });
+      return;
+    }
+
+    res.status(200).json({ response_action: 'clear' });
+
+    void handleSaveQueueFilenameRename(itemId, filename, payload.user.id).catch((err) => {
+      logger.error('Rename modal save failed', {
+        itemId,
+        err: err instanceof Error ? err.message : String(err),
+      });
+    });
+    return;
+  }
+
   if (payload.type !== 'block_actions' || !payload.actions?.length) {
     res.status(200).json({});
     return;
@@ -92,11 +230,13 @@ webhooksRouter.post('/webhooks/slack/interactions', async (req, res) => {
   const itemId = extractItemIdFromAction(action.action_id, action.value);
   const userId = payload.user.id;
   const channelId = payload.channel?.id;
+  const actionType = slackActionType(action.action_id);
 
   logger.info('Slack interaction received', {
     actionId: action.action_id,
     itemId,
     userId,
+    actionType,
   });
 
   if (!itemId) {
@@ -105,90 +245,34 @@ webhooksRouter.post('/webhooks/slack/interactions', async (req, res) => {
     return;
   }
 
+  if (actionType === 'rename_file') {
+    const db = await import('../db/supabase.js');
+    const item = await db.getFileSorterItem(itemId);
+    if (!item) {
+      res.status(200).json({});
+      return;
+    }
+    if (!payload.trigger_id?.trim()) {
+      logger.warn('Rename button missing trigger_id', { itemId });
+      res.status(200).json({});
+      return;
+    }
+    try {
+      await slackService.openRenameFileModal(payload.trigger_id, item);
+    } catch (err) {
+      logger.error('Failed to open rename modal', {
+        itemId,
+        err: err instanceof Error ? err.message : String(err),
+      });
+    }
+    res.status(200).json({});
+    return;
+  }
+
   // Acknowledge immediately (Slack requires 200 within 3s)
   res.status(200).json({});
 
-  (async () => {
-    try {
-      const actionType = slackActionType(action.action_id);
-      const db = await import('../db/supabase.js');
-      const item = await db.getFileSorterItem(itemId);
-      const resolvedChannelId = channelId ?? item?.slack_queue_channel_id;
-      const resolvedMessageTs =
-        item?.slack_queue_message_ts ??
-        payload.message?.thread_ts ??
-        payload.message?.ts;
-      const slackThread =
-        resolvedChannelId && resolvedMessageTs
-          ? { channelId: resolvedChannelId, messageTs: resolvedMessageTs }
-          : undefined;
-
-      switch (actionType) {
-        case 'approve':
-          await handleApprove(itemId, userId, slackThread);
-          break;
-        case 'change':
-          await handleChange(itemId, userId, slackThread);
-          break;
-        case 'needs_attention':
-          await handleNeedsAttention(itemId, userId);
-          break;
-        case 'do_not_sort':
-          await handleDoNotSort(itemId, userId);
-          break;
-        case 'skip_file':
-          await handleSkipAttachment(itemId, userId);
-          break;
-        default:
-          logger.warn('Unknown Slack action', { actionId: action.action_id });
-      }
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      const stack = err instanceof Error ? err.stack : undefined;
-      const userMessage = formatApproveError(err);
-      const threadText = formatSortFailureThreadMessage(err);
-      logger.error('Slack action handler failed', {
-        itemId,
-        action: action.action_id,
-        err: message,
-        stack,
-        recoverable: isRecoverableApproveError(err),
-      });
-      const db = await import('../db/supabase.js');
-      const item = await db.getFileSorterItem(itemId);
-      if (item) {
-        const caseRow = item.suggested_case_number
-          ? await db.getCaseById(item.suggested_case_number)
-          : null;
-        if (!isRecoverableApproveError(err)) {
-          await db.updateFileSorterItem(itemId, { status: 'failed' });
-          await slackService.updateQueueMessage({ ...item, status: 'failed' }, caseRow, {
-            failureReason: userMessage,
-          });
-          await auditService.log(itemId, 'failed', { error: message, userMessage }, userId);
-        } else {
-          const refreshed = await db.getFileSorterItem(itemId);
-          if (refreshed) {
-            await slackService.updateQueueMessage(refreshed, caseRow);
-          }
-        }
-      }
-      const threadItem = item ?? (await db.getFileSorterItem(itemId));
-      if (threadItem?.slack_queue_channel_id && threadItem.slack_queue_message_ts) {
-        try {
-          await slackService.postQueueCardThreadNotice(threadItem, threadText);
-        } catch {
-          /* ignore */
-        }
-      } else if (channelId) {
-        try {
-          await slackService.postEphemeral(channelId, userId, `File Sorter error: ${userMessage}`);
-        } catch {
-          /* ignore */
-        }
-      }
-    }
-  })();
+  void runSlackBlockAction(action, userId, channelId, payload.message);
 });
 
 webhooksRouter.post('/webhooks/slack/events', async (req, res) => {

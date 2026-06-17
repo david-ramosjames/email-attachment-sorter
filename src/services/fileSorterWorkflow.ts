@@ -50,6 +50,8 @@ import { slackService } from './slackService.js';
 import { auditService } from './auditService.js';
 import { isExternalLinkItem } from '../utils/externalFileLinks.js';
 import { parseThreadReplies } from '../utils/threadParser.js';
+import type { FilenameRename } from '../utils/filenameRename.js';
+import { resolveDropboxFilenameForItem, sanitizeDropboxFilename } from '../utils/filenameRename.js';
 import type { SlackThreadContext } from './slackService.js';
 import { logger } from '../utils/logger.js';
 import type { Case, FileSorterItem } from '../types/index.js';
@@ -92,6 +94,7 @@ async function resolveBatchCase(
   threadFolderLabel: string | null;
   threadCaseOverrideText: string | null;
   threadFolderOverrideText: string | null;
+  filenameRenames: FilenameRename[];
 }> {
   const trigger = await getFileSorterItem(itemId);
   if (!trigger) throw new Error('Item not found');
@@ -111,6 +114,7 @@ async function resolveBatchCase(
   let threadFolderLabel: string | null = null;
   let threadCaseOverrideText: string | null = null;
   let threadFolderOverrideText: string | null = null;
+  let filenameRenames: FilenameRename[] = [];
   const threadCtx = slackThreadForItem(trigger, slackThread);
 
   if (threadCtx) {
@@ -135,12 +139,16 @@ async function resolveBatchCase(
       caseName: override.caseName ?? null,
       sortHints: override.sortHints?.length ?? 0,
       caseHints: override.caseHints?.length ?? 0,
+      renames: override.filenameRenames?.length ?? 0,
     });
     if (override.caseHints?.length) {
       threadCaseHints = override.caseHints;
     }
     if (override.sortHints?.length) {
       threadSortHints = override.sortHints;
+    }
+    if (override.filenameRenames?.length) {
+      filenameRenames = override.filenameRenames;
     }
     if (override.caseName) {
       threadCaseOverrideText = override.caseName.trim();
@@ -203,6 +211,7 @@ async function resolveBatchCase(
     threadFolderLabel,
     threadCaseOverrideText,
     threadFolderOverrideText,
+    filenameRenames,
   };
 }
 
@@ -494,8 +503,9 @@ async function completeAsAlreadyInDropbox(opts: {
   slackUserId: string;
   reviewedAt: string;
   source: 'pre_check' | 'upload_409';
+  dropboxFilename: string;
 }): Promise<{ saved: FileSorterItem; permalink: string }> {
-  const fullPath = dropboxFilePath(opts.folderPath, opts.batchItem.attachment_filename);
+  const fullPath = dropboxFilePath(opts.folderPath, opts.dropboxFilename);
   let permalink = fullPath;
   try {
     permalink = await generateDropboxPermalink(fullPath);
@@ -522,6 +532,7 @@ async function completeAsAlreadyInDropbox(opts: {
     {
       folderPath: opts.folderPath,
       filename: opts.batchItem.attachment_filename,
+      dropboxFilename: opts.dropboxFilename,
       source: opts.source,
     },
     opts.slackUserId
@@ -529,7 +540,7 @@ async function completeAsAlreadyInDropbox(opts: {
   await auditService.log(
     opts.batchItem.id,
     'approved',
-    { caseNumber: opts.caseNumber, folderPath: opts.folderPath, alreadyInDropbox: true },
+    { caseNumber: opts.caseNumber, folderPath: opts.folderPath, alreadyInDropbox: true, dropboxFilename: opts.dropboxFilename },
     opts.slackUserId
   );
   await auditService.log(
@@ -588,6 +599,7 @@ export async function handleApprove(
     threadFolderLabel,
     threadCaseOverrideText,
     threadFolderOverrideText,
+    filenameRenames,
   } = await resolveBatchCase(itemId, slackThread);
 
   logger.info('Approve folder resolution', {
@@ -624,12 +636,15 @@ export async function handleApprove(
       );
     }
 
-    const exists = await fileExistsInDropbox(folderPath, batchItem.attachment_filename);
+    const dropboxFilename = resolveDropboxFilenameForItem(batchItem, batch, filenameRenames);
+
+    const exists = await fileExistsInDropbox(folderPath, dropboxFilename);
     if (exists) {
       logger.info('Dropbox file already present — marking sorted', {
         itemId: batchItem.id,
         folderPath,
-        filename: batchItem.attachment_filename,
+        filename: dropboxFilename,
+        originalFilename: batchItem.attachment_filename,
       });
       const { permalink } = await completeAsAlreadyInDropbox({
         batchItem,
@@ -638,9 +653,10 @@ export async function handleApprove(
         slackUserId,
         reviewedAt,
         source: 'pre_check',
+        dropboxFilename,
       });
-      savedFiles.push({ filename: batchItem.attachment_filename, dropboxLink: permalink });
-      savedAttachmentFilenames.push(batchItem.attachment_filename);
+      savedFiles.push({ filename: dropboxFilename, dropboxLink: permalink });
+      savedAttachmentFilenames.push(dropboxFilename);
       const folderLabel = folderPath.split('/').filter(Boolean).pop();
       if (folderLabel) {
         confirmedFolderLabel = folderLabelFromDropboxPath(folderPath) ?? folderLabel;
@@ -675,13 +691,14 @@ export async function handleApprove(
 
     let upload: { path: string; id: string; folderCreated: boolean };
     try {
-      upload = await uploadFileToDropbox(folderPath, batchItem.attachment_filename, buffer);
+      upload = await uploadFileToDropbox(folderPath, dropboxFilename, buffer);
     } catch (err) {
       if (isDropboxFileConflict(err)) {
         logger.info('Dropbox upload conflict — file already present, marking sorted', {
           itemId: batchItem.id,
           folderPath,
-          filename: batchItem.attachment_filename,
+          filename: dropboxFilename,
+          originalFilename: batchItem.attachment_filename,
         });
         const { permalink } = await completeAsAlreadyInDropbox({
           batchItem,
@@ -690,9 +707,10 @@ export async function handleApprove(
           slackUserId,
           reviewedAt,
           source: 'upload_409',
+          dropboxFilename,
         });
-        savedFiles.push({ filename: batchItem.attachment_filename, dropboxLink: permalink });
-        savedAttachmentFilenames.push(batchItem.attachment_filename);
+        savedFiles.push({ filename: dropboxFilename, dropboxLink: permalink });
+        savedAttachmentFilenames.push(dropboxFilename);
         const folderLabel = folderPath.split('/').filter(Boolean).pop();
         if (folderLabel) {
           confirmedFolderLabel = folderLabelFromDropboxPath(folderPath) ?? folderLabel;
@@ -718,17 +736,22 @@ export async function handleApprove(
       reviewed_at: reviewedAt,
     });
 
-    await auditService.log(batchItem.id, 'approved', { caseNumber, folderPath }, slackUserId);
+    await auditService.log(batchItem.id, 'approved', {
+      caseNumber,
+      folderPath,
+      dropboxFilename,
+      originalFilename: batchItem.attachment_filename,
+    }, slackUserId);
 
     await auditService.log(
       batchItem.id,
       'saved_to_dropbox',
-      { path: upload.path, permalink },
+      { path: upload.path, permalink, dropboxFilename },
       slackUserId
     );
 
-    savedFiles.push({ filename: batchItem.attachment_filename, dropboxLink: permalink });
-    savedAttachmentFilenames.push(batchItem.attachment_filename);
+    savedFiles.push({ filename: dropboxFilename, dropboxLink: permalink });
+    savedAttachmentFilenames.push(dropboxFilename);
     crossPostFiles.push({ item: saved, dropboxLink: permalink, fileBuffer: buffer });
 
     const folderLabel = folderPath.split('/').filter(Boolean).pop();
@@ -886,6 +909,57 @@ export async function handleSkipAttachment(
     reviewedByUserId: slackUserId,
     disabled: allDone,
   });
+}
+
+export async function handleSaveQueueFilenameRename(
+  itemId: string,
+  dropboxFilename: string,
+  slackUserId: string
+): Promise<void> {
+  const item = await getFileSorterItem(itemId);
+  if (!item) throw new Error('Item not found');
+  if (['saved', 'ignored'].includes(item.status)) {
+    throw new Error('This attachment is already processed');
+  }
+
+  const safeName = sanitizeDropboxFilename(dropboxFilename);
+  if (!safeName) throw new Error('Enter a valid filename');
+
+  await updateFileSorterItem(itemId, {
+    queue_save_as_filename: safeName,
+    reviewed_by_slack_user_id: slackUserId,
+    reviewed_at: new Date().toISOString(),
+  });
+  await auditService.log(
+    itemId,
+    'thread_override',
+    {
+      rename: true,
+      originalFilename: item.attachment_filename,
+      dropboxFilename: safeName,
+    },
+    slackUserId
+  );
+
+  const batch = await getQueueBatchItems(item);
+  const primary = batch[0] ?? item;
+  const caseRow = primary.suggested_case_number
+    ? await getCaseById(primary.suggested_case_number)
+    : null;
+  await slackService.updateQueueMessage(primary, caseRow, {
+    reviewedByUserId: slackUserId,
+  });
+
+  if (item.slack_queue_channel_id && item.slack_queue_message_ts) {
+    const label =
+      safeName === item.attachment_filename
+        ? `*${safeName}*`
+        : `_${item.attachment_filename}_ → *${safeName}*`;
+    await slackService.postQueueCardThreadNotice(
+      item,
+      `:pencil2: *Rename saved* — will file as ${label} when you Approve.`
+    );
+  }
 }
 
 export async function handleDoNotSort(itemId: string, slackUserId: string): Promise<void> {

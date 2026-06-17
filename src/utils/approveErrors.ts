@@ -46,7 +46,7 @@ export function formatSortFailureThreadMessage(err: unknown): string {
     ':x: *Sort failed*',
     reason,
     '',
-    '_Press *Approve* on the card to retry after fixing, or use *Change Case/Folder* / thread overrides (`case:`, `folder:`)._',
+    '_Press *Approve* on the card to retry after fixing, or use *Change Case/Folder* / thread overrides (`case:`, `folder:`, `rename:`)._',
   ].join('\n');
 }
 

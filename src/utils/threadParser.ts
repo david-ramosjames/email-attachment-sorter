@@ -1,4 +1,7 @@
 import { normalizeFolderLabel } from '../constants/rjlFolders.js';
+import { parseFilenameRenameLine, threadRenameHasValues as renameListHasValues, type FilenameRename } from './filenameRename.js';
+
+export type { FilenameRename };
 
 /**
  * Parses reviewer thread replies for case/folder overrides and hints.
@@ -17,6 +20,8 @@ export interface ThreadOverride {
   sortHints?: string[];
   /** Filenames (or partial unique names) to exclude from Approve. */
   skipFilenames?: string[];
+  /** Rename attachments when filing to Dropbox. */
+  filenameRenames?: FilenameRename[];
 }
 
 /** Strip Slack code formatting (backticks) from a single line. */
@@ -43,6 +48,10 @@ export function threadOverrideHasValues(override: ThreadOverride): boolean {
 
 export function threadSkipHasValues(override: ThreadOverride): boolean {
   return (override.skipFilenames?.length ?? 0) > 0;
+}
+
+export function threadRenameHasValues(override: ThreadOverride): boolean {
+  return renameListHasValues(override.filenameRenames);
 }
 
 export function parseThreadReply(text: string): ThreadOverride {
@@ -95,6 +104,11 @@ export function parseThreadReply(text: string): ThreadOverride {
         .map((part) => part.trim())
         .filter(Boolean);
       result.skipFilenames = [...(result.skipFilenames ?? []), ...names];
+      continue;
+    }
+    const rename = parseFilenameRenameLine(trimmed);
+    if (rename) {
+      result.filenameRenames = [...(result.filenameRenames ?? []), rename];
     }
   }
 
@@ -117,6 +131,23 @@ export function parseThreadReplies(replies: string[]): ThreadOverride {
     if (parsed.skipFilenames?.length) {
       merged.skipFilenames = [...(merged.skipFilenames ?? []), ...parsed.skipFilenames];
     }
+    if (parsed.filenameRenames?.length) {
+      merged.filenameRenames = mergeFilenameRenames(
+        merged.filenameRenames ?? [],
+        parsed.filenameRenames
+      );
+    }
   }
   return merged;
+}
+
+function mergeFilenameRenames(
+  existing: FilenameRename[],
+  incoming: FilenameRename[]
+): FilenameRename[] {
+  const bySource = new Map<string, FilenameRename>();
+  for (const rename of [...existing, ...incoming]) {
+    bySource.set(rename.sourcePattern.toLowerCase(), rename);
+  }
+  return [...bySource.values()];
 }

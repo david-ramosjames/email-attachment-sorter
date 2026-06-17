@@ -34,6 +34,8 @@ const envSchema = z.object({
   DOCUMENT_ANALYSIS_CONFIDENCE_THRESHOLD: z.coerce.number().min(0).max(1).default(0.5),
   SLACK_BOT_TOKEN: z.string().min(1),
   SLACK_SIGNING_SECRET: z.string().min(1),
+  /** Workspace subdomain for Slack message links (e.g. ramosjames or ramosjames.slack.com). */
+  SLACK_TEAM_DOMAIN: optionalString,
   SLACK_FILE_SORTER_QUEUE_CHANNEL_ID: z.string().min(1),
   /** Comma-separated Slack user IDs — fallback when queue channel topic has no @mentions. */
   SLACK_QUEUE_MENTION_USER_IDS: optionalString,
