@@ -475,7 +475,9 @@ function threadOverrideHelpText(): string {
     'If correct, click *Approve*.\n\n' +
     'If wrong, reply before approving:\n\n' +
     'Case: 1277\n' +
-    'Folder: Medical\n\n' +
+    'Folder: Medical\n' +
+    'folder: scan.pdf | Pleadings\n' +
+    'folder: photo.jpg to Photos\n\n' +
     'Optional — teach the AI for next time:\n\n' +
     "Teach Case: Maria Garcia is Juan Garcia's daughter.\n" +
     'Teach Case: Cause number DC-24-12345 belongs to case 1277.\n\n' +
@@ -488,6 +490,10 @@ function threadOverrideHelpText(): string {
     'To rename before filing:\n\n' +
     'rename: scan.pdf to 1195 Medical Records 03-15-24.pdf\n' +
     'name: image001.png | 1195 ID front.jpg\n\n' +
+    'Different folders per attachment (same email):\n\n' +
+    'folder: MRI-report.pdf | Medical\n' +
+    'folder: accident-photo.jpg to Photos\n' +
+    '_(Use `folder: Medical` alone to set one folder for every file.)_\n\n' +
     'Or use the *Rename file* button on the card.\n' +
     'On multi-attachment emails, use *Skip file* for one attachment or *Skip all* for the rest.\n\n' +
     'Then click *Approve*.'

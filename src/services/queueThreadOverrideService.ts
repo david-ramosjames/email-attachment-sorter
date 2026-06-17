@@ -11,11 +11,13 @@ import {
   parseThreadReplies,
   parseThreadReply,
   threadOverrideHasValues,
+  threadPerFileFolderHasValues,
   threadRenameHasValues,
   threadSkipHasValues,
   type ThreadOverride,
 } from '../utils/threadParser.js';
 import { formatRenameConfirmationLines } from '../utils/filenameRename.js';
+import { formatPerFileFolderConfirmationLines } from '../utils/perFileFolder.js';
 import { matchAttachmentForSkip } from '../utils/skipAttachment.js';
 import { logger } from '../utils/logger.js';
 
@@ -45,7 +47,25 @@ export async function buildOverrideConfirmationText(
   }
 
   if (override.folderLabel) {
-    lines.push(`• Folder: *${override.folderLabel}*`);
+    lines.push(`• Folder (all attachments): *${override.folderLabel}*`);
+  }
+
+  const batchItems = await getPendingQueueItemsByThread(threadCtx.channelId, threadCtx.messageTs);
+
+  const perFileFolderLines = formatPerFileFolderConfirmationLines(
+    batchItems,
+    override.perFileFolders ?? []
+  );
+  for (const line of perFileFolderLines) {
+    lines.push(line);
+  }
+
+  const renameLines = formatRenameConfirmationLines(
+    batchItems,
+    override.filenameRenames ?? []
+  );
+  for (const line of renameLines) {
+    lines.push(line);
   }
 
   for (const hint of override.caseHints ?? []) {
@@ -53,14 +73,6 @@ export async function buildOverrideConfirmationText(
   }
   for (const hint of override.sortHints ?? []) {
     lines.push(`• Teach Folder noted: _${hint.slice(0, 120)}${hint.length > 120 ? '…' : ''}_`);
-  }
-
-  const renameLines = formatRenameConfirmationLines(
-    await getPendingQueueItemsByThread(threadCtx.channelId, threadCtx.messageTs),
-    override.filenameRenames ?? []
-  );
-  for (const line of renameLines) {
-    lines.push(line);
   }
 
   lines.push('\nClick *Approve* on the card above to file with these settings.');
@@ -133,7 +145,13 @@ export async function confirmThreadOverrides(
   }
 
   const override = parseThreadReplies(texts);
-  if (!threadOverrideHasValues(override) && !threadRenameHasValues(override)) return false;
+  if (
+    !threadOverrideHasValues(override) &&
+    !threadRenameHasValues(override) &&
+    !threadPerFileFolderHasValues(override)
+  ) {
+    return false;
+  }
 
   const text = await buildOverrideConfirmationText(override, suggestedCaseNumber, threadCtx);
   await slackService.postThreadReply(threadCtx.channelId, threadCtx.messageTs, text);
@@ -167,7 +185,14 @@ export async function handleQueueThreadOverrideEvent(
 
   const text = typeof event.text === 'string' ? event.text : slackService.extractSlackMessageText(event);
   const parsed = parseThreadReply(text);
-  if (!threadOverrideHasValues(parsed) && !threadSkipHasValues(parsed) && !threadRenameHasValues(parsed)) return false;
+  if (
+    !threadOverrideHasValues(parsed) &&
+    !threadSkipHasValues(parsed) &&
+    !threadRenameHasValues(parsed) &&
+    !threadPerFileFolderHasValues(parsed)
+  ) {
+    return false;
+  }
 
   logger.info('Queue thread override message received', {
     channelId,

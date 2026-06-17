@@ -511,10 +511,13 @@
         <h3>Override case or folder (this email only)</h3>
         <div class="code-block">case: 1277
 case: Juan Garcia
-folder: Medical</div>
+folder: Medical
+folder: MRI-report.pdf | Medical
+folder: accident-photo.jpg to Photos</div>
         <ul>
           <li><code>case:</code> — case number or client name (must match the case index)</li>
-          <li><code>folder:</code> — sets <strong>one folder for every attachment</strong> on that card (overrides each file's AI suggestion). Skip this if you want different folders per file.</li>
+          <li><code>folder: Medical</code> — one folder for <strong>every</strong> attachment on the card</li>
+          <li><code>folder: filename | Folder</code> or <code>folder: filename to Folder</code> — folder for <strong>one</strong> attachment (use the filename or a unique partial match)</li>
         </ul>
         <p>Click <strong>Change Case/Folder</strong> on the card for the same instructions in Slack.</p>
       </div>
@@ -629,12 +632,18 @@ Teach Folder: Photos from this sender belong in Photos.</div>
           <li>Do <strong>not</strong> reply with <code>folder: …</code> in the thread unless every file should go to the same place.</li>
           <li>Click <strong>Approve</strong> once — each file saves to its own suggested subfolder in Dropbox.</li>
         </ol>
-        <p><strong>If one file has the wrong folder</strong> but the others look correct: use <strong>Skip file</strong> on that attachment, <strong>Approve</strong> to file the rest, then file the skipped file manually (or re-forward it alone so it gets its own queue card). There is no per-file <code>folder:</code> thread command yet.</p>
-        <div class="code-block"># Good — AI suggested different folders; Approve files each one separately
+        <p><strong>If one file has the wrong folder</strong> but the others look correct, reply in the thread with a per-file override, then Approve:</p>
+        <div class="code-block">folder: MRI-report.pdf | Pleadings
+folder: accident-photo.jpg to Photos</div>
+        <p>Use the exact filename or a unique partial name (same rules as <code>skip:</code>). You can add one line per file that needs a different folder.</p>
+        <div class="code-block"># Default — AI suggests different folders; Approve files each one
 MRI-report.pdf → Medical
 accident-photo.jpg → Photos
 
-# Avoid when you want split folders — this overrides ALL attachments
+# Override one file only
+folder: MRI-report.pdf | Pleadings
+
+# Override every file to the same folder
 folder: Medical</div>
       </div>
     </section>
@@ -647,7 +656,7 @@ folder: Medical</div>
         <div class="answer">
           <p>Usually you don't need to do anything special. Each attachment is analyzed on its own, and the card shows a folder suggestion per file (e.g. <code>labs.pdf → Medical</code>, <code>id-front.jpg → Photos</code>). Click <strong>Approve</strong> once and each file goes to its own subfolder under the same case.</p>
           <p>Important: a thread line like <code>folder: Medical</code> overrides <strong>every</strong> attachment on that card. Leave that out when you want split folders.</p>
-          <p>If only one file has the wrong folder, use <strong>Skip file</strong> on it, <strong>Approve</strong> the rest, and handle the skipped file separately. See <a href="#multiple-attachments">Multiple attachments</a> for the full walkthrough.</p>
+          <p>If only one file has the wrong folder, reply in the thread before Approve, for example: <code>folder: labs.pdf | Pleadings</code> or <code>folder: photo.jpg to Photos</code>. Add one line per file you need to correct. See <a href="#multiple-attachments">Multiple attachments</a> for examples.</p>
         </div>
       </details>
 

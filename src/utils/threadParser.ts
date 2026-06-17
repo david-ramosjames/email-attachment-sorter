@@ -1,7 +1,12 @@
 import { normalizeFolderLabel } from '../constants/rjlFolders.js';
 import { parseFilenameRenameLine, threadRenameHasValues as renameListHasValues, type FilenameRename } from './filenameRename.js';
+import {
+  parsePerFileFolderLine,
+  threadPerFileFolderHasValues as perFileFolderListHasValues,
+  type PerFileFolderOverride,
+} from './perFileFolder.js';
 
-export type { FilenameRename };
+export type { FilenameRename, PerFileFolderOverride };
 
 /**
  * Parses reviewer thread replies for case/folder overrides and hints.
@@ -9,6 +14,8 @@ export type { FilenameRename };
  *   case: 1277
  *   case: First Last
  *   folder: Medical
+ *   folder: scan.pdf | Medical
+ *   folder: photo.jpg to Photos
  *   Teach Case: Maria Garcia is Juan Garcia's daughter
  *   Teach Folder: Law360 newsletters should not be sorted
  * Legacy: case hint:, sort hint:, hint:
@@ -22,6 +29,8 @@ export interface ThreadOverride {
   skipFilenames?: string[];
   /** Rename attachments when filing to Dropbox. */
   filenameRenames?: FilenameRename[];
+  /** Folder overrides for specific attachments in a multi-file email. */
+  perFileFolders?: PerFileFolderOverride[];
 }
 
 /** Strip Slack code formatting (backticks) from a single line. */
@@ -54,6 +63,10 @@ export function threadRenameHasValues(override: ThreadOverride): boolean {
   return renameListHasValues(override.filenameRenames);
 }
 
+export function threadPerFileFolderHasValues(override: ThreadOverride): boolean {
+  return perFileFolderListHasValues(override.perFileFolders);
+}
+
 export function parseThreadReply(text: string): ThreadOverride {
   const result: ThreadOverride = {};
   const lines = text.split('\n');
@@ -65,6 +78,11 @@ export function parseThreadReply(text: string): ThreadOverride {
     const caseMatch = trimmed.match(/^case:\s*(.+)$/i);
     if (caseMatch) {
       result.caseName = cleanThreadLine(caseMatch[1]!);
+      continue;
+    }
+    const perFileFolder = parsePerFileFolderLine(trimmed);
+    if (perFileFolder) {
+      result.perFileFolders = [...(result.perFileFolders ?? []), perFileFolder];
       continue;
     }
     const folderMatch = trimmed.match(/^folder:\s*(.+)$/i);
@@ -137,8 +155,25 @@ export function parseThreadReplies(replies: string[]): ThreadOverride {
         parsed.filenameRenames
       );
     }
+    if (parsed.perFileFolders?.length) {
+      merged.perFileFolders = mergePerFileFolders(
+        merged.perFileFolders ?? [],
+        parsed.perFileFolders
+      );
+    }
   }
   return merged;
+}
+
+function mergePerFileFolders(
+  existing: PerFileFolderOverride[],
+  incoming: PerFileFolderOverride[]
+): PerFileFolderOverride[] {
+  const bySource = new Map<string, PerFileFolderOverride>();
+  for (const entry of [...existing, ...incoming]) {
+    bySource.set(entry.sourcePattern.toLowerCase(), entry);
+  }
+  return [...bySource.values()];
 }
 
 function mergeFilenameRenames(

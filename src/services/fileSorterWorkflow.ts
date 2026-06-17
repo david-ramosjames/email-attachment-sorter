@@ -3,7 +3,6 @@ import {
   getCaseById,
   getCaseByName,
   getFileSorterItem,
-  getFoldersForCase,
   getQueueBatchItems,
   updateCaseDropboxFolderName,
   updateFileSorterItem,
@@ -43,7 +42,6 @@ import {
 import {
   parseCaseNumberFromDropboxFolder,
   RJL_STANDARD_SUBFOLDERS,
-  dropboxPathForCaseSubfolder,
   normalizeFolderLabel,
 } from '../constants/rjlFolders.js';
 import { slackService } from './slackService.js';
@@ -52,6 +50,12 @@ import { isExternalLinkItem } from '../utils/externalFileLinks.js';
 import { parseThreadReplies } from '../utils/threadParser.js';
 import type { FilenameRename } from '../utils/filenameRename.js';
 import { resolveDropboxFilenameForItem, sanitizeDropboxFilename } from '../utils/filenameRename.js';
+import {
+  folderPathForBatchItem,
+  resolveFolderPathForCase,
+  resolvePerFileFoldersForCase,
+  type ResolvedPerFileFolder,
+} from '../utils/perFileFolder.js';
 import type { SlackThreadContext } from './slackService.js';
 import { logger } from '../utils/logger.js';
 import type { Case, FileSorterItem } from '../types/index.js';
@@ -95,6 +99,7 @@ async function resolveBatchCase(
   threadCaseOverrideText: string | null;
   threadFolderOverrideText: string | null;
   filenameRenames: FilenameRename[];
+  perFileFolders: ResolvedPerFileFolder[];
 }> {
   const trigger = await getFileSorterItem(itemId);
   if (!trigger) throw new Error('Item not found');
@@ -115,6 +120,7 @@ async function resolveBatchCase(
   let threadCaseOverrideText: string | null = null;
   let threadFolderOverrideText: string | null = null;
   let filenameRenames: FilenameRename[] = [];
+  let perFileFolderOverrides: Array<{ sourcePattern: string; folderLabel: string }> = [];
   const threadCtx = slackThreadForItem(trigger, slackThread);
 
   if (threadCtx) {
@@ -140,6 +146,7 @@ async function resolveBatchCase(
       sortHints: override.sortHints?.length ?? 0,
       caseHints: override.caseHints?.length ?? 0,
       renames: override.filenameRenames?.length ?? 0,
+      perFileFolders: override.perFileFolders?.length ?? 0,
     });
     if (override.caseHints?.length) {
       threadCaseHints = override.caseHints;
@@ -149,6 +156,9 @@ async function resolveBatchCase(
     }
     if (override.filenameRenames?.length) {
       filenameRenames = override.filenameRenames;
+    }
+    if (override.perFileFolders?.length) {
+      perFileFolderOverrides = override.perFileFolders;
     }
     if (override.caseName) {
       threadCaseOverrideText = override.caseName.trim();
@@ -166,30 +176,16 @@ async function resolveBatchCase(
       usedFolderOverride = true;
       threadFolderOverrideText = override.folderLabel.trim();
       threadFolderLabel = normalizeFolderLabel(override.folderLabel);
-      const folders = await getFoldersForCase(caseNumber);
-      const folder = folders.find(
-        (f) => f.folder_label.toLowerCase() === threadFolderLabel!.toLowerCase()
+      threadFolderPath = await resolveFolderPathForCase(
+        caseNumber,
+        (await getCaseById(caseNumber))!,
+        threadFolderLabel
       );
-      if (folder) {
-        threadFolderPath = folder.dropbox_path;
-        await auditService.log(itemId, 'thread_override', {
-          folderLabel: threadFolderLabel,
-          dropboxPath: folder.dropbox_path,
-        });
-      } else {
-        const caseRowForFolder = await getCaseById(caseNumber);
-        if (caseRowForFolder) {
-          threadFolderPath = dropboxPathForCaseSubfolder(
-            caseRowForFolder.dropbox_root_path,
-            threadFolderLabel
-          );
-          await auditService.log(itemId, 'thread_override', {
-            folderLabel: threadFolderLabel,
-            dropboxPath: threadFolderPath,
-            note: 'constructed from case root — created on Approve if missing',
-          });
-        }
-      }
+      await auditService.log(itemId, 'thread_override', {
+        folderLabel: threadFolderLabel,
+        dropboxPath: threadFolderPath,
+        scope: 'all_attachments',
+      });
     }
   }
 
@@ -199,6 +195,20 @@ async function resolveBatchCase(
 
   const caseRow = await getCaseById(caseNumber);
   if (!caseRow) throw new Error('Case not found');
+
+  const perFileFolders = perFileFolderOverrides.length
+    ? await resolvePerFileFoldersForCase(caseNumber, caseRow, perFileFolderOverrides)
+    : [];
+
+  if (perFileFolders.length) {
+    await auditService.log(itemId, 'thread_override', {
+      perFileFolders: perFileFolders.map((f) => ({
+        sourcePattern: f.sourcePattern,
+        folderLabel: f.folderLabel,
+        dropboxPath: f.folderPath,
+      })),
+    });
+  }
 
   return {
     caseNumber,
@@ -212,16 +222,8 @@ async function resolveBatchCase(
     threadCaseOverrideText,
     threadFolderOverrideText,
     filenameRenames,
+    perFileFolders,
   };
-}
-
-function folderPathForBatchItem(
-  item: FileSorterItem,
-  caseRow: Case,
-  threadFolderPath: string | null
-): string | null {
-  if (threadFolderPath) return threadFolderPath;
-  return item.suggested_folder_path;
 }
 
 async function persistMatchingHintsFromApproval(opts: {
@@ -615,6 +617,7 @@ export async function handleApprove(
     threadCaseOverrideText,
     threadFolderOverrideText,
     filenameRenames,
+    perFileFolders,
   } = await resolveBatchCase(itemId, slackThread);
 
   logger.info('Approve folder resolution', {
@@ -623,6 +626,7 @@ export async function handleApprove(
     usedFolderOverride,
     threadFolderLabel,
     threadFolderPath: threadFolderPath ?? null,
+    perFileFolders: perFileFolders.length,
     aiSuggestedFolder: trigger.suggested_folder_path ?? null,
   });
 
@@ -644,7 +648,12 @@ export async function handleApprove(
       continue;
     }
 
-    const folderPath = folderPathForBatchItem(batchItem, caseRow, threadFolderPath);
+    const folderPath = folderPathForBatchItem(
+      batchItem,
+      batch,
+      perFileFolders,
+      threadFolderPath
+    );
     if (!folderPath) {
       throw new Error(
         `No folder for ${batchItem.attachment_filename} — use Change Case/Folder or a thread override`
