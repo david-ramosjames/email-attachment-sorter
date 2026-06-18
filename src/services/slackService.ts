@@ -29,6 +29,7 @@ import {
 } from '../utils/intakeDocumentSignals.js';
 import { parseUserMentionsFromSlackTopic } from '../utils/slackCaseParser.js';
 import { pickQueueMentionUserIdsForNewCard } from './queueMentionService.js';
+import { isCaseQueueChannel } from '../utils/queueChannel.js';
 import { getSlackUserDisplayName, getSlackUserDisplayNames } from './slackUserDirectory.js';
 import {
   getSlackChannelIdByNameMap,
@@ -650,6 +651,7 @@ function buildQueueBlocks(
     disabled?: boolean;
     failureReason?: string;
     emailReceivedAt?: string | null;
+    postedToCaseChannel?: boolean;
   }
 ): Record<string, unknown>[] {
   const batch = items.length > 1;
@@ -700,6 +702,22 @@ function buildQueueBlocks(
       type: 'header',
       text: { type: 'plain_text', text: headerText, emoji: true },
     },
+  ];
+
+  if (options?.postedToCaseChannel && caseRow) {
+    blocks.push({
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: slackSectionText(
+          `:inbox_tray: *Routed to this case channel* — review and click *Approve* when ready to file to Dropbox.\n` +
+            `Case: *${caseRow.slack_channel_name}* (${caseRow.case_number})`
+        ),
+      },
+    });
+  }
+
+  blocks.push(
     {
       type: 'section',
       fields: [
@@ -738,8 +756,8 @@ function buildQueueBlocks(
         type: 'mrkdwn',
         text: `*Reason:*\n${slackFieldText(item.ai_reason ?? '—')}`,
       },
-    },
-  ];
+    }
+  );
 
   if (externalLinksBlock) {
     blocks.push({
@@ -966,7 +984,7 @@ function buildQueueBlocks(
   return blocks;
 }
 
-async function resolveCaseSlackChannelId(caseRow: Case): Promise<string | null> {
+export async function resolveCaseSlackChannelId(caseRow: Case): Promise<string | null> {
   const mapping = await getSlackChannelForCase(caseRow.case_number);
   const storedId = mapping?.slack_channel_id ?? caseRow.slack_channel_id;
   const expectedName = caseRow.slack_channel_name.trim().toLowerCase();
@@ -1086,16 +1104,30 @@ export const slackService = {
   async postQueueBatch(
     items: FileSorterItem[],
     caseRow: Case | null,
-    options?: { emailReceivedAt?: string | null }
+    options?: {
+      emailReceivedAt?: string | null;
+      channelId?: string;
+      mentionUserIds?: string[];
+      postedToCaseChannel?: boolean;
+    }
   ): Promise<{ channel: string; ts: string; taggedUserIds: string[]; taggedUserNames: string[] }> {
-    const channel = getEnv().SLACK_FILE_SORTER_QUEUE_CHANNEL_ID;
-    await ensureBotInQueueChannel();
-    const mentionIds = await pickQueueMentionUserIdsForNewCard();
+    const channel = options?.channelId?.trim() || getEnv().SLACK_FILE_SORTER_QUEUE_CHANNEL_ID;
+    if (options?.postedToCaseChannel ?? isCaseQueueChannel(channel)) {
+      await ensureBotCanUploadToChannel(channel);
+    } else {
+      await ensureBotInQueueChannel();
+    }
+    const mentionIds = options?.mentionUserIds ?? (await pickQueueMentionUserIdsForNewCard());
     const nameMap = await getSlackUserDisplayNames(mentionIds);
     const taggedUserNames = mentionIds.map((id) => nameMap.get(id) ?? id);
-    const blocks = buildQueueBlocks(items, caseRow, options);
+    const postedToCaseChannel =
+      options?.postedToCaseChannel ?? isCaseQueueChannel(channel);
+    const blocks = buildQueueBlocks(items, caseRow, {
+      ...options,
+      postedToCaseChannel,
+    });
     const { blocks: blocksWithMention, mentionLine } = insertQueueMentionBlock(blocks, mentionIds);
-    if (!mentionLine) {
+    if (!mentionLine && !postedToCaseChannel) {
       logger.info('Queue card posted without @mentions — set SLACK_QUEUE_MENTION_USER_IDS or add <@U…> to queue channel topic');
     }
     const label =
@@ -1235,6 +1267,7 @@ export const slackService = {
       failureReason: options?.failureReason,
       disabled:
         options?.disabled ?? (['saved', 'ignored'].includes(status) || allDone),
+      postedToCaseChannel: isCaseQueueChannel(item.slack_queue_channel_id),
     });
     const mentionIds = taggedMentionIdsFromBatchItems(batchItems);
     const { blocks: blocksWithMention, mentionLine } = insertQueueMentionBlock(blocks, mentionIds);

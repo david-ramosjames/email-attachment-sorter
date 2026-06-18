@@ -7,6 +7,9 @@ export const CASE_ASSIGNMENT_THRESHOLD = 0.6;
 /** Below this case_confidence, queue item needs human review (case is what matters most). */
 export const CASE_REVIEW_THRESHOLD = 0.75;
 
+/** At or above this case_confidence, post the review card to the case Slack channel. */
+export const CASE_DIRECT_ROUTE_THRESHOLD = 0.95;
+
 /** @deprecated Use CASE_REVIEW_THRESHOLD — kept for imports that expect overall threshold. */
 export const CONFIDENCE_THRESHOLD = CASE_REVIEW_THRESHOLD;
 

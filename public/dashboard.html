@@ -355,7 +355,7 @@
 
   <main class="wrap">
     <h1 id="page-title">Activity</h1>
-    <p class="subtitle">Quick view of sorted vs still pending by email received date. Click a row’s Slack link to open the queue card.</p>
+    <p class="subtitle">Quick view of sorted vs still pending by email received date. High-confidence cases (95%+ case match) are routed to the case Slack channel for review. Click a row’s Slack link to open the card.</p>
 
     <form class="date-range" id="date-form">
       <label>
@@ -552,6 +552,7 @@
           ? `<a href="${item.slackUrl}" target="_blank" rel="noopener">Open in Slack</a>`
           : '—';
         const caseNum = item.suggestedCaseNumber ? `#${item.suggestedCaseNumber}` : '—';
+        const channelLabel = item.routedToCaseChannel ? 'Case channel' : 'Queue';
         return `
           <tr>
             <td>${formatDate(item.receivedAt)}</td>
@@ -563,6 +564,7 @@
             <td><span class="badge ${badgeClass(item)}">${escapeHtml(item.statusLabel)}</span></td>
             <td>${escapeHtml(item.caseConfidenceLabel)}</td>
             <td>${escapeHtml(caseNum)}</td>
+            <td>${escapeHtml(channelLabel)}</td>
             <td>${slack}</td>
           </tr>
         `;
@@ -578,6 +580,7 @@
               <th>Status</th>
               <th>Case confidence</th>
               <th>Suggested case</th>
+              <th>Review in</th>
               <th>Slack</th>
             </tr>
           </thead>

@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import path from 'path';
 import { getEnv } from '../config/env.js';
+import { isCaseQueueChannel } from '../utils/queueChannel.js';
 import {
   listFileSorterItemsByReceivedDates,
   listFileSorterItemsReceivedSinceHours,
@@ -30,6 +31,8 @@ export interface DashboardItemRow {
   slackUrl: string | null;
   taggedUserIds: string[];
   taggedUserLabel: string;
+  routedToCaseChannel: boolean;
+  reviewChannelLabel: string;
 }
 
 export interface DashboardUserMetric {
@@ -93,6 +96,7 @@ function formatCaseConfidence(confidence: number | null): string {
 function toDashboardRow(item: FileSorterItem): DashboardItemRow {
   const taggedUserIds = parseTaggedUserIds(item.queue_tagged_slack_user_id);
   const storedName = item.queue_tagged_slack_user_name?.trim();
+  const routedToCaseChannel = isCaseQueueChannel(item.slack_queue_channel_id);
   return {
     id: item.id,
     subject: item.subject?.trim() || '(no subject)',
@@ -107,6 +111,8 @@ function toDashboardRow(item: FileSorterItem): DashboardItemRow {
     slackUrl: slackQueueMessageUrl(item.slack_queue_channel_id, item.slack_queue_message_ts),
     taggedUserIds,
     taggedUserLabel: storedName || (taggedUserIds.length ? '' : '—'),
+    routedToCaseChannel,
+    reviewChannelLabel: routedToCaseChannel ? 'Case channel' : 'Queue',
   };
 }
 

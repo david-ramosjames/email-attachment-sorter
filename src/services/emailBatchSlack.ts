@@ -6,6 +6,11 @@ import {
 } from '../db/supabase.js';
 import type { Case, FileSorterItem } from '../types/index.js';
 import { auditService } from './auditService.js';
+import {
+  pickCaseChannelMentionUserIds,
+  resolveQueuePostTarget,
+} from './caseQueueRoutingService.js';
+import { isCaseQueueChannel } from '../utils/queueChannel.js';
 import { pickQueueMentionUserIdsForNewCard } from './queueMentionService.js';
 import { getSlackUserDisplayNames } from './slackUserDirectory.js';
 import { slackService } from './slackService.js';
@@ -126,7 +131,9 @@ async function postEmailItemsToSlackInner(
     const primary = pickPrimaryItem(batchItems);
 
     if (!parseTaggedUserIds(anchor.queue_tagged_slack_user_id).length) {
-      const mentionIds = await pickQueueMentionUserIdsForNewCard();
+      const mentionIds = isCaseQueueChannel(anchor.slack_queue_channel_id) && caseRow
+        ? await pickCaseChannelMentionUserIds(caseRow, anchor.slack_queue_channel_id!)
+        : await pickQueueMentionUserIdsForNewCard();
       if (mentionIds.length) {
         const nameMap = await getSlackUserDisplayNames(mentionIds);
         const taggedStored = taggedUserIdsToStored(mentionIds);
@@ -168,8 +175,12 @@ async function postEmailItemsToSlackInner(
     return;
   }
 
+  const postTarget = await resolveQueuePostTarget(allItems, caseRow);
   const slackMsg = await slackService.postQueueBatch(allItems, caseRow, {
     emailReceivedAt: payload.receivedAt,
+    channelId: postTarget.channelId,
+    mentionUserIds: postTarget.mentionIds,
+    postedToCaseChannel: postTarget.routedToCaseChannel,
   });
   const taggedStored = taggedUserIdsToStored(slackMsg.taggedUserIds);
   const taggedNamesStored = taggedUserNamesToStored(slackMsg.taggedUserNames);
@@ -187,6 +198,7 @@ async function postEmailItemsToSlackInner(
       batchSize: allItems.length,
       taggedUserIds: slackMsg.taggedUserIds,
       taggedUserNames: slackMsg.taggedUserNames,
+      routedToCaseChannel: postTarget.routedToCaseChannel,
     });
   }
 
@@ -194,5 +206,7 @@ async function postEmailItemsToSlackInner(
     gmailMessageId,
     attachmentCount: allItems.length,
     filenames: allItems.map((i) => i.attachment_filename),
+    routedToCaseChannel: postTarget.routedToCaseChannel,
+    channelId: slackMsg.channel,
   });
 }
