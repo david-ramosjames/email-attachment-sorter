@@ -10,9 +10,9 @@ import {
   pickCaseChannelMentionUserIds,
   resolveQueuePostTarget,
 } from './caseQueueRoutingService.js';
+import { resolveMentionDisplayNames } from '../utils/mentionDisplay.js';
 import { isCaseQueueChannel } from '../utils/queueChannel.js';
 import { pickQueueMentionUserIdsForNewCard } from './queueMentionService.js';
-import { getSlackUserDisplayNames } from './slackUserDirectory.js';
 import { slackService } from './slackService.js';
 import type { InboundEmailPayload } from '../types/index.js';
 import { logger } from '../utils/logger.js';
@@ -135,7 +135,7 @@ async function postEmailItemsToSlackInner(
         ? await pickCaseChannelMentionUserIds(caseRow, anchor.slack_queue_channel_id!)
         : await pickQueueMentionUserIdsForNewCard();
       if (mentionIds.length) {
-        const nameMap = await getSlackUserDisplayNames(mentionIds);
+        const nameMap = await resolveMentionDisplayNames(mentionIds, caseRow);
         const taggedStored = taggedUserIdsToStored(mentionIds);
         const taggedNamesStored = taggedUserNamesToStored(
           mentionIds.map((id) => nameMap.get(id) ?? id)

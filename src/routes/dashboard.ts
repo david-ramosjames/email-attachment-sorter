@@ -6,9 +6,15 @@ import {
   listFileSorterItemsByReceivedDates,
   listFileSorterItemsReceivedSinceHours,
   receivedDateKey,
+  getCaseById,
 } from '../db/supabase.js';
 import { getSlackUserDisplayNames } from '../services/slackUserDirectory.js';
-import type { FileSorterItem, FileSorterItemStatus } from '../types/index.js';
+import type { Case, FileSorterItem, FileSorterItemStatus } from '../types/index.js';
+import {
+  caseStaffDisplayName,
+  isSlackUserId,
+  storedTaggedNameMap,
+} from '../utils/mentionDisplay.js';
 import { slackQueueMessageUrl } from '../utils/slackMessageUrl.js';
 import { logger } from '../utils/logger.js';
 
@@ -149,28 +155,57 @@ export function buildUserMetrics(
 }
 
 async function resolveTaggedUserLabels(
-  rows: DashboardItemRow[]
+  rows: DashboardItemRow[],
+  items: FileSorterItem[]
 ): Promise<Map<string, string>> {
+  const itemById = new Map(items.map((item) => [item.id, item]));
+  const caseCache = new Map<string, Case | null>();
   const displayNames = new Map<string, string>();
   const idsNeedingLookup = new Set<string>();
 
   for (const row of rows) {
-    if (row.taggedUserLabel && row.taggedUserLabel !== '—') {
-      if (row.taggedUserIds.length === 1) {
-        displayNames.set(row.taggedUserIds[0]!, row.taggedUserLabel);
-      }
+    const item = itemById.get(row.id);
+    const storedMap = storedTaggedNameMap(row.taggedUserIds, item?.queue_tagged_slack_user_name);
+    if (storedMap) {
+      for (const [id, name] of storedMap) displayNames.set(id, name);
       continue;
     }
-    for (const id of row.taggedUserIds) idsNeedingLookup.add(id);
+
+    for (const id of row.taggedUserIds) {
+      const stored = row.taggedUserLabel?.trim();
+      if (row.taggedUserIds.length === 1 && stored && stored !== '—' && !isSlackUserId(stored)) {
+        displayNames.set(id, stored);
+        continue;
+      }
+      idsNeedingLookup.add(id);
+    }
   }
 
   if (idsNeedingLookup.size > 0) {
-    const lookedUp = await getSlackUserDisplayNames([...idsNeedingLookup]);
-    for (const [id, name] of lookedUp) displayNames.set(id, name);
+    const fromApi = await getSlackUserDisplayNames([...idsNeedingLookup]);
+    for (const row of rows) {
+      const item = itemById.get(row.id);
+      let caseRow: Case | null = null;
+      const caseNumber = item?.suggested_case_number;
+      if (caseNumber) {
+        if (!caseCache.has(caseNumber)) {
+          caseCache.set(caseNumber, await getCaseById(caseNumber));
+        }
+        caseRow = caseCache.get(caseNumber) ?? null;
+      }
+
+      for (const id of row.taggedUserIds) {
+        if (!idsNeedingLookup.has(id) || displayNames.has(id)) continue;
+        const apiName = fromApi.get(id) ?? id;
+        const name = isSlackUserId(apiName)
+          ? caseStaffDisplayName(caseRow, id) ?? apiName
+          : apiName;
+        displayNames.set(id, name);
+      }
+    }
   }
 
   for (const row of rows) {
-    if (row.taggedUserLabel && row.taggedUserLabel !== '—') continue;
     row.taggedUserLabel = row.taggedUserIds.length
       ? row.taggedUserIds.map((id) => displayNames.get(id) ?? id).join(', ')
       : '—';
@@ -186,7 +221,7 @@ export async function buildDashboardSummary(
   items: FileSorterItem[]
 ): Promise<DashboardSummary> {
   const rows = items.map(toDashboardRow);
-  const displayNames = await resolveTaggedUserLabels(rows);
+  const displayNames = await resolveTaggedUserLabels(rows, items);
   const userMetrics = buildUserMetrics(rows, displayNames);
 
   return {

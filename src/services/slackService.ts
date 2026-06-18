@@ -29,6 +29,7 @@ import {
 } from '../utils/intakeDocumentSignals.js';
 import { parseUserMentionsFromSlackTopic } from '../utils/slackCaseParser.js';
 import { pickQueueMentionUserIdsForNewCard } from './queueMentionService.js';
+import { resolveMentionDisplayNames } from '../utils/mentionDisplay.js';
 import { isCaseQueueChannel } from '../utils/queueChannel.js';
 import { getSlackUserDisplayName, getSlackUserDisplayNames } from './slackUserDirectory.js';
 import {
@@ -572,6 +573,13 @@ function formatConfidenceScores(item: FileSorterItem): string {
       `Overall: ${formatPct(item.ai_confidence)}`,
     ].join('\n');
   }
+  if (!item.suggested_case_number) {
+    return [
+      'Case: N/A (no matching case)',
+      `Folder: ${formatPct(item.ai_folder_confidence)}`,
+      `Overall: ${formatPct(item.ai_confidence)}`,
+    ].join('\n');
+  }
   return [
     `Case: ${formatPct(item.ai_case_confidence)}`,
     `Folder: ${formatPct(item.ai_folder_confidence)}`,
@@ -589,8 +597,12 @@ function formatConfidenceRange(values: Array<number | null | undefined>): string
 }
 
 function formatConfidenceScoresBatch(items: FileSorterItem[]): string {
+  const withCase = items.filter((i) => i.suggested_case_number);
+  const caseLine = withCase.length
+    ? `Case: ${formatConfidenceRange(withCase.map((i) => i.ai_case_confidence))}`
+    : 'Case: N/A (no matching case)';
   return [
-    `Case: ${formatConfidenceRange(items.map((i) => i.ai_case_confidence))}`,
+    caseLine,
     `Folder: ${formatConfidenceRange(items.map((i) => i.ai_folder_confidence))}`,
     `Overall: ${formatConfidenceRange(items.map((i) => i.ai_confidence))}`,
   ].join('\n');
@@ -1118,10 +1130,18 @@ export const slackService = {
       await ensureBotInQueueChannel();
     }
     const mentionIds = options?.mentionUserIds ?? (await pickQueueMentionUserIdsForNewCard());
-    const nameMap = await getSlackUserDisplayNames(mentionIds);
-    const taggedUserNames = mentionIds.map((id) => nameMap.get(id) ?? id);
     const postedToCaseChannel =
       options?.postedToCaseChannel ?? isCaseQueueChannel(channel);
+    let topicText: string | null = null;
+    if (postedToCaseChannel) {
+      try {
+        topicText = (await getConversationInfo(channel))?.topic ?? null;
+      } catch {
+        topicText = null;
+      }
+    }
+    const nameMap = await resolveMentionDisplayNames(mentionIds, caseRow, topicText);
+    const taggedUserNames = mentionIds.map((id) => nameMap.get(id) ?? id);
     const blocks = buildQueueBlocks(items, caseRow, {
       ...options,
       postedToCaseChannel,
@@ -1259,6 +1279,7 @@ export const slackService = {
       options?.reviewedByUserId ?? item.reviewed_by_slack_user_id ?? undefined;
     const status = aggregateBatchStatus(batchItems);
     const allDone = batchItems.every((i) => ['saved', 'ignored'].includes(i.status));
+    const postedToCaseChannel = isCaseQueueChannel(item.slack_queue_channel_id);
     let blocks = buildQueueBlocks(batchItems, caseRow, {
       statusOverride: status,
       reviewedByUserId,
@@ -1267,9 +1288,13 @@ export const slackService = {
       failureReason: options?.failureReason,
       disabled:
         options?.disabled ?? (['saved', 'ignored'].includes(status) || allDone),
-      postedToCaseChannel: isCaseQueueChannel(item.slack_queue_channel_id),
+      postedToCaseChannel,
     });
-    const mentionIds = taggedMentionIdsFromBatchItems(batchItems);
+    const skipMentionsAfterApprove =
+      postedToCaseChannel && ['saved', 'ignored'].includes(status);
+    const mentionIds = skipMentionsAfterApprove
+      ? []
+      : taggedMentionIdsFromBatchItems(batchItems);
     const { blocks: blocksWithMention, mentionLine } = insertQueueMentionBlock(blocks, mentionIds);
     blocks = blocksWithMention;
     const label =

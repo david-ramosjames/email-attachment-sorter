@@ -94,10 +94,14 @@ Choose suggested_case_number ONLY as an exact case_number string from the index 
 
 ## case_confidence
 
+Confidence in **which case to file to** — NOT how sure you are about the PI client's name alone.
+
 * 0.95–1.00: PI client first AND last name in attachment; **both** match case index client label exactly; no alternate case with same first name
 * 0.80–0.94: client clearly identified; minor ambiguity only
 * 0.60–0.79: likely client but meaningful uncertainty — still assign only if you would defend this to a paralegal
 * below 0.60: suggested_case_number MUST be null
+
+**When suggested_case_number is null** (client not in index, name mismatch, or unknown client): case_confidence MUST be below 0.60 — even if you are certain who the PI client is or that no index row exists.
 
 If you cannot name the PI client: client_name = null, suggested_case_number = null.
 

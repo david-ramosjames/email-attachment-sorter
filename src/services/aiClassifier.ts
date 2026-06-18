@@ -350,6 +350,8 @@ export async function classifyDocument(ctx: MatchContext): Promise<Classificatio
         reason += ` (${staff.reasons.join('; ')})`;
       }
     }
+  } else if (caseConfidence >= CASE_ASSIGNMENT_THRESHOLD) {
+    caseConfidence = CASE_ASSIGNMENT_THRESHOLD - 0.01;
   }
 
   logger.info('AI folder classification request', {

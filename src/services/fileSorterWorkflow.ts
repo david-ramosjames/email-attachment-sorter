@@ -26,6 +26,7 @@ import {
   formatCauseNumberCaseHint,
 } from '../utils/causeNumbers.js';
 import { folderLabelFromDropboxPath } from '../utils/dropboxFolderLabel.js';
+import { isCaseQueueChannel } from '../utils/queueChannel.js';
 import {
   autoLearnContextFromApproval,
   buildPatternSortHints,
@@ -796,21 +797,31 @@ export async function handleApprove(
   }
 
   if (crossPostFiles.length) {
-    const crossPosted = await slackService.postCaseChannelConfirmation({
-      caseRow,
-      trigger,
-      files: crossPostFiles,
-      approvedByUserId: slackUserId,
-    });
+    const approvedInCaseChannel = isCaseQueueChannel(trigger.slack_queue_channel_id);
+    if (approvedInCaseChannel) {
+      logger.info('Skipping case channel cross-post — queue card was approved in case channel', {
+        itemId: trigger.id,
+        caseNumber: caseRow.case_number,
+        channelId: trigger.slack_queue_channel_id,
+        savedCount: crossPostFiles.length,
+      });
+    } else {
+      const crossPosted = await slackService.postCaseChannelConfirmation({
+        caseRow,
+        trigger,
+        files: crossPostFiles,
+        approvedByUserId: slackUserId,
+      });
 
-    if (!crossPosted) {
-      for (const f of crossPostFiles) {
-        await auditService.log(
-          f.item.id,
-          'case_channel_cross_post_failed',
-          { caseNumber: caseRow.case_number, slackChannelName: caseRow.slack_channel_name },
-          slackUserId
-        );
+      if (!crossPosted) {
+        for (const f of crossPostFiles) {
+          await auditService.log(
+            f.item.id,
+            'case_channel_cross_post_failed',
+            { caseNumber: caseRow.case_number, slackChannelName: caseRow.slack_channel_name },
+            slackUserId
+          );
+        }
       }
     }
   }
