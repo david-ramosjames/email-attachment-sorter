@@ -72,6 +72,14 @@ export function parseTaggedUserIds(raw: string | null | undefined): string[] {
     .filter(Boolean);
 }
 
+/** Dashboard assignee: paralegal only on case-channel cards; all tagged users on shared queue. */
+export function dashboardAssigneeUserIds(item: FileSorterItem): string[] {
+  const ids = parseTaggedUserIds(item.queue_tagged_slack_user_id);
+  if (!isCaseQueueChannel(item.slack_queue_channel_id)) return ids;
+  if (ids.length <= 1) return ids;
+  return [ids[ids.length - 1]!];
+}
+
 function statusLabel(status: FileSorterItemStatus): string {
   const map: Record<FileSorterItemStatus, string> = {
     saved: 'Sorted',
@@ -100,8 +108,7 @@ function formatCaseConfidence(confidence: number | null): string {
 }
 
 function toDashboardRow(item: FileSorterItem): DashboardItemRow {
-  const taggedUserIds = parseTaggedUserIds(item.queue_tagged_slack_user_id);
-  const storedName = item.queue_tagged_slack_user_name?.trim();
+  const taggedUserIds = dashboardAssigneeUserIds(item);
   const routedToCaseChannel = isCaseQueueChannel(item.slack_queue_channel_id);
   return {
     id: item.id,
@@ -116,7 +123,7 @@ function toDashboardRow(item: FileSorterItem): DashboardItemRow {
     receivedAt: itemReceivedAt(item),
     slackUrl: slackQueueMessageUrl(item.slack_queue_channel_id, item.slack_queue_message_ts),
     taggedUserIds,
-    taggedUserLabel: storedName || (taggedUserIds.length ? '' : '—'),
+    taggedUserLabel: taggedUserIds.length ? '' : '—',
     routedToCaseChannel,
     reviewChannelLabel: routedToCaseChannel ? 'Case channel' : 'Queue',
   };
@@ -165,13 +172,16 @@ async function resolveTaggedUserLabels(
 
   for (const row of rows) {
     const item = itemById.get(row.id);
-    const storedMap = storedTaggedNameMap(row.taggedUserIds, item?.queue_tagged_slack_user_name);
-    if (storedMap) {
-      for (const [id, name] of storedMap) displayNames.set(id, name);
-      continue;
-    }
+    const allTaggedIds = parseTaggedUserIds(item?.queue_tagged_slack_user_id);
+    const fullNameMap = storedTaggedNameMap(allTaggedIds, item?.queue_tagged_slack_user_name);
 
     for (const id of row.taggedUserIds) {
+      const fromStored = fullNameMap?.get(id);
+      if (fromStored) {
+        displayNames.set(id, fromStored);
+        continue;
+      }
+
       const stored = row.taggedUserLabel?.trim();
       if (row.taggedUserIds.length === 1 && stored && stored !== '—' && !isSlackUserId(stored)) {
         displayNames.set(id, stored);

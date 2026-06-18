@@ -27,8 +27,8 @@ import {
   queueDocumentTypeLabel,
   queueFolderLabel,
 } from '../utils/intakeDocumentSignals.js';
-import { parseUserMentionsFromSlackTopic } from '../utils/slackCaseParser.js';
 import { pickQueueMentionUserIdsForNewCard } from './queueMentionService.js';
+import { caseChannelStaffMentionIds } from './caseQueueRoutingService.js';
 import { resolveMentionDisplayNames } from '../utils/mentionDisplay.js';
 import { isCaseQueueChannel } from '../utils/queueChannel.js';
 import { getSlackUserDisplayName, getSlackUserDisplayNames } from './slackUserDirectory.js';
@@ -1438,25 +1438,24 @@ export const slackService = {
     const batch = opts.files.length > 1;
     const trigger = opts.trigger;
 
-    let topicMentionIds: string[] = [];
-    let uploadAccess: BotChannelUploadAccess | null = null;
+    let topicText: string | null = null;
     try {
-      uploadAccess = await ensureBotCanUploadToChannel(channelId);
+      const convo = await getConversationInfo(channelId);
+      topicText = convo?.topic ?? null;
     } catch (err) {
-      logger.warn('Could not join case channel before cross-post', {
+      logger.warn('Could not load channel topic for staff mentions', {
         channelId,
         caseNumber: opts.caseRow.case_number,
         err: String(err),
       });
     }
+    const topicMentionIds = caseChannelStaffMentionIds(opts.caseRow, topicText);
 
+    let uploadAccess: BotChannelUploadAccess | null = null;
     try {
-      const convo = await getConversationInfo(channelId);
-      if (convo?.topic) {
-        topicMentionIds = parseUserMentionsFromSlackTopic(convo.topic);
-      }
+      uploadAccess = await ensureBotCanUploadToChannel(channelId);
     } catch (err) {
-      logger.warn('Could not load channel topic for staff mentions', {
+      logger.warn('Could not join case channel before cross-post', {
         channelId,
         caseNumber: opts.caseRow.case_number,
         err: String(err),

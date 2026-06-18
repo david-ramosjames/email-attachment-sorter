@@ -1,6 +1,6 @@
 import { CASE_DIRECT_ROUTE_THRESHOLD } from '../constants/classification.js';
 import type { Case, FileSorterItem } from '../types/index.js';
-import { parseUserMentionsFromSlackTopic } from '../utils/slackCaseParser.js';
+import { parseStaffFromTopic } from '../utils/slackCaseParser.js';
 import { queueChannelId } from '../utils/queueChannel.js';
 import { logger } from '../utils/logger.js';
 import { ensureBotCanUploadToChannel, ensureBotInQueueChannel, getConversationInfo } from './slackChannels.js';
@@ -11,6 +11,23 @@ export interface QueuePostTarget {
   channelId: string;
   mentionIds: string[];
   routedToCaseChannel: boolean;
+}
+
+/** Attorney first, then paralegal (deduped). */
+export function caseChannelStaffMentionIds(
+  caseRow: Case,
+  topicText?: string | null
+): string[] {
+  const staff = topicText?.trim() ? parseStaffFromTopic(topicText) : null;
+  const attorneyId =
+    staff?.attorney_slack_user_id?.trim() ?? caseRow.attorney_slack_user_id?.trim() ?? null;
+  const paralegalId =
+    staff?.paralegal_slack_user_id?.trim() ?? caseRow.paralegal_slack_user_id?.trim() ?? null;
+
+  const ids: string[] = [];
+  if (attorneyId) ids.push(attorneyId);
+  if (paralegalId && paralegalId !== attorneyId) ids.push(paralegalId);
+  return ids;
 }
 
 function pickPrimaryByCaseConfidence(items: FileSorterItem[]): FileSorterItem {
@@ -38,24 +55,22 @@ export function shouldRouteBatchToCaseChannel(
   );
 }
 
-/** @mention staff from the case channel topic (attorney/paralegal), with DB fallback. */
+/** @mention attorney then paralegal on case-channel queue cards. */
 export async function pickCaseChannelMentionUserIds(
   caseRow: Case,
   channelId: string
 ): Promise<string[]> {
   try {
     const convo = await getConversationInfo(channelId);
-    if (convo?.topic) {
-      const fromTopic = parseUserMentionsFromSlackTopic(convo.topic);
-      if (fromTopic.length) {
-        logger.info('Case channel mention pool from topic', {
-          caseNumber: caseRow.case_number,
-          channelId,
-          count: fromTopic.length,
-          userIds: fromTopic,
-        });
-        return fromTopic;
-      }
+    const ids = caseChannelStaffMentionIds(caseRow, convo?.topic);
+    if (ids.length) {
+      logger.info('Case channel mention pool', {
+        caseNumber: caseRow.case_number,
+        channelId,
+        count: ids.length,
+        userIds: ids,
+      });
+      return ids;
     }
   } catch (err) {
     logger.warn('Could not load case channel topic for staff mentions', {
@@ -65,17 +80,7 @@ export async function pickCaseChannelMentionUserIds(
     });
   }
 
-  const ids: string[] = [];
-  if (caseRow.attorney_slack_user_id?.trim()) {
-    ids.push(caseRow.attorney_slack_user_id.trim());
-  }
-  if (
-    caseRow.paralegal_slack_user_id?.trim() &&
-    caseRow.paralegal_slack_user_id !== caseRow.attorney_slack_user_id
-  ) {
-    ids.push(caseRow.paralegal_slack_user_id.trim());
-  }
-
+  const ids = caseChannelStaffMentionIds(caseRow);
   if (ids.length) {
     logger.info('Case channel mention pool from stored staff', {
       caseNumber: caseRow.case_number,
