@@ -164,6 +164,7 @@
 
     .user-metric-row.completed strong { color: var(--green); }
     .user-metric-row.pending strong { color: var(--amber); }
+    .user-metric-row.skipped strong { color: var(--gray); }
 
     .tagged-filter {
       display: flex;
@@ -504,6 +505,7 @@
           <div class="user-metric-row"><span>Tagged</span><strong>${m.tagged}</strong></div>
           <div class="user-metric-row completed"><span>Completed</span><strong>${m.completed}</strong></div>
           <div class="user-metric-row pending"><span>Pending</span><strong>${m.pending}</strong></div>
+          <div class="user-metric-row skipped"><span>Do not sort</span><strong>${m.skipped ?? 0}</strong></div>
         </div>
       `
         )
