@@ -15,6 +15,10 @@
       --text-muted: #4a5568;
       --border: rgba(11, 21, 38, 0.1);
       --green: #0f766e;
+      --green-light: #ecfdf5;
+      --green-border: #6ee7b7;
+      --gold: #b45309;
+      --gold-light: #fffbeb;
       --amber: #b45309;
       --gray: #64748b;
       --radius: 14px;
@@ -109,6 +113,26 @@
     .stat.sorted .stat-value { color: var(--green); }
     .stat.pending .stat-value { color: var(--amber); }
     .stat.skipped .stat-value { color: var(--gray); }
+    .stat.celebrate {
+      background: linear-gradient(135deg, var(--green-light) 0%, #fff 100%);
+      border-color: var(--green-border);
+    }
+    .stat.celebrate .stat-value { color: var(--green); }
+
+    .assignee-banner {
+      margin: -0.35rem 0 0.85rem;
+      padding: 0.65rem 1rem;
+      border-radius: var(--radius);
+      font-size: 0.92rem;
+      font-weight: 600;
+      color: var(--green);
+      background: linear-gradient(135deg, var(--green-light) 0%, #fff 70%);
+      border: 1px solid var(--green-border);
+    }
+
+    .assignee-banner.team-inbox-zero::before {
+      content: "✓ ";
+    }
 
     .section-title {
       font-size: 1rem;
@@ -143,10 +167,70 @@
       box-shadow: 0 0 0 2px rgba(11, 21, 38, 0.08);
     }
 
+    .user-metric-card.caught-up {
+      background: linear-gradient(160deg, var(--green-light) 0%, #fff 55%);
+      border-color: var(--green-border);
+      box-shadow: 0 2px 12px rgba(15, 118, 110, 0.1);
+    }
+
+    .user-metric-card.caught-up:hover {
+      border-color: var(--green);
+      box-shadow: 0 4px 16px rgba(15, 118, 110, 0.14);
+    }
+
+    .user-metric-card.caught-up.active {
+      border-color: var(--green);
+      box-shadow: 0 0 0 2px rgba(15, 118, 110, 0.15);
+    }
+
+    .user-metric-card.top-filer {
+      position: relative;
+    }
+
+    .user-metric-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 0.5rem;
+      margin-bottom: 0.55rem;
+    }
+
     .user-metric-name {
       font-weight: 700;
-      margin-bottom: 0.55rem;
       font-size: 0.95rem;
+      line-height: 1.3;
+    }
+
+    .user-metric-badges {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.3rem;
+      justify-content: flex-end;
+      flex-shrink: 0;
+    }
+
+    .user-metric-badge {
+      font-size: 0.65rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+      padding: 0.15rem 0.4rem;
+      border-radius: 999px;
+      white-space: nowrap;
+    }
+
+    .user-metric-badge.caught-up {
+      color: var(--green);
+      background: rgba(15, 118, 110, 0.12);
+    }
+
+    .user-metric-badge.top-filer {
+      color: var(--gold);
+      background: var(--gold-light);
+    }
+
+    .user-metric-row.pending-zero strong {
+      color: var(--green);
     }
 
     .user-metric-row {
@@ -384,6 +468,7 @@
     </div>
 
     <h2 class="section-title">By assignee</h2>
+    <div id="assignee-banner" class="assignee-banner" hidden></div>
     <div class="user-metrics" id="user-metrics">
       <p class="subtitle" style="margin:0;">Loading…</p>
     </div>
@@ -489,26 +574,104 @@
       return items;
     }
 
+    function assigneeGamification(metrics) {
+      const active = metrics.filter((m) => m.tagged > 0);
+      const allCaughtUp = active.length > 0 && active.every((m) => m.pending === 0);
+      const topCompleted = active.length ? Math.max(...active.map((m) => m.completed)) : 0;
+      const topUserIds =
+        topCompleted > 0
+          ? active.filter((m) => m.completed === topCompleted).map((m) => m.userId)
+          : [];
+      return { active, allCaughtUp, topCompleted, topUserIds };
+    }
+
+    function sortMetricsForDisplay(metrics, game) {
+      return [...metrics].sort((a, b) => {
+        const aCaught = a.tagged > 0 && a.pending === 0 ? 1 : 0;
+        const bCaught = b.tagged > 0 && b.pending === 0 ? 1 : 0;
+        if (bCaught !== aCaught) return bCaught - aCaught;
+        if (b.tagged !== a.tagged) return b.tagged - a.tagged;
+        return a.displayName.localeCompare(b.displayName);
+      });
+    }
+
+    function metricBadgesHtml(m, game) {
+      const badges = [];
+      if (m.tagged > 0 && m.pending === 0) {
+        badges.push('<span class="user-metric-badge caught-up">Caught up</span>');
+      }
+      if (game.topUserIds.includes(m.userId) && m.completed > 0) {
+        badges.push('<span class="user-metric-badge top-filer">Top filer</span>');
+      }
+      if (!badges.length) return '';
+      return `<div class="user-metric-badges">${badges.join('')}</div>`;
+    }
+
+    function renderAssigneeBanner(game) {
+      const banner = document.getElementById('assignee-banner');
+      if (!game.active.length) {
+        banner.hidden = true;
+        banner.textContent = '';
+        return;
+      }
+      if (game.allCaughtUp) {
+        banner.hidden = false;
+        banner.className = 'assignee-banner team-inbox-zero';
+        banner.textContent = "Team inbox zero — everyone's caught up in this date range!";
+        return;
+      }
+      const caughtCount = game.active.filter((m) => m.pending === 0).length;
+      if (caughtCount > 0) {
+        banner.hidden = false;
+        banner.className = 'assignee-banner';
+        banner.textContent =
+          caughtCount === 1
+            ? '1 assignee is all caught up — nice work!'
+            : `${caughtCount} assignees are all caught up — nice work!`;
+        return;
+      }
+      banner.hidden = true;
+      banner.textContent = '';
+    }
+
     function renderUserMetrics() {
       const wrap = document.getElementById('user-metrics');
       if (!userMetrics.length) {
+        document.getElementById('assignee-banner').hidden = true;
         wrap.innerHTML =
           '<p class="subtitle" style="margin:0;">No tagged assignments in this date range yet.</p>';
         return;
       }
 
-      wrap.innerHTML = userMetrics
-        .map(
-          (m) => `
-        <div class="user-metric-card ${activeTaggedUser === m.userId ? 'active' : ''}" data-user-id="${escapeHtml(m.userId)}">
-          <div class="user-metric-name">${escapeHtml(m.displayName)}</div>
+      const game = assigneeGamification(userMetrics);
+      renderAssigneeBanner(game);
+      const sorted = sortMetricsForDisplay(userMetrics, game);
+
+      wrap.innerHTML = sorted
+        .map((m) => {
+          const caughtUp = m.tagged > 0 && m.pending === 0;
+          const cardClasses = [
+            'user-metric-card',
+            activeTaggedUser === m.userId ? 'active' : '',
+            caughtUp ? 'caught-up' : '',
+            game.topUserIds.includes(m.userId) ? 'top-filer' : '',
+          ]
+            .filter(Boolean)
+            .join(' ');
+          const pendingRowClass = caughtUp ? 'user-metric-row pending pending-zero' : 'user-metric-row pending';
+          return `
+        <div class="${cardClasses}" data-user-id="${escapeHtml(m.userId)}">
+          <div class="user-metric-header">
+            <div class="user-metric-name">${escapeHtml(m.displayName)}</div>
+            ${metricBadgesHtml(m, game)}
+          </div>
           <div class="user-metric-row"><span>Tagged</span><strong>${m.tagged}</strong></div>
           <div class="user-metric-row completed"><span>Completed</span><strong>${m.completed}</strong></div>
-          <div class="user-metric-row pending"><span>Pending</span><strong>${m.pending}</strong></div>
+          <div class="${pendingRowClass}"><span>Pending</span><strong>${m.pending}</strong></div>
           <div class="user-metric-row skipped"><span>Do not sort</span><strong>${m.skipped ?? 0}</strong></div>
         </div>
-      `
-        )
+      `;
+        })
         .join('');
 
       wrap.querySelectorAll('.user-metric-card').forEach((card) => {
@@ -604,6 +767,13 @@
       document.getElementById('stat-sorted').textContent = summary.sorted;
       document.getElementById('stat-pending').textContent = summary.pending;
       document.getElementById('stat-skipped').textContent = summary.skipped;
+      const pendingStat = document.querySelector('.stat.pending');
+      const inboxZero = summary.pending === 0 && summary.total > 0;
+      pendingStat?.classList.toggle('celebrate', inboxZero);
+      const pendingLabel = pendingStat?.querySelector('.stat-label');
+      if (pendingLabel) {
+        pendingLabel.textContent = inboxZero ? 'Inbox zero' : 'Not sorted';
+      }
     }
 
     document.getElementById('tagged-filter').addEventListener('change', (e) => {
