@@ -9,6 +9,7 @@ import { startDropboxSyncScheduler } from './services/dropboxSyncService.js';
 import { startQueueReminderScheduler, refreshPendingQueueCards } from './services/queueReminderService.js';
 import { startEodStatusReportScheduler } from './services/eodStatusReportService.js';
 import { startTempStorageCleanupScheduler } from './services/tempStorageCleanupService.js';
+import { isMedicalRecordsCaptureEnabled } from './services/medicalRecordsCaptureService.js';
 import { logger } from './utils/logger.js';
 
 process.on('unhandledRejection', (reason) => {
@@ -30,6 +31,7 @@ app.listen(env.PORT, () => {
   logger.info('RJL File Sorter started', {
     port: env.PORT,
     dropboxAuth: dropboxAuthMode(),
+    medicalRecordsCapture: isMedicalRecordsCaptureEnabled(),
   });
   const dropboxIssue = getDropboxConfigIssue();
   if (dropboxIssue) {

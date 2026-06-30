@@ -35,6 +35,7 @@ import {
   buildThreadOverrideCaseHint,
   buildThreadOverrideFolderHint,
 } from '../utils/autoLearnHints.js';
+import { captureMedicalRecordsAfterApprove } from './medicalRecordsCaptureService.js';
 import { extractDocumentExcerpt } from './documentExtractor.js';
 import {
   clearTempStorageForItems,
@@ -499,6 +500,24 @@ function dropboxFilePath(folderPath: string, filename: string): string {
   return `${normalized}/${filename}`.replace(/\/+/g, '/');
 }
 
+function scheduleMedicalRecordsCapture(opts: {
+  item: FileSorterItem;
+  caseNumber: string;
+  folderPath: string;
+  dropboxPath: string;
+  dropboxFileId?: string;
+  fileBuffer?: Buffer;
+  slackUserId: string;
+}): void {
+  void captureMedicalRecordsAfterApprove(opts).catch((err) => {
+    logger.warn('Medical records capture failed', {
+      itemId: opts.item.id,
+      caseNumber: opts.caseNumber,
+      err: String(err),
+    });
+  });
+}
+
 async function completeAsAlreadyInDropbox(opts: {
   batchItem: FileSorterItem;
   folderPath: string;
@@ -567,6 +586,13 @@ async function completeAsAlreadyInDropbox(opts: {
   }
 
   scheduleTempStorageDeletionAfterRouted(saved);
+  scheduleMedicalRecordsCapture({
+    item: saved,
+    caseNumber: opts.caseNumber,
+    folderPath: opts.folderPath,
+    dropboxPath: fullPath,
+    slackUserId: opts.slackUserId,
+  });
   return { saved, permalink };
 }
 
@@ -794,6 +820,15 @@ export async function handleApprove(
     }
 
     scheduleTempStorageDeletionAfterRouted(saved);
+    scheduleMedicalRecordsCapture({
+      item: saved,
+      caseNumber,
+      folderPath,
+      dropboxPath: upload.path,
+      dropboxFileId: upload.id,
+      fileBuffer: buffer,
+      slackUserId,
+    });
   }
 
   if (crossPostFiles.length) {

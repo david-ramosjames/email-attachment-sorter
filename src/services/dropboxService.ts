@@ -433,6 +433,25 @@ export async function fileExistsInDropbox(
   }
 }
 
+export async function getDropboxFileMetadata(
+  filePath: string
+): Promise<{ id: string; path: string } | null> {
+  const normalized = filePath.startsWith('/') ? filePath : `/${filePath}`;
+  try {
+    const response = await withDropboxApi(undefined, (client) =>
+      client.filesGetMetadata({ path: normalized })
+    );
+    const result = response.result as { id?: string; path_display?: string };
+    if (!result.id) return null;
+    return {
+      id: result.id,
+      path: result.path_display ?? normalized,
+    };
+  } catch {
+    return null;
+  }
+}
+
 export async function uploadFileToDropbox(
   folderPath: string,
   filename: string,

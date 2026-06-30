@@ -26,6 +26,9 @@ const envSchema = z.object({
   PORT: z.coerce.number().default(3000),
   SUPABASE_URL: z.string().url(),
   SUPABASE_SERVICE_ROLE_KEY: z.string().min(1),
+  /** Optional client/case-tracker Supabase (medical billing lines in case_medical_records). */
+  CLIENT_SUPABASE_URL: optionalString,
+  CLIENT_SUPABASE_SERVICE_ROLE_KEY: optionalString,
   OPENAI_API_KEY: z.string().min(1),
   OPENAI_MODEL: z.string().default('gpt-4o-mini'),
   /** Vision/OCR model for scanned PDFs and photos (defaults to OPENAI_MODEL) */
@@ -71,8 +74,8 @@ const envSchema = z.object({
   INBOUND_EMAIL_WEBHOOK_SECRET: optionalString,
   /** Delete staged files this many minutes after successful routing (Dropbox save). */
   TEMP_STORAGE_ROUTED_DELETE_AFTER_MINUTES: z.coerce.number().min(0).default(1),
-  /** Keep unrouted queue items in temp storage this many hours (default 7 days). */
-  TEMP_STORAGE_UNROUTED_TTL_HOURS: z.coerce.number().min(0).default(168),
+  /** Keep unrouted queue items in temp storage this many hours (default 14 days). */
+  TEMP_STORAGE_UNROUTED_TTL_HOURS: z.coerce.number().min(0).default(14 * 24),
   /** How often to purge expired temp files (minutes). 0 = scheduled deletes only on Approve. */
   TEMP_STORAGE_CLEANUP_INTERVAL_MINUTES: z.coerce.number().default(15),
   /** Google Sheet that lists cases ↔ Slack channels (service account must have Viewer access). */

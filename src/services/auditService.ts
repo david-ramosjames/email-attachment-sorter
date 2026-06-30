@@ -15,7 +15,9 @@ export type AuditEventType =
   | 'case_channel_cross_post_failed'
   | 'reindex_folders'
   | 'matching_hint_saved'
-  | 'queue_reminder_sent';
+  | 'queue_reminder_sent'
+  | 'medical_records_captured'
+  | 'medical_records_capture_empty';
 
 export const auditService = {
   async log(
