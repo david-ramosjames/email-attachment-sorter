@@ -11,7 +11,7 @@ import { folderLabelFromDropboxPath } from '../utils/dropboxFolderLabel.js';
 import { logger } from '../utils/logger.js';
 
 const MEDICAL_DOC_TYPES = new Set(['Medical Records', 'Bills']);
-const MEDICAL_FOLDER_LABELS = new Set(['Medical', 'Expenses', 'LOP']);
+const MEDICAL_FOLDER_LABELS = new Set(['Medical', 'LOP']);
 
 function effectiveLineConfidence(
   lineConfidence: number | null,
@@ -46,7 +46,7 @@ export function shouldCaptureMedicalBilling(
   if (folderLabel && MEDICAL_FOLDER_LABELS.has(folderLabel)) return true;
 
   const pathLower = folderPath.toLowerCase();
-  return /\/(medical|expenses|lop)(\/|$)/.test(pathLower);
+  return /\/(medical|lop)(\/|$)/.test(pathLower);
 }
 
 export async function captureMedicalRecordsAfterApprove(opts: {

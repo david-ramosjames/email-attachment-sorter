@@ -17,7 +17,9 @@ export type AuditEventType =
   | 'matching_hint_saved'
   | 'queue_reminder_sent'
   | 'medical_records_captured'
-  | 'medical_records_capture_empty';
+  | 'medical_records_capture_empty'
+  | 'case_expenses_captured'
+  | 'case_expenses_capture_empty';
 
 export const auditService = {
   async log(

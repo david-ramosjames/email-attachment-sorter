@@ -2,11 +2,13 @@ import {
   hasQueueReminderBeenSent,
   listPendingQueueItemsWithSlackCard,
   getCaseById,
+  clearSlackQueueCardRefsForBatch,
 } from '../db/supabase.js';
 import { getEnv } from '../config/env.js';
 import { auditService } from './auditService.js';
 import { slackService } from './slackService.js';
 import type { FileSorterItem } from '../types/index.js';
+import { isSlackMessageNotFoundError } from '../utils/slackErrors.js';
 import { logger } from '../utils/logger.js';
 
 let reminderPassInProgress = false;
@@ -38,11 +40,13 @@ function batchKey(item: FileSorterItem): string | null {
 export async function refreshPendingQueueCards(): Promise<{
   refreshed: number;
   failed: number;
+  staleCleared: number;
 }> {
   const items = await listPendingQueueItemsWithSlackCard();
   const seen = new Set<string>();
   let refreshed = 0;
   let failed = 0;
+  let staleCleared = 0;
 
   for (const item of items) {
     const key = batchKey(item);
@@ -56,6 +60,15 @@ export async function refreshPendingQueueCards(): Promise<{
       await slackService.updateQueueMessage(item, caseRow);
       refreshed++;
     } catch (err) {
+      if (isSlackMessageNotFoundError(err)) {
+        await clearSlackQueueCardRefsForBatch(item);
+        staleCleared++;
+        logger.info('Cleared stale Slack queue card reference (message not found)', {
+          key,
+          itemId: item.id,
+        });
+        continue;
+      }
       failed++;
       logger.warn('Failed to refresh queue card', {
         key,
@@ -65,11 +78,11 @@ export async function refreshPendingQueueCards(): Promise<{
     }
   }
 
-  if (refreshed > 0 || failed > 0) {
-    logger.info('Pending queue card refresh complete', { refreshed, failed });
+  if (refreshed > 0 || failed > 0 || staleCleared > 0) {
+    logger.info('Pending queue card refresh complete', { refreshed, failed, staleCleared });
   }
 
-  return { refreshed, failed };
+  return { refreshed, failed, staleCleared };
 }
 
 /** One reminder per Slack queue card (batch). */

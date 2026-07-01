@@ -831,6 +831,19 @@ export async function getQueueBatchItems(item: FileSorterItem): Promise<FileSort
   return data as FileSorterItem[];
 }
 
+/** Clear Slack card pointers when the message was deleted or is otherwise unreachable. */
+export async function clearSlackQueueCardRefsForBatch(item: FileSorterItem): Promise<number> {
+  if (!item.slack_queue_channel_id || !item.slack_queue_message_ts) return 0;
+  const batch = await getQueueBatchItems(item);
+  for (const batchItem of batch) {
+    await updateFileSorterItem(batchItem.id, {
+      slack_queue_channel_id: null,
+      slack_queue_message_ts: null,
+    });
+  }
+  return batch.length;
+}
+
 /** True when this channel has active queue cards (used when queue channel id changed). */
 export async function hasActiveQueueCardsInChannel(channelId: string): Promise<boolean> {
   const { data, error } = await getSupabase()

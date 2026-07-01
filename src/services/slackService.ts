@@ -5,6 +5,7 @@ import {
   getQueueBatchItems,
   getSlackChannelForCase,
   updateCaseSlackChannelId,
+  clearSlackQueueCardRefsForBatch,
 } from '../db/supabase.js';
 import type { Case, FileSorterItem } from '../types/index.js';
 import { logger } from '../utils/logger.js';
@@ -31,6 +32,7 @@ import { pickQueueMentionUserIdsForNewCard } from './queueMentionService.js';
 import { caseChannelStaffMentionIds } from './caseQueueRoutingService.js';
 import { resolveMentionDisplayNames } from '../utils/mentionDisplay.js';
 import { isCaseQueueChannel } from '../utils/queueChannel.js';
+import { isSlackMessageNotFoundError } from '../utils/slackErrors.js';
 import { getSlackUserDisplayName, getSlackUserDisplayNames } from './slackUserDirectory.js';
 import {
   getSlackChannelIdByNameMap,
@@ -1305,12 +1307,25 @@ export const slackService = {
     const fallbackText = mentionLine
       ? `${mentionLine} ${headerText} — ${label}`
       : `${headerText} — ${label}`;
-    await slackApi('chat.update', {
-      channel: item.slack_queue_channel_id,
-      ts: item.slack_queue_message_ts,
-      text: fallbackText,
-      blocks,
-    });
+    try {
+      await slackApi('chat.update', {
+        channel: item.slack_queue_channel_id,
+        ts: item.slack_queue_message_ts,
+        text: fallbackText,
+        blocks,
+      });
+    } catch (err) {
+      if (isSlackMessageNotFoundError(err)) {
+        await clearSlackQueueCardRefsForBatch(item);
+        logger.info('Slack queue card missing — cleared stored message reference', {
+          itemId: item.id,
+          channel: item.slack_queue_channel_id,
+          ts: item.slack_queue_message_ts,
+        });
+        return;
+      }
+      throw err;
+    }
   },
 
   async openRenameFileModal(triggerId: string, item: FileSorterItem): Promise<void> {

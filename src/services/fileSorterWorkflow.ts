@@ -38,6 +38,7 @@ import {
   buildThreadOverrideFolderHint,
 } from '../utils/autoLearnHints.js';
 import { captureMedicalRecordsAfterApprove } from './medicalRecordsCaptureService.js';
+import { captureCaseExpensesAfterApprove } from './caseExpensesCaptureService.js';
 import { extractDocumentExcerpt } from './documentExtractor.js';
 import {
   clearTempStorageForItems,
@@ -520,6 +521,24 @@ function scheduleMedicalRecordsCapture(opts: {
   });
 }
 
+function scheduleCaseExpensesCapture(opts: {
+  item: FileSorterItem;
+  caseNumber: string;
+  folderPath: string;
+  dropboxPath: string;
+  dropboxFileId?: string;
+  fileBuffer?: Buffer;
+  slackUserId: string;
+}): void {
+  void captureCaseExpensesAfterApprove(opts).catch((err) => {
+    logger.warn('Case expenses capture failed', {
+      itemId: opts.item.id,
+      caseNumber: opts.caseNumber,
+      err: String(err),
+    });
+  });
+}
+
 async function completeAsAlreadyInDropbox(opts: {
   batchItem: FileSorterItem;
   folderPath: string;
@@ -617,6 +636,15 @@ async function completeAsAlreadyInDropbox(opts: {
 
   scheduleTempStorageDeletionAfterRouted(saved);
   scheduleMedicalRecordsCapture({
+    item: saved,
+    caseNumber: opts.caseNumber,
+    folderPath: opts.folderPath,
+    dropboxPath: fullPath,
+    dropboxFileId: meta?.id,
+    fileBuffer,
+    slackUserId: opts.slackUserId,
+  });
+  scheduleCaseExpensesCapture({
     item: saved,
     caseNumber: opts.caseNumber,
     folderPath: opts.folderPath,
@@ -853,6 +881,15 @@ export async function handleApprove(
 
     scheduleTempStorageDeletionAfterRouted(saved);
     scheduleMedicalRecordsCapture({
+      item: saved,
+      caseNumber,
+      folderPath,
+      dropboxPath: upload.path,
+      dropboxFileId: upload.id,
+      fileBuffer: buffer,
+      slackUserId,
+    });
+    scheduleCaseExpensesCapture({
       item: saved,
       caseNumber,
       folderPath,
