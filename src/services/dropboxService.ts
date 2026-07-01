@@ -137,6 +137,10 @@ export function isDropboxFileConflict(err: unknown): boolean {
   );
 }
 
+export function isDropboxSharedLinkExists(err: unknown): boolean {
+  return extractDropboxError(err).toLowerCase().includes('shared_link_already_exists');
+}
+
 export interface DropboxConnectionStatus {
   ok: boolean;
   authMode?: 'refresh_token' | 'static_access_token' | 'misconfigured';
@@ -478,13 +482,37 @@ export async function uploadFileToDropbox(
   };
 }
 
+export async function downloadDropboxFile(filePath: string): Promise<Buffer> {
+  const normalized = filePath.startsWith('/') ? filePath : `/${filePath}`;
+  const response = await withDropboxApi(undefined, (client) =>
+    client.filesDownload({ path: normalized })
+  );
+  const binary = (response.result as { fileBinary?: Buffer }).fileBinary;
+  if (!binary?.length) {
+    throw new Error(`Dropbox download returned no bytes for ${normalized}`);
+  }
+  return Buffer.from(binary);
+}
+
 export async function generateDropboxPermalink(filePath: string): Promise<string> {
   const normalized = filePath.startsWith('/') ? filePath : `/${filePath}`;
-  const shared = await withDropboxApi(undefined, (client) =>
-    client.sharingCreateSharedLinkWithSettings({
-      path: normalized,
-      settings: { requested_visibility: { '.tag': 'team_only' } },
-    })
-  );
-  return shared.result.url;
+  try {
+    const shared = await withDropboxApi(undefined, (client) =>
+      client.sharingCreateSharedLinkWithSettings({
+        path: normalized,
+        settings: { requested_visibility: { '.tag': 'team_only' } },
+      })
+    );
+    return shared.result.url;
+  } catch (err) {
+    if (!isDropboxSharedLinkExists(err)) throw err;
+    const listed = await withDropboxApi(undefined, (client) =>
+      client.sharingListSharedLinks({ path: normalized, direct_only: true })
+    );
+    const url = listed.result.links[0]?.url;
+    if (!url) {
+      throw new Error(`Shared link exists but could not be listed for ${normalized}`);
+    }
+    return url;
+  }
 }

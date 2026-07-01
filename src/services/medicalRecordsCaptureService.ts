@@ -1,7 +1,7 @@
 import { downloadTempAttachment } from '../db/supabase.js';
 import { lookupClientCaseId, upsertCaseMedicalRecords } from '../db/clientMedicalRecords.js';
 import { isClientSupabaseConfigured } from '../db/clientSupabase.js';
-import { generateDropboxPermalink, getDropboxFileMetadata } from './dropboxService.js';
+import { generateDropboxPermalink, downloadDropboxFile, getDropboxFileMetadata } from './dropboxService.js';
 import { extractDocumentExcerpt, type DocumentExtractionResult } from './documentExtractor.js';
 import { extractMedicalBillingLines } from './medicalRecordsExtractor.js';
 import { auditService } from './auditService.js';
@@ -90,6 +90,18 @@ export async function captureMedicalRecordsAfterApprove(opts: {
     } catch (err) {
       logger.warn('Medical capture — could not load temp attachment for extraction', {
         itemId: opts.item.id,
+        err: String(err),
+      });
+    }
+  }
+
+  if (!buffer) {
+    try {
+      buffer = await downloadDropboxFile(opts.dropboxPath);
+    } catch (err) {
+      logger.warn('Medical capture — could not download file from Dropbox', {
+        itemId: opts.item.id,
+        dropboxPath: opts.dropboxPath,
         err: String(err),
       });
     }

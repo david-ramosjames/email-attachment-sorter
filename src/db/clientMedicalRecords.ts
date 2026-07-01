@@ -309,6 +309,97 @@ function buildUpdatePayload(
   return payload;
 }
 
+function isMissingColumnError(err: { message?: string }, column: string): boolean {
+  const msg = (err.message ?? '').toLowerCase();
+  return msg.includes(column.toLowerCase()) && msg.includes('could not find');
+}
+
+function isCheckConstraintError(err: { code?: string; message?: string }): boolean {
+  return err.code === '23514' || (err.message ?? '').toLowerCase().includes('check constraint');
+}
+
+function insertPayload(row: CaseMedicalRecordInsert): Record<string, unknown> {
+  return {
+    case_number: row.case_number,
+    case_id: row.case_id,
+    tracker_entry_id: row.tracker_entry_id,
+    provider_id: row.provider_id,
+    provider_name: row.provider_name,
+    account_number: row.account_number,
+    date_of_service: row.date_of_service,
+    original_charges: row.original_charges,
+    current_balance: row.current_balance,
+    final_pay_amount: row.final_pay_amount,
+    reduced_from_amount: row.reduced_from_amount,
+    payee_name: row.payee_name,
+    payee_address: row.payee_address,
+    document_type: row.document_type,
+    payment_status: row.payment_status,
+    dropbox_file_id: row.dropbox_file_id,
+    dropbox_file_path: row.dropbox_file_path,
+    dropbox_permalink: row.dropbox_permalink ?? null,
+    review_status: row.review_status,
+    text_extraction_method: row.text_extraction_method,
+    extraction_confidence: row.extraction_confidence,
+    document_extraction_confidence: row.document_extraction_confidence,
+  };
+}
+
+/** Insert with fallbacks when Phase-1 migrations (004) are not fully applied yet. */
+async function insertMedicalRecordRow(
+  client: NonNullable<ReturnType<typeof getClientSupabase>>,
+  row: CaseMedicalRecordInsert
+): Promise<{ error: { message: string; code?: string } | null }> {
+  let payload = insertPayload(row);
+  let result = await client.from('case_medical_records').insert(payload);
+
+  if (result.error && isMissingColumnError(result.error, 'dropbox_permalink')) {
+    const { dropbox_permalink: _removed, ...withoutPermalink } = payload;
+    payload = withoutPermalink;
+    logger.warn('case_medical_records.dropbox_permalink column missing — run migrations/004', {
+      caseNumber: row.case_number,
+    });
+    result = await client.from('case_medical_records').insert(payload);
+  }
+
+  if (result.error && isCheckConstraintError(result.error)) {
+    const msg = (result.error.message ?? '').toLowerCase();
+    if (msg.includes('review_status') && payload.review_status === 'needs_review') {
+      payload = { ...payload, review_status: 'pending' };
+      result = await client.from('case_medical_records').insert(payload);
+    } else if (msg.includes('payment_status') && payload.payment_status === 'pending_review') {
+      payload = { ...payload, payment_status: 'unknown' };
+      result = await client.from('case_medical_records').insert(payload);
+    }
+  }
+
+  return { error: result.error };
+}
+
+/** Update with fallbacks when dropbox_permalink column is missing. */
+async function updateMedicalRecordRow(
+  client: NonNullable<ReturnType<typeof getClientSupabase>>,
+  id: string,
+  payload: Record<string, unknown>
+): Promise<{ error: { message: string; code?: string } | null }> {
+  let result = await client.from('case_medical_records').update(payload).eq('id', id);
+
+  if (result.error && isMissingColumnError(result.error, 'dropbox_permalink')) {
+    const { dropbox_permalink: _removed, ...withoutPermalink } = payload;
+    logger.warn('case_medical_records.dropbox_permalink column missing — run migrations/004', { id });
+    result = await client.from('case_medical_records').update(withoutPermalink).eq('id', id);
+  }
+
+  if (result.error && isCheckConstraintError(result.error) && payload.review_status === 'needs_review') {
+    result = await client
+      .from('case_medical_records')
+      .update({ ...payload, review_status: 'pending' })
+      .eq('id', id);
+  }
+
+  return { error: result.error };
+}
+
 export async function upsertCaseMedicalRecords(
   rows: CaseMedicalRecordInsert[]
 ): Promise<{ inserted: number; updated: number; skipped: number }> {
@@ -348,10 +439,7 @@ export async function upsertCaseMedicalRecords(
 
     if (existing && row.document_type !== 'medical_bill') {
       const updatePayload = buildUpdatePayload(existing, rowWithProvider);
-      const { error } = await client
-        .from('case_medical_records')
-        .update(updatePayload)
-        .eq('id', existing.id);
+      const { error } = await updateMedicalRecordRow(client, existing.id, updatePayload);
 
       if (error) {
         logger.error('Failed to update case_medical_records row', {
@@ -364,30 +452,7 @@ export async function upsertCaseMedicalRecords(
       continue;
     }
 
-    const { error } = await client.from('case_medical_records').insert({
-      case_number: rowWithProvider.case_number,
-      case_id: rowWithProvider.case_id,
-      tracker_entry_id: rowWithProvider.tracker_entry_id,
-      provider_id: rowWithProvider.provider_id,
-      provider_name: rowWithProvider.provider_name,
-      account_number: rowWithProvider.account_number,
-      date_of_service: rowWithProvider.date_of_service,
-      original_charges: rowWithProvider.original_charges,
-      current_balance: rowWithProvider.current_balance,
-      final_pay_amount: rowWithProvider.final_pay_amount,
-      reduced_from_amount: rowWithProvider.reduced_from_amount,
-      payee_name: rowWithProvider.payee_name,
-      payee_address: rowWithProvider.payee_address,
-      document_type: rowWithProvider.document_type,
-      payment_status: rowWithProvider.payment_status,
-      dropbox_file_id: rowWithProvider.dropbox_file_id,
-      dropbox_file_path: rowWithProvider.dropbox_file_path,
-      dropbox_permalink: rowWithProvider.dropbox_permalink ?? null,
-      review_status: rowWithProvider.review_status,
-      text_extraction_method: rowWithProvider.text_extraction_method,
-      extraction_confidence: rowWithProvider.extraction_confidence,
-      document_extraction_confidence: rowWithProvider.document_extraction_confidence,
-    });
+    const { error } = await insertMedicalRecordRow(client, rowWithProvider);
 
     if (error) {
       logger.error('Failed to insert case_medical_records row', {

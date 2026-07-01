@@ -15,8 +15,10 @@ import {
 } from '../db/supabase.js';
 import {
   getCasesRootPath,
+  downloadDropboxFile,
   fileExistsInDropbox,
   generateDropboxPermalink,
+  getDropboxFileMetadata,
   isDropboxFileConflict,
   listCaseFolders,
   uploadFileToDropbox,
@@ -528,6 +530,8 @@ async function completeAsAlreadyInDropbox(opts: {
   dropboxFilename: string;
 }): Promise<{ saved: FileSorterItem; permalink: string }> {
   const fullPath = dropboxFilePath(opts.folderPath, opts.dropboxFilename);
+  const meta = await getDropboxFileMetadata(fullPath);
+
   let permalink = fullPath;
   try {
     permalink = await generateDropboxPermalink(fullPath);
@@ -537,6 +541,32 @@ async function completeAsAlreadyInDropbox(opts: {
       path: fullPath,
       err: String(err),
     });
+  }
+
+  let fileBuffer: Buffer | undefined;
+  if (opts.batchItem.temp_storage_url) {
+    try {
+      fileBuffer = await downloadTempAttachment(
+        opts.batchItem.id,
+        opts.batchItem.attachment_filename
+      );
+    } catch (err) {
+      logger.warn('Could not load temp attachment for existing Dropbox file', {
+        itemId: opts.batchItem.id,
+        err: String(err),
+      });
+    }
+  }
+  if (!fileBuffer && meta?.path) {
+    try {
+      fileBuffer = await downloadDropboxFile(meta.path);
+    } catch (err) {
+      logger.warn('Could not download existing Dropbox file for extraction', {
+        itemId: opts.batchItem.id,
+        path: meta.path,
+        err: String(err),
+      });
+    }
   }
 
   const saved = await updateFileSorterItem(opts.batchItem.id, {
@@ -591,6 +621,8 @@ async function completeAsAlreadyInDropbox(opts: {
     caseNumber: opts.caseNumber,
     folderPath: opts.folderPath,
     dropboxPath: fullPath,
+    dropboxFileId: meta?.id,
+    fileBuffer,
     slackUserId: opts.slackUserId,
   });
   return { saved, permalink };
