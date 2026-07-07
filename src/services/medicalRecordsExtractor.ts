@@ -192,6 +192,58 @@ function lineHasBillingData(line: ExtractedMedicalBillingLine): boolean {
   );
 }
 
+function pickPaymentStatus(
+  a: ExtractedMedicalBillingLine['payment_status'],
+  b: ExtractedMedicalBillingLine['payment_status']
+): ExtractedMedicalBillingLine['payment_status'] {
+  if (a === b) return a;
+  if (a === 'pending_review') return b;
+  if (b === 'pending_review') return a;
+  return a;
+}
+
+/** Merge itemized lines into provider/account totals (one row per bill). */
+export function collapseBillingLinesToTotals(
+  lines: ExtractedMedicalBillingLine[]
+): ExtractedMedicalBillingLine[] {
+  if (lines.length <= 1) return lines;
+
+  const byKey = new Map<string, ExtractedMedicalBillingLine>();
+  for (const line of lines) {
+    const key = `${line.provider_name.trim().toLowerCase()}|${(line.account_number ?? '').trim().toLowerCase()}`;
+    const existing = byKey.get(key);
+    if (!existing) {
+      byKey.set(key, { ...line });
+      continue;
+    }
+
+    const sum = (x: number | null, y: number | null) => {
+      if (x == null && y == null) return null;
+      return (x ?? 0) + (y ?? 0);
+    };
+    const max = (x: number | null, y: number | null) => {
+      if (x == null) return y;
+      if (y == null) return x;
+      return Math.max(x, y);
+    };
+
+    byKey.set(key, {
+      ...existing,
+      original_charges: sum(existing.original_charges, line.original_charges),
+      current_balance: max(existing.current_balance, line.current_balance),
+      final_pay_amount: max(existing.final_pay_amount, line.final_pay_amount),
+      reduced_from_amount: max(existing.reduced_from_amount, line.reduced_from_amount),
+      date_of_service: existing.date_of_service ?? line.date_of_service,
+      payee_name: existing.payee_name ?? line.payee_name,
+      payee_address: existing.payee_address ?? line.payee_address,
+      payment_status: pickPaymentStatus(existing.payment_status, line.payment_status),
+      line_confidence: max(existing.line_confidence, line.line_confidence),
+    });
+  }
+
+  return [...byKey.values()];
+}
+
 export async function extractMedicalBillingLines(opts: {
   documentText: string;
   attachmentFilename: string;
@@ -252,10 +304,12 @@ export async function extractMedicalBillingLines(opts: {
     };
   }
 
-  const lines = (parsed.lines ?? [])
-    .map((line) => normalizeLine(line))
-    .filter((line): line is ExtractedMedicalBillingLine => line != null && lineHasBillingData(line))
-    .map((line) => applyDocumentTypeRules(document_type, line));
+  const lines = collapseBillingLinesToTotals(
+    (parsed.lines ?? [])
+      .map((line) => normalizeLine(line))
+      .filter((line): line is ExtractedMedicalBillingLine => line != null && lineHasBillingData(line))
+      .map((line) => applyDocumentTypeRules(document_type, line))
+  );
 
   logger.info('Medical billing extraction finished', {
     caseNumber: opts.caseNumber,

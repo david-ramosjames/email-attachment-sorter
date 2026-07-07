@@ -57,7 +57,9 @@ Extract billing fields as shown: provider, account number, dates, charges, balan
 
 ## General rules
 
-* Return one object per provider / account / line item when the document lists multiple providers.
+* Focus on document totals — do NOT itemize individual procedures, CPT codes, or line-item charges.
+* Return ONE summary line per provider (or per distinct account) with the document's total charges and balance due.
+* Only return multiple lines when the document clearly lists separate providers or separate account numbers.
 * provider_name is required for every line — use the facility or physician name exactly as shown on the document.
 * Dollar amounts must be numbers only (no $ or commas). Use null when not stated.
 * date_of_service must be YYYY-MM-DD or null.
