@@ -1,12 +1,12 @@
-import { downloadTempAttachment } from '../db/supabase.js';
 import { insertCaseExpenses, lookupClientCaseId } from '../db/clientCaseExpenses.js';
 import { isClientSupabaseConfigured } from '../db/clientSupabase.js';
-import { generateDropboxPermalink, downloadDropboxFile, getDropboxFileMetadata } from './dropboxService.js';
+import { generateDropboxPermalink, getDropboxFileMetadata } from './dropboxService.js';
 import { extractDocumentExcerpt, type DocumentExtractionResult } from './documentExtractor.js';
 import { extractCaseExpenses } from './caseExpensesExtractor.js';
 import { auditService } from './auditService.js';
 import type { FileSorterItem } from '../types/index.js';
 import type { CaseExpenseInsert } from '../types/caseExpenses.js';
+import { loadAttachmentBytesForItem } from '../utils/attachmentBuffer.js';
 import { folderLabelFromDropboxPath } from '../utils/dropboxFolderLabel.js';
 import { logger } from '../utils/logger.js';
 
@@ -78,21 +78,11 @@ export async function captureCaseExpensesAfterApprove(opts: {
   }
 
   let buffer = opts.fileBuffer;
-  if (!buffer && opts.item.temp_storage_url) {
-    try {
-      buffer = await downloadTempAttachment(opts.item.id, opts.item.attachment_filename);
-    } catch (err) {
-      logger.warn('Case expense capture — could not load temp attachment', {
-        itemId: opts.item.id,
-        err: String(err),
-      });
-    }
-  }
   if (!buffer) {
     try {
-      buffer = await downloadDropboxFile(opts.dropboxPath);
+      buffer = await loadAttachmentBytesForItem(opts.item, { dropboxPath: opts.dropboxPath });
     } catch (err) {
-      logger.warn('Case expense capture — could not download from Dropbox', {
+      logger.warn('Case expense capture — could not load attachment bytes', {
         itemId: opts.item.id,
         err: String(err),
       });

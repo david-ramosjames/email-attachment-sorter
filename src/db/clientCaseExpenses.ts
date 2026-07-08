@@ -12,6 +12,10 @@ function isCheckConstraintError(err: { code?: string }): boolean {
   return err.code === '23514';
 }
 
+function isForeignKeyError(err: { code?: string }): boolean {
+  return err.code === '23503';
+}
+
 function insertPayload(row: CaseExpenseInsert): Record<string, unknown> {
   return {
     case_number: row.case_number,
@@ -59,13 +63,24 @@ async function insertCaseExpenseRow(
 
   if (result.error && isCheckConstraintError(result.error)) {
     const msg = (result.error.message ?? '').toLowerCase();
-    if (msg.includes('review_status') && payload.review_status === 'needs_review') {
+    if (msg.includes('review_status')) {
       payload = { ...payload, review_status: 'pending' };
       result = await client.from('case_expenses').insert(payload);
-    } else if (msg.includes('payment_status') && payload.payment_status === 'pending_review') {
+    } else if (msg.includes('payment_status')) {
       payload = { ...payload, payment_status: 'unknown' };
       result = await client.from('case_expenses').insert(payload);
+    } else if (msg.includes('document_type')) {
+      payload = { ...payload, document_type: null };
+      result = await client.from('case_expenses').insert(payload);
     }
+  }
+
+  if (result.error && isForeignKeyError(result.error) && payload.case_id != null) {
+    payload = { ...payload, case_id: null };
+    logger.warn('case_expenses insert — case_id FK failed, retrying without case_id', {
+      caseNumber: row.case_number,
+    });
+    result = await client.from('case_expenses').insert(payload);
   }
 
   return { error: result.error };
@@ -79,7 +94,8 @@ async function recordFromSameDocumentExists(row: CaseExpenseInsert): Promise<boo
     .from('case_expenses')
     .select('id')
     .eq('dropbox_file_id', row.dropbox_file_id)
-    .eq('vendor_name', row.vendor_name);
+    .eq('vendor_name', row.vendor_name)
+    .limit(1);
 
   if (row.invoice_number) {
     query = query.eq('invoice_number', row.invoice_number);
@@ -87,12 +103,25 @@ async function recordFromSameDocumentExists(row: CaseExpenseInsert): Promise<boo
     query = query.is('invoice_number', null);
   }
 
-  const { data, error } = await query.maybeSingle();
+  const { data, error } = await query;
   if (error) {
-    logger.warn('Case expense dedup check failed', { err: error.message });
+    if (isMissingTableError(error)) return false;
+    logger.warn('Case expense dedup check failed', {
+      err: error.message,
+      code: error.code,
+    });
     return false;
   }
-  return Boolean(data);
+  return (data?.length ?? 0) > 0;
+}
+
+function isMissingTableError(err: { message?: string; code?: string }): boolean {
+  const msg = (err.message ?? '').toLowerCase();
+  return (
+    err.code === '42P01' ||
+    (msg.includes('case_expenses') && msg.includes('does not exist')) ||
+    msg.includes('schema cache')
+  );
 }
 
 export async function insertCaseExpenses(
@@ -112,13 +141,20 @@ export async function insertCaseExpenses(
 
     const { error } = await insertCaseExpenseRow(client, row);
     if (error) {
-      if (error.message?.includes('case_expenses') && error.message?.includes('does not exist')) {
-        logger.error('case_expenses table missing — run migration 005', { err: error.message });
+      if (isMissingTableError(error)) {
+        logger.error('case_expenses table missing — run client-supabase/005_case_expenses.sql', {
+          err: error.message,
+        });
+        throw new Error(`case_expenses table missing: ${error.message}`);
       }
       logger.error('Failed to insert case_expenses row', {
         caseNumber: row.case_number,
         vendor: row.vendor_name,
+        paymentStatus: row.payment_status,
+        reviewStatus: row.review_status,
+        documentType: row.document_type,
         err: error.message,
+        code: error.code,
       });
       throw new Error(`case_expenses insert failed: ${error.message}`);
     }

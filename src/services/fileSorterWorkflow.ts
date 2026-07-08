@@ -1,5 +1,4 @@
 import {
-  downloadTempAttachment,
   getCaseById,
   getCaseByName,
   getFileSorterItem,
@@ -28,6 +27,7 @@ import {
   formatCauseNumberCaseHint,
 } from '../utils/causeNumbers.js';
 import { folderLabelFromDropboxPath } from '../utils/dropboxFolderLabel.js';
+import { loadAttachmentBytesForItem } from '../utils/attachmentBuffer.js';
 import { isCaseQueueChannel } from '../utils/queueChannel.js';
 import {
   autoLearnContextFromApproval,
@@ -565,24 +565,23 @@ async function completeAsAlreadyInDropbox(opts: {
   let fileBuffer: Buffer | undefined;
   if (opts.batchItem.temp_storage_url) {
     try {
-      fileBuffer = await downloadTempAttachment(
-        opts.batchItem.id,
-        opts.batchItem.attachment_filename
-      );
+      fileBuffer = await loadAttachmentBytesForItem(opts.batchItem, {
+        dropboxPath: fullPath,
+      });
     } catch (err) {
-      logger.warn('Could not load temp attachment for existing Dropbox file', {
+      logger.warn('Could not load attachment bytes for existing Dropbox file', {
         itemId: opts.batchItem.id,
+        path: fullPath,
         err: String(err),
       });
     }
-  }
-  if (!fileBuffer && meta?.path) {
+  } else {
     try {
-      fileBuffer = await downloadDropboxFile(meta.path);
+      fileBuffer = await downloadDropboxFile(fullPath);
     } catch (err) {
       logger.warn('Could not download existing Dropbox file for extraction', {
         itemId: opts.batchItem.id,
-        path: meta.path,
+        path: fullPath,
         err: String(err),
       });
     }
@@ -777,8 +776,32 @@ export async function handleApprove(
 
     let buffer: Buffer;
     try {
-      buffer = await downloadTempAttachment(batchItem.id, batchItem.attachment_filename);
+      buffer = await loadAttachmentBytesForItem(batchItem, {
+        dropboxPath: dropboxFilePath(folderPath, dropboxFilename),
+      });
     } catch (err) {
+      if (await fileExistsInDropbox(folderPath, dropboxFilename)) {
+        logger.info('Attachment bytes unavailable — file already in Dropbox, marking sorted', {
+          itemId: batchItem.id,
+          filename: dropboxFilename,
+        });
+        const { permalink } = await completeAsAlreadyInDropbox({
+          batchItem,
+          folderPath,
+          caseNumber,
+          slackUserId,
+          reviewedAt,
+          source: 'pre_check',
+          dropboxFilename,
+        });
+        savedFiles.push({ filename: dropboxFilename, dropboxLink: permalink });
+        savedAttachmentFilenames.push(dropboxFilename);
+        const folderLabel = folderPath.split('/').filter(Boolean).pop();
+        if (folderLabel) {
+          confirmedFolderLabel = folderLabelFromDropboxPath(folderPath) ?? folderLabel;
+        }
+        continue;
+      }
       logger.error('Temp attachment download failed', {
         itemId: batchItem.id,
         filename: batchItem.attachment_filename,
