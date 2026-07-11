@@ -119,13 +119,21 @@ function extractSlackMessageText(message: Record<string, unknown>): string {
 }
 
 async function slackApi<T>(method: string, body: Record<string, unknown>): Promise<T> {
+  // Queue cards include URLs pulled from the original email (external Drive/Dropbox
+  // links, etc.). Disable unfurls so Slack does not expand those into link previews
+  // / site images under the message.
+  const payload =
+    method === 'chat.postMessage' || method === 'chat.update'
+      ? { unfurl_links: false, unfurl_media: false, ...body }
+      : body;
+
   const res = await fetch(`${SLACK_API}/${method}`, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${getEnv().SLACK_BOT_TOKEN}`,
       'Content-Type': 'application/json; charset=utf-8',
     },
-    body: JSON.stringify(body),
+    body: JSON.stringify(payload),
   });
   const data = (await res.json()) as T & { ok: boolean; error?: string };
   if (!(data as { ok: boolean }).ok) {
