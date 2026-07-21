@@ -397,13 +397,26 @@ export async function listDropboxTree(folderPath: string): Promise<DropboxTreeEn
           '.tag': 'file' | 'folder';
           name: string;
           path_display?: string;
+          path_lower?: string;
           id?: string;
           size?: number;
         };
+        // Prefer path_display, then path_lower. Never fall back to
+        // `${case}/${name}` for nested files — that drops intermediate folders
+        // and makes filesDownload fail with path/not_found.
+        const path = value.path_display ?? value.path_lower;
+        if (!path) {
+          logger.warn('Dropbox tree entry missing path', {
+            name: value.name,
+            id: value.id ?? null,
+            parent: normalized,
+          });
+          continue;
+        }
         entries.push({
           type: value['.tag'],
           name: value.name,
-          path: value.path_display ?? `${normalized}/${value.name}`,
+          path,
           id: value.id ?? null,
           size: value.size ?? null,
         });
@@ -527,16 +540,54 @@ export async function uploadFileToDropbox(
   };
 }
 
-export async function downloadDropboxFile(filePath: string): Promise<Buffer> {
-  const normalized = filePath.startsWith('/') ? filePath : `/${filePath}`;
-  const response = await withDropboxApi(undefined, (client) =>
-    client.filesDownload({ path: normalized })
-  );
-  const binary = (response.result as { fileBinary?: Buffer }).fileBinary;
-  if (!binary?.length) {
-    throw new Error(`Dropbox download returned no bytes for ${normalized}`);
+function coerceDropboxBinary(result: {
+  fileBinary?: unknown;
+  fileBlob?: unknown;
+}): Buffer | null {
+  const raw = result.fileBinary ?? result.fileBlob;
+  if (raw == null) return null;
+  if (Buffer.isBuffer(raw)) return raw.length ? raw : null;
+  if (raw instanceof ArrayBuffer) {
+    return raw.byteLength ? Buffer.from(raw) : null;
   }
-  return Buffer.from(binary);
+  if (ArrayBuffer.isView(raw)) {
+    const view = raw as ArrayBufferView;
+    return view.byteLength
+      ? Buffer.from(view.buffer, view.byteOffset, view.byteLength)
+      : null;
+  }
+  if (typeof raw === 'string') {
+    return raw.length ? Buffer.from(raw, 'binary') : null;
+  }
+  // Browser Blob / undici Blob in some runtimes
+  if (typeof (raw as { arrayBuffer?: () => Promise<ArrayBuffer> }).arrayBuffer === 'function') {
+    return null; // handled async by caller if needed
+  }
+  return null;
+}
+
+/**
+ * Download file bytes by Dropbox path or id (`id:…`).
+ * Prefer id when available — path_display can be missing/wrong for nested listings.
+ */
+export async function downloadDropboxFile(filePathOrId: string): Promise<Buffer> {
+  const path = filePathOrId.startsWith('id:')
+    ? filePathOrId
+    : filePathOrId.startsWith('/')
+      ? filePathOrId
+      : `/${filePathOrId}`;
+  const response = await withDropboxApi(undefined, (client) =>
+    client.filesDownload({ path })
+  );
+  const result = response.result as { fileBinary?: unknown; fileBlob?: unknown };
+  let binary = coerceDropboxBinary(result);
+  if (!binary && result.fileBlob && typeof (result.fileBlob as Blob).arrayBuffer === 'function') {
+    binary = Buffer.from(await (result.fileBlob as Blob).arrayBuffer());
+  }
+  if (!binary?.length) {
+    throw new Error(`Dropbox download returned no bytes for ${path}`);
+  }
+  return binary;
 }
 
 export async function generateDropboxPermalink(filePath: string): Promise<string> {

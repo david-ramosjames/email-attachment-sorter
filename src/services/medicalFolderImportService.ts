@@ -154,16 +154,41 @@ async function upsertTrackerProvider(opts: {
 }): Promise<void> {
   const client = getClientSupabase();
   if (!client || !opts.providerName.trim()) return;
+  const providerName = opts.providerName.trim();
+  const normalized = providerName.toLowerCase();
+
+  // Avoid onConflict against a generated column (PostgREST is unreliable there).
+  const { data: existing, error: lookupError } = await client
+    .from('case_medical_tracker')
+    .select('id, has_lop')
+    .eq('case_id', opts.caseId)
+    .eq('normalized_provider_name', normalized)
+    .maybeSingle();
+  if (lookupError) throw new Error(`medical tracker lookup failed: ${lookupError.message}`);
+
+  if (existing?.id) {
+    if (opts.hasLop === true && existing.has_lop !== true) {
+      const { error } = await client
+        .from('case_medical_tracker')
+        .update({ has_lop: true, case_number: opts.caseNumber })
+        .eq('id', existing.id);
+      if (error) throw new Error(`medical tracker update failed: ${error.message}`);
+    }
+    return;
+  }
+
   const payload: Record<string, unknown> = {
     case_id: opts.caseId,
     case_number: opts.caseNumber,
-    provider_name: opts.providerName.trim(),
+    provider_name: providerName,
   };
   if (opts.hasLop === true) payload.has_lop = true;
-  const { error } = await client
-    .from('case_medical_tracker')
-    .upsert(payload, { onConflict: 'case_id,normalized_provider_name' });
-  if (error) throw new Error(`medical tracker upsert failed: ${error.message}`);
+  const { error } = await client.from('case_medical_tracker').insert(payload);
+  if (error) {
+    // Race: another worker inserted the same provider
+    if (error.code === '23505') return;
+    throw new Error(`medical tracker insert failed: ${error.message}`);
+  }
 }
 
 async function processMedicalFile(opts: {
@@ -172,7 +197,8 @@ async function processMedicalFile(opts: {
   caseId: string;
   caseNumber: string;
 }): Promise<{ imported: number; skipped: boolean }> {
-  const buffer = await downloadDropboxFile(opts.entry.path);
+  const downloadRef = opts.entry.id ? `id:${opts.entry.id}` : opts.entry.path;
+  const buffer = await downloadDropboxFile(downloadRef);
   const extracted = await extractDocumentExcerpt(buffer, mimeType(opts.entry.name), opts.entry.name);
   if (!extracted?.excerpt?.trim() || extracted.method === 'unsupported') {
     return { imported: 0, skipped: true };
@@ -181,14 +207,17 @@ async function processMedicalFile(opts: {
   let imported = 0;
   const isLopFolder = pathBelowSection(opts.entry.path, opts.casePath, 'lop') != null;
   if (isLopFolder) {
-    const lop = await extractLopProvider({
-      filename: opts.entry.name,
-      documentText: extracted.excerpt,
-    });
-    const providerName =
-      lop.isLop && lop.providerName && lop.confidence >= 0.6
-        ? lop.providerName
-        : providerFromLopFilename(opts.entry.name);
+    // Filename pattern is enough for most LOPs; only call AI when needed.
+    let providerName = providerFromLopFilename(opts.entry.name);
+    if (!providerName) {
+      const lop = await extractLopProvider({
+        filename: opts.entry.name,
+        documentText: extracted.excerpt,
+      });
+      if (lop.isLop && lop.providerName && lop.confidence >= 0.6) {
+        providerName = lop.providerName;
+      }
+    }
     if (providerName) {
       await upsertTrackerProvider({
         caseId: opts.caseId,
@@ -316,6 +345,7 @@ async function runMedicalImport(jobId: string, preview: MedicalImportFolderPrevi
   let imported = 0;
   let skipped = 0;
   let failed = 0;
+  const failureSamples: string[] = [];
 
   for (const entry of files) {
     try {
@@ -329,11 +359,12 @@ async function runMedicalImport(jobId: string, preview: MedicalImportFolderPrevi
       if (result.skipped) skipped++;
     } catch (err) {
       failed++;
-      logger.warn('Silent medical import file failed', {
-        jobId,
-        path: entry.path,
-        err: String(err),
-      });
+      const message = err instanceof Error ? err.message : String(err);
+      if (failureSamples.length < 5) {
+        failureSamples.push(`${entry.name}: ${message}`);
+      }
+      // Log as a single string so Railway's truncated UI still shows the reason.
+      logger.warn(`Silent medical import file failed: ${entry.path} — ${message}`);
     }
     processed++;
     await updateJob(jobId, {
@@ -341,6 +372,9 @@ async function runMedicalImport(jobId: string, preview: MedicalImportFolderPrevi
       imported_records: imported,
       skipped_files: skipped,
       failed_files: failed,
+      ...(failureSamples.length
+        ? { error_message: failureSamples.join(' | ') }
+        : {}),
     });
   }
 
@@ -351,6 +385,7 @@ async function runMedicalImport(jobId: string, preview: MedicalImportFolderPrevi
     imported_records: imported,
     skipped_files: skipped,
     failed_files: failed,
+    error_message: failureSamples.length ? failureSamples.join(' | ') : null,
   });
 }
 
