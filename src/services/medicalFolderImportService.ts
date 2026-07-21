@@ -198,23 +198,35 @@ async function processMedicalFile(opts: {
   caseNumber: string;
 }): Promise<{ imported: number; skipped: boolean }> {
   const isLopFolder = pathBelowSection(opts.entry.path, opts.casePath, 'lop') != null;
+  const lopFromFilename = isLopFolder ? providerFromLopFilename(opts.entry.name) : null;
   // Seed tracker from LOP filenames even before download succeeds.
-  if (isLopFolder) {
-    const fromName = providerFromLopFilename(opts.entry.name);
-    if (fromName) {
-      await upsertTrackerProvider({
-        caseId: opts.caseId,
-        caseNumber: opts.caseNumber,
-        providerName: fromName,
-        hasLop: true,
-      });
-    }
+  if (lopFromFilename) {
+    await upsertTrackerProvider({
+      caseId: opts.caseId,
+      caseNumber: opts.caseNumber,
+      providerName: lopFromFilename,
+      hasLop: true,
+    });
   }
 
-  const buffer = await downloadDropboxFileByPathOrId({
-    path: opts.entry.path,
-    id: opts.entry.id,
-  });
+  let buffer: Buffer;
+  try {
+    buffer = await downloadDropboxFileByPathOrId({
+      path: opts.entry.path,
+      id: opts.entry.id,
+    });
+  } catch (err) {
+    // Filename-based LOP seeding already applied — don't hard-fail the whole file.
+    if (lopFromFilename) {
+      logger.warn(
+        `Silent medical import LOP seeded from filename but download failed: ${opts.entry.path} — ${
+          err instanceof Error ? err.message : String(err)
+        }`
+      );
+      return { imported: 0, skipped: true };
+    }
+    throw err;
+  }
   const extracted = await extractDocumentExcerpt(buffer, mimeType(opts.entry.name), opts.entry.name);
   if (!extracted?.excerpt?.trim() || extracted.method === 'unsupported') {
     return { imported: 0, skipped: true };

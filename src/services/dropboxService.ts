@@ -21,7 +21,8 @@ function getNamespaceId(): string | null {
 
 async function getDropboxClient(namespaceId?: string | null): Promise<Dropbox> {
   const token = await getDropboxAccessToken();
-  const ns = namespaceId ?? getNamespaceId();
+  // undefined → default env/resolved namespace; null → force no Path-Root (for ns: paths).
+  const ns = namespaceId === undefined ? getNamespaceId() : namespaceId;
   if (ns) {
     return new Dropbox({
       accessToken: token,
@@ -135,11 +136,27 @@ export function extractDropboxError(err: unknown): string {
     };
     if (typeof e.error === 'string' && e.error.trim()) return e.error;
     if (e.error && typeof e.error === 'object') {
-      if (e.error.error_summary) return e.error.error_summary;
+      if (e.error.error_summary) {
+        const summary = e.error.error_summary;
+        // "other/..." is useless alone — include the raw body for diagnosis.
+        if (/^other\/?\.*/i.test(summary) || summary === 'other') {
+          try {
+            return `${summary} ${JSON.stringify(e.error)}`;
+          } catch {
+            return summary;
+          }
+        }
+        return summary;
+      }
       if (typeof e.error.error === 'string') return e.error.error;
       if (e.error.error_description) return e.error.error_description;
       if (e.error.error && typeof e.error.error === 'object' && e.error.error['.tag']) {
         return e.error.error['.tag'];
+      }
+      try {
+        return JSON.stringify(e.error);
+      } catch {
+        /* fall through */
       }
     }
     if (e.status && e.message) return `${e.message} (status ${e.status})`;
@@ -589,7 +606,83 @@ function coerceDropboxBinary(result: {
 }
 
 async function downloadDropboxFileOnce(path: string): Promise<Buffer> {
-  const response = await withDropboxApi(undefined, (client) =>
+  const errors: string[] = [];
+  const ns = getNamespaceId();
+  const candidates = [path];
+  // Team-space alternative: ns:<id>/<path> without Path-Root header.
+  if (ns && !path.startsWith('id:') && !path.startsWith('ns:')) {
+    candidates.push(`ns:${ns}${path.startsWith('/') ? path : `/${path}`}`);
+  }
+
+  for (const candidate of candidates) {
+    const usePathRoot = !candidate.startsWith('ns:');
+    try {
+      return await downloadViaTemporaryLink(candidate, usePathRoot);
+    } catch (err) {
+      errors.push(`tempLink(${candidate}): ${extractDropboxError(err)}`);
+    }
+
+    try {
+      return await downloadViaContentApi(candidate, usePathRoot);
+    } catch (err) {
+      errors.push(`contentApi(${candidate}): ${err instanceof Error ? err.message : extractDropboxError(err)}`);
+    }
+
+    try {
+      return await downloadViaSdkFilesDownload(candidate, usePathRoot);
+    } catch (err) {
+      errors.push(`sdk(${candidate}): ${extractDropboxError(err)}`);
+    }
+  }
+
+  throw new Error(`Dropbox download failed for ${path} — ${errors.join(' | ')}`);
+}
+
+async function downloadViaTemporaryLink(path: string, usePathRoot = true): Promise<Buffer> {
+  const linkRes = await withDropboxApi(usePathRoot ? undefined : null, (client) =>
+    client.filesGetTemporaryLink({ path })
+  );
+  const url = linkRes.result.link;
+  if (!url) throw new Error(`Dropbox temporary link missing for ${path}`);
+  const res = await fetch(url);
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    throw new Error(`Dropbox temporary link fetch failed (${res.status}) for ${path}: ${body.slice(0, 200)}`);
+  }
+  const buf = Buffer.from(await res.arrayBuffer());
+  if (!buf.length) throw new Error(`Dropbox temporary link returned no bytes for ${path}`);
+  return buf;
+}
+
+/** Raw content download — avoids SDK fileBinary quirks; surfaces full error bodies. */
+async function downloadViaContentApi(path: string, usePathRoot = true): Promise<Buffer> {
+  const token = await getDropboxAccessToken();
+  const ns = getNamespaceId();
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${token}`,
+    'Dropbox-API-Arg': JSON.stringify({ path }),
+  };
+  if (usePathRoot && ns) {
+    headers['Dropbox-API-Path-Root'] = JSON.stringify({
+      '.tag': 'namespace_id',
+      namespace_id: ns,
+    });
+  }
+  const res = await fetch('https://content.dropboxapi.com/2/files/download', {
+    method: 'POST',
+    headers,
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    throw new Error(`Dropbox content download failed (${res.status}) for ${path}: ${body.slice(0, 400)}`);
+  }
+  const buf = Buffer.from(await res.arrayBuffer());
+  if (!buf.length) throw new Error(`Dropbox content download returned no bytes for ${path}`);
+  return buf;
+}
+
+async function downloadViaSdkFilesDownload(path: string, usePathRoot = true): Promise<Buffer> {
+  const response = await withDropboxApi(usePathRoot ? undefined : null, (client) =>
     client.filesDownload({ path })
   );
   const result = response.result as { fileBinary?: unknown; fileBlob?: unknown };
@@ -598,14 +691,13 @@ async function downloadDropboxFileOnce(path: string): Promise<Buffer> {
     binary = Buffer.from(await (result.fileBlob as Blob).arrayBuffer());
   }
   if (!binary?.length) {
-    throw new Error(`Dropbox download returned no bytes for ${path}`);
+    throw new Error(`Dropbox SDK download returned no bytes for ${path}`);
   }
   return binary;
 }
 
 /**
  * Download file bytes by Dropbox path or id (`id:…`).
- * Paths from list_folder are preferred for team namespaces; id is a fallback.
  */
 export async function downloadDropboxFile(filePathOrId: string): Promise<Buffer> {
   const path = filePathOrId.startsWith('id:')
@@ -616,7 +708,7 @@ export async function downloadDropboxFile(filePathOrId: string): Promise<Buffer>
   return downloadDropboxFileOnce(path);
 }
 
-/** Try path first, then file id — covers missing path_display and id quirks. */
+/** Try path first, then file id. */
 export async function downloadDropboxFileByPathOrId(opts: {
   path: string;
   id?: string | null;
@@ -630,9 +722,10 @@ export async function downloadDropboxFileByPathOrId(opts: {
     try {
       return await downloadDropboxFileOnce(idPath);
     } catch (idErr) {
-      const pathMsg = extractDropboxError(pathErr);
-      const idMsg = extractDropboxError(idErr);
-      throw new Error(`Dropbox download failed for ${normalizedPath} (${pathMsg}); id fallback ${idPath} (${idMsg})`);
+      throw new Error(
+        `${pathErr instanceof Error ? pathErr.message : extractDropboxError(pathErr)} || ` +
+          `${idErr instanceof Error ? idErr.message : extractDropboxError(idErr)}`
+      );
     }
   }
 }
