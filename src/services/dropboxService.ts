@@ -81,6 +81,14 @@ export interface DropboxFolderEntry {
   path: string;
 }
 
+export interface DropboxTreeEntry {
+  type: 'file' | 'folder';
+  name: string;
+  path: string;
+  id: string | null;
+  size: number | null;
+}
+
 async function listFolderEntriesInternal(
   path: string,
   namespaceId?: string | null
@@ -368,6 +376,43 @@ export async function listCaseFolders(
   namespaceId?: string | null
 ): Promise<DropboxFolderEntry[]> {
   const { entries } = await listFolderEntriesInternal(rootPath, namespaceId ?? getNamespaceId());
+  return entries;
+}
+
+/** List every file and folder below a Dropbox path, including nested provider folders. */
+export async function listDropboxTree(folderPath: string): Promise<DropboxTreeEntry[]> {
+  const normalized = normalizePath(folderPath);
+  const entries: DropboxTreeEntry[] = [];
+
+  await withDropboxApi(undefined, async (client) => {
+    let result = await client.filesListFolder({
+      path: normalized,
+      recursive: true,
+      include_deleted: false,
+    });
+    for (;;) {
+      for (const entry of result.result.entries) {
+        if (entry['.tag'] !== 'file' && entry['.tag'] !== 'folder') continue;
+        const value = entry as {
+          '.tag': 'file' | 'folder';
+          name: string;
+          path_display?: string;
+          id?: string;
+          size?: number;
+        };
+        entries.push({
+          type: value['.tag'],
+          name: value.name,
+          path: value.path_display ?? `${normalized}/${value.name}`,
+          id: value.id ?? null,
+          size: value.size ?? null,
+        });
+      }
+      if (!result.result.has_more) break;
+      result = await client.filesListFolderContinue({ cursor: result.result.cursor });
+    }
+  });
+
   return entries;
 }
 

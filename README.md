@@ -16,6 +16,11 @@ Inbound Email (webhook)
     → Full audit trail in Supabase
 ```
 
+Case Financials can also launch a **silent medical backfill** against an existing
+Dropbox case folder. That workflow recursively scans only the case's `LOP` and
+`Medical` folders, writes reviewable results to client Supabase, and never creates
+queue items or Slack messages.
+
 ## Tech stack
 
 - Node.js 20+ / TypeScript / Express

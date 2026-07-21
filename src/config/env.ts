@@ -52,6 +52,8 @@ const envSchema = z.object({
   SLACK_REMINDER_TIMEZONE: z.string().default('America/Chicago'),
   /** Public base URL for dashboard links (no trailing slash). */
   PUBLIC_APP_URL: optionalString,
+  /** Comma-separated case-financials origins allowed to call protected import APIs. */
+  CASE_FINANCIALS_ORIGIN: optionalString,
   /** Post end-of-day status to the queue channel on weekdays. */
   SLACK_EOD_REPORT_ENABLED: envBoolean(true),
   /** Local time (24h HH:MM) to post the daily status report. */

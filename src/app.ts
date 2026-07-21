@@ -5,10 +5,35 @@ import { webhooksRouter } from './routes/webhooks.js';
 import { adminRouter } from './routes/admin.js';
 import { faqRouter } from './routes/faq.js';
 import { dashboardRouter } from './routes/dashboard.js';
+import { medicalImportRouter } from './routes/medicalImport.js';
+import { getEnv } from './config/env.js';
 import { logger } from './utils/logger.js';
 
 export function createApp(): Express {
   const app = express();
+  const allowedOrigins = new Set(
+    [
+      'http://localhost:3001',
+      ...(getEnv().CASE_FINANCIALS_ORIGIN?.split(',').map((value) =>
+        value.trim().replace(/\/+$/, '')
+      ) ?? []),
+    ].filter(Boolean)
+  );
+
+  app.use((req, res, next) => {
+    const origin = req.headers.origin;
+    if (origin && allowedOrigins.has(origin)) {
+      res.setHeader('Access-Control-Allow-Origin', origin);
+      res.setHeader('Vary', 'Origin');
+      res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    }
+    if (req.method === 'OPTIONS') {
+      res.sendStatus(origin && allowedOrigins.has(origin) ? 204 : 403);
+      return;
+    }
+    next();
+  });
 
   app.use(
     '/webhooks/slack/interactions',
@@ -64,6 +89,7 @@ export function createApp(): Express {
   app.use(faqRouter);
   app.use(dashboardRouter);
   app.use(webhooksRouter);
+  app.use(medicalImportRouter);
   app.use(adminRouter);
 
   app.use((_req, res) => {
