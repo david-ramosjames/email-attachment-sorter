@@ -15,6 +15,7 @@ import { extractDocumentExcerpt } from './documentExtractor.js';
 import { extractLopProvider } from './lopProviderExtractor.js';
 import { extractMedicalBillingLines } from './medicalRecordsExtractor.js';
 import { logger } from '../utils/logger.js';
+import { preferredProviderName, providerNamesMatch } from '../utils/providerNameMatch.js';
 
 const SUPPORTED_EXTENSIONS = new Set(['pdf', 'doc', 'docx', 'png', 'jpg', 'jpeg', 'webp']);
 const GENERIC_MEDICAL_FOLDERS = new Set([
@@ -146,6 +147,125 @@ export async function previewMedicalImportFolders(
   return Promise.all(matches.slice(0, 5).map((folder) => previewFolder(folder.name, folder.path)));
 }
 
+type TrackerRow = {
+  id: string;
+  provider_name: string;
+  has_lop: boolean | null;
+  treatment_finished_date: string | null;
+  medical_requested_date: string | null;
+  medical_received_date: string | null;
+  billing_requested_date: string | null;
+  billing_received_date: string | null;
+};
+
+function trackerFilledScore(row: TrackerRow): number {
+  let score = 0;
+  if (row.has_lop === true) score += 3;
+  if (row.has_lop === false) score += 1;
+  for (const key of [
+    'treatment_finished_date',
+    'medical_requested_date',
+    'medical_received_date',
+    'billing_requested_date',
+    'billing_received_date',
+  ] as const) {
+    if (row[key]) score += 1;
+  }
+  score += Math.min(row.provider_name.trim().length, 40) / 40;
+  return score;
+}
+
+/** Collapse near-duplicate tracker rows already on the case (e.g. LOP short name + full bill name). */
+async function consolidateTrackerDuplicates(caseId: string): Promise<void> {
+  const client = getClientSupabase();
+  if (!client) return;
+
+  const { data, error } = await client
+    .from('case_medical_tracker')
+    .select(
+      'id, provider_name, has_lop, treatment_finished_date, medical_requested_date, medical_received_date, billing_requested_date, billing_received_date'
+    )
+    .eq('case_id', caseId);
+  if (error) throw new Error(`medical tracker list failed: ${error.message}`);
+
+  const rows = (data ?? []) as TrackerRow[];
+  const clusters: TrackerRow[][] = [];
+
+  for (const row of rows) {
+    const cluster = clusters.find((group) =>
+      group.some((member) => providerNamesMatch(member.provider_name, row.provider_name))
+    );
+    if (cluster) cluster.push(row);
+    else clusters.push([row]);
+  }
+
+  const removeIds: string[] = [];
+
+  for (const cluster of clusters) {
+    if (cluster.length < 2) continue;
+
+    const winner = [...cluster].sort((a, b) => trackerFilledScore(b) - trackerFilledScore(a))[0]!;
+    const mergedName = cluster.reduce(
+      (best, row) => preferredProviderName(best, row.provider_name),
+      winner.provider_name
+    );
+    const hasLop = cluster.some((row) => row.has_lop === true)
+      ? true
+      : cluster.some((row) => row.has_lop === false)
+        ? false
+        : null;
+
+    const { error: updateError } = await client
+      .from('case_medical_tracker')
+      .update({
+        provider_name: mergedName,
+        has_lop: hasLop,
+        treatment_finished_date:
+          winner.treatment_finished_date ??
+          cluster.find((r) => r.treatment_finished_date)?.treatment_finished_date ??
+          null,
+        medical_requested_date:
+          winner.medical_requested_date ??
+          cluster.find((r) => r.medical_requested_date)?.medical_requested_date ??
+          null,
+        medical_received_date:
+          winner.medical_received_date ??
+          cluster.find((r) => r.medical_received_date)?.medical_received_date ??
+          null,
+        billing_requested_date:
+          winner.billing_requested_date ??
+          cluster.find((r) => r.billing_requested_date)?.billing_requested_date ??
+          null,
+        billing_received_date:
+          winner.billing_received_date ??
+          cluster.find((r) => r.billing_received_date)?.billing_received_date ??
+          null,
+      })
+      .eq('id', winner.id);
+    if (updateError) {
+      throw new Error(`medical tracker consolidate update failed: ${updateError.message}`);
+    }
+
+    for (const row of cluster) {
+      if (row.id !== winner.id) removeIds.push(row.id);
+    }
+  }
+
+  if (removeIds.length) {
+    const { error: deleteError } = await client
+      .from('case_medical_tracker')
+      .delete()
+      .in('id', removeIds);
+    if (deleteError) {
+      throw new Error(`medical tracker consolidate delete failed: ${deleteError.message}`);
+    }
+    logger.info('Consolidated medical tracker near-duplicates', {
+      caseId,
+      removed: removeIds.length,
+    });
+  }
+}
+
 async function upsertTrackerProvider(opts: {
   caseId: string;
   caseNumber: string;
@@ -155,23 +275,25 @@ async function upsertTrackerProvider(opts: {
   const client = getClientSupabase();
   if (!client || !opts.providerName.trim()) return;
   const providerName = opts.providerName.trim();
-  const normalized = providerName.toLowerCase();
 
-  // Avoid onConflict against a generated column (PostgREST is unreliable there).
-  const { data: existing, error: lookupError } = await client
+  // Exact + fuzzy match against all providers on the case (LOP short names vs full bill names).
+  const { data: existingRows, error: lookupError } = await client
     .from('case_medical_tracker')
-    .select('id, has_lop')
-    .eq('case_id', opts.caseId)
-    .eq('normalized_provider_name', normalized)
-    .maybeSingle();
+    .select('id, provider_name, has_lop')
+    .eq('case_id', opts.caseId);
   if (lookupError) throw new Error(`medical tracker lookup failed: ${lookupError.message}`);
 
-  if (existing?.id) {
-    if (opts.hasLop === true && existing.has_lop !== true) {
-      const { error } = await client
-        .from('case_medical_tracker')
-        .update({ has_lop: true, case_number: opts.caseNumber })
-        .eq('id', existing.id);
+  const match = (existingRows ?? []).find((row) =>
+    providerNamesMatch(providerName, String(row.provider_name ?? ''))
+  );
+
+  if (match?.id) {
+    const patch: Record<string, unknown> = { case_number: opts.caseNumber };
+    const preferred = preferredProviderName(String(match.provider_name ?? ''), providerName);
+    if (preferred !== match.provider_name) patch.provider_name = preferred;
+    if (opts.hasLop === true && match.has_lop !== true) patch.has_lop = true;
+    if (Object.keys(patch).length > 1 || patch.has_lop === true || patch.provider_name) {
+      const { error } = await client.from('case_medical_tracker').update(patch).eq('id', match.id);
       if (error) throw new Error(`medical tracker update failed: ${error.message}`);
     }
     return;
@@ -360,6 +482,9 @@ async function runMedicalImport(jobId: string, preview: MedicalImportFolderPrevi
     started_at: new Date().toISOString(),
   });
 
+  // Merge any existing near-duplicates before seeding more provider rows.
+  await consolidateTrackerDuplicates(job.caseId);
+
   for (const providerName of providerFolders(tree, preview.path)) {
     await upsertTrackerProvider({
       caseId: job.caseId,
@@ -404,6 +529,9 @@ async function runMedicalImport(jobId: string, preview: MedicalImportFolderPrevi
         : {}),
     });
   }
+
+  // Catch near-duplicates created mid-run (e.g. LOP short name then full bill name).
+  await consolidateTrackerDuplicates(job.caseId);
 
   await updateJob(jobId, {
     status: 'completed',

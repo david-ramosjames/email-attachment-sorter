@@ -318,6 +318,40 @@ function isCheckConstraintError(err: { code?: string; message?: string }): boole
   return err.code === '23514' || (err.message ?? '').toLowerCase().includes('check constraint');
 }
 
+/** Map Phase-1-only values onto pre-004 constraint sets when inserts fail. */
+function applyMedicalCheckConstraintFallback(
+  payload: Record<string, unknown>,
+  errorMessage: string
+): Record<string, unknown> | null {
+  const msg = errorMessage.toLowerCase();
+
+  if (msg.includes('review_status') && payload.review_status === 'needs_review') {
+    return { ...payload, review_status: 'pending' };
+  }
+
+  if (msg.includes('payment_status')) {
+    const status = payload.payment_status;
+    if (status === 'pending_review' || status === 'closed') {
+      return { ...payload, payment_status: 'unknown' };
+    }
+    if (status === 'partially_paid') {
+      return { ...payload, payment_status: 'unpaid' };
+    }
+  }
+
+  if (msg.includes('document_type')) {
+    const docType = payload.document_type;
+    if (docType === 'lop_statement' || docType === 'medical_provider_statement') {
+      return { ...payload, document_type: 'medical_bill' };
+    }
+    if (docType != null && docType !== 'medical_bill') {
+      return { ...payload, document_type: 'medical_bill' };
+    }
+  }
+
+  return null;
+}
+
 function insertPayload(row: CaseMedicalRecordInsert): Record<string, unknown> {
   return {
     case_number: row.case_number,
@@ -351,29 +385,37 @@ async function insertMedicalRecordRow(
   row: CaseMedicalRecordInsert
 ): Promise<{ error: { message: string; code?: string } | null }> {
   let payload = insertPayload(row);
-  let result = await client.from('case_medical_records').insert(payload);
 
-  if (result.error && isMissingColumnError(result.error, 'dropbox_permalink')) {
-    const { dropbox_permalink: _removed, ...withoutPermalink } = payload;
-    payload = withoutPermalink;
-    logger.warn('case_medical_records.dropbox_permalink column missing — run migrations/004', {
-      caseNumber: row.case_number,
-    });
-    result = await client.from('case_medical_records').insert(payload);
-  }
+  for (let attempt = 0; attempt < 6; attempt++) {
+    const result = await client.from('case_medical_records').insert(payload);
+    if (!result.error) return { error: null };
 
-  if (result.error && isCheckConstraintError(result.error)) {
-    const msg = (result.error.message ?? '').toLowerCase();
-    if (msg.includes('review_status') && payload.review_status === 'needs_review') {
-      payload = { ...payload, review_status: 'pending' };
-      result = await client.from('case_medical_records').insert(payload);
-    } else if (msg.includes('payment_status') && payload.payment_status === 'pending_review') {
-      payload = { ...payload, payment_status: 'unknown' };
-      result = await client.from('case_medical_records').insert(payload);
+    if (isMissingColumnError(result.error, 'dropbox_permalink') && 'dropbox_permalink' in payload) {
+      const { dropbox_permalink: _removed, ...withoutPermalink } = payload;
+      payload = withoutPermalink;
+      logger.warn('case_medical_records.dropbox_permalink column missing — run migrations/004', {
+        caseNumber: row.case_number,
+      });
+      continue;
     }
+
+    if (isCheckConstraintError(result.error)) {
+      const next = applyMedicalCheckConstraintFallback(payload, result.error.message ?? '');
+      if (next) {
+        logger.warn('case_medical_records insert retry after check constraint', {
+          caseNumber: row.case_number,
+          attempt,
+          err: result.error.message,
+        });
+        payload = next;
+        continue;
+      }
+    }
+
+    return { error: result.error };
   }
 
-  return { error: result.error };
+  return { error: { message: 'case_medical_records insert exhausted constraint fallbacks' } };
 }
 
 /** Update with fallbacks when dropbox_permalink column is missing. */
@@ -382,22 +424,36 @@ async function updateMedicalRecordRow(
   id: string,
   payload: Record<string, unknown>
 ): Promise<{ error: { message: string; code?: string } | null }> {
-  let result = await client.from('case_medical_records').update(payload).eq('id', id);
+  let nextPayload = payload;
 
-  if (result.error && isMissingColumnError(result.error, 'dropbox_permalink')) {
-    const { dropbox_permalink: _removed, ...withoutPermalink } = payload;
-    logger.warn('case_medical_records.dropbox_permalink column missing — run migrations/004', { id });
-    result = await client.from('case_medical_records').update(withoutPermalink).eq('id', id);
+  for (let attempt = 0; attempt < 6; attempt++) {
+    const result = await client.from('case_medical_records').update(nextPayload).eq('id', id);
+    if (!result.error) return { error: null };
+
+    if (isMissingColumnError(result.error, 'dropbox_permalink') && 'dropbox_permalink' in nextPayload) {
+      const { dropbox_permalink: _removed, ...withoutPermalink } = nextPayload;
+      nextPayload = withoutPermalink;
+      logger.warn('case_medical_records.dropbox_permalink column missing — run migrations/004', { id });
+      continue;
+    }
+
+    if (isCheckConstraintError(result.error)) {
+      const next = applyMedicalCheckConstraintFallback(nextPayload, result.error.message ?? '');
+      if (next) {
+        logger.warn('case_medical_records update retry after check constraint', {
+          id,
+          attempt,
+          err: result.error.message,
+        });
+        nextPayload = next;
+        continue;
+      }
+    }
+
+    return { error: result.error };
   }
 
-  if (result.error && isCheckConstraintError(result.error) && payload.review_status === 'needs_review') {
-    result = await client
-      .from('case_medical_records')
-      .update({ ...payload, review_status: 'pending' })
-      .eq('id', id);
-  }
-
-  return { error: result.error };
+  return { error: { message: 'case_medical_records update exhausted constraint fallbacks' } };
 }
 
 export async function upsertCaseMedicalRecords(
