@@ -74,6 +74,8 @@ export function createApp(): Express {
   app.use((req, res, next) => {
     const start = Date.now();
     res.on('finish', () => {
+      // Railway (and similar) probe /health constantly — skip to keep logs readable.
+      if (req.path === '/health') return;
       logger.info('request', {
         method: req.method,
         path: req.path,

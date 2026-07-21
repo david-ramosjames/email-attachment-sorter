@@ -8,10 +8,23 @@ import { getEnv } from '../config/env.js';
 import { auditService } from './auditService.js';
 import { slackService } from './slackService.js';
 import type { FileSorterItem } from '../types/index.js';
-import { isSlackMessageNotFoundError } from '../utils/slackErrors.js';
+import {
+  isSlackRateLimitedError,
+  isStaleSlackQueueCardError,
+  slackApiErrorCode,
+  slackRetryAfterSec,
+} from '../utils/slackErrors.js';
 import { logger } from '../utils/logger.js';
 
 let reminderPassInProgress = false;
+
+/** Space out chat.update calls so startup refresh does not trip Slack rate limits. */
+const QUEUE_CARD_REFRESH_GAP_MS = 400;
+const QUEUE_CARD_REFRESH_MAX_ATTEMPTS = 4;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 function reminderTimezone(): string {
   return getEnv().SLACK_REMINDER_TIMEZONE.trim() || 'America/Chicago';
@@ -36,6 +49,31 @@ function batchKey(item: FileSorterItem): string | null {
   return `${item.slack_queue_channel_id}:${item.slack_queue_message_ts}`;
 }
 
+async function updateQueueCardWithRetry(item: FileSorterItem): Promise<void> {
+  const caseRow = item.suggested_case_number
+    ? await getCaseById(item.suggested_case_number)
+    : null;
+
+  for (let attempt = 1; attempt <= QUEUE_CARD_REFRESH_MAX_ATTEMPTS; attempt++) {
+    try {
+      await slackService.updateQueueMessage(item, caseRow);
+      return;
+    } catch (err) {
+      if (isSlackRateLimitedError(err) && attempt < QUEUE_CARD_REFRESH_MAX_ATTEMPTS) {
+        const waitSec = slackRetryAfterSec(err) ?? Math.min(60, 5 * attempt);
+        logger.warn('Queue card refresh rate limited — waiting before retry', {
+          itemId: item.id,
+          attempt,
+          waitSec,
+        });
+        await sleep(waitSec * 1000);
+        continue;
+      }
+      throw err;
+    }
+  }
+}
+
 /** Re-render Slack queue cards (e.g. after deploy adds new buttons). One update per card. */
 export async function refreshPendingQueueCards(): Promise<{
   refreshed: number;
@@ -54,28 +92,29 @@ export async function refreshPendingQueueCards(): Promise<{
     seen.add(key);
 
     try {
-      const caseRow = item.suggested_case_number
-        ? await getCaseById(item.suggested_case_number)
-        : null;
-      await slackService.updateQueueMessage(item, caseRow);
+      await updateQueueCardWithRetry(item);
       refreshed++;
     } catch (err) {
-      if (isSlackMessageNotFoundError(err)) {
+      if (isStaleSlackQueueCardError(err)) {
         await clearSlackQueueCardRefsForBatch(item);
         staleCleared++;
-        logger.info('Cleared stale Slack queue card reference (message not found)', {
+        logger.info('Cleared stale Slack queue card reference', {
           key,
           itemId: item.id,
+          code: slackApiErrorCode(err),
         });
-        continue;
+      } else {
+        failed++;
+        logger.warn('Failed to refresh queue card', {
+          key,
+          itemId: item.id,
+          code: slackApiErrorCode(err),
+          err: err instanceof Error ? err.message : String(err),
+        });
       }
-      failed++;
-      logger.warn('Failed to refresh queue card', {
-        key,
-        itemId: item.id,
-        err: err instanceof Error ? err.message : String(err),
-      });
     }
+
+    await sleep(QUEUE_CARD_REFRESH_GAP_MS);
   }
 
   if (refreshed > 0 || failed > 0 || staleCleared > 0) {

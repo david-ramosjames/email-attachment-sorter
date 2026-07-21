@@ -32,7 +32,7 @@ import { pickQueueMentionUserIdsForNewCard } from './queueMentionService.js';
 import { caseChannelStaffMentionIds } from './caseQueueRoutingService.js';
 import { resolveMentionDisplayNames } from '../utils/mentionDisplay.js';
 import { isCaseQueueChannel } from '../utils/queueChannel.js';
-import { isSlackMessageNotFoundError } from '../utils/slackErrors.js';
+import { isStaleSlackQueueCardError, SlackApiError } from '../utils/slackErrors.js';
 import { getSlackUserDisplayName, getSlackUserDisplayNames } from './slackUserDirectory.js';
 import {
   getSlackChannelIdByNameMap,
@@ -135,9 +135,19 @@ async function slackApi<T>(method: string, body: Record<string, unknown>): Promi
     },
     body: JSON.stringify(payload),
   });
-  const data = (await res.json()) as T & { ok: boolean; error?: string };
+  const data = (await res.json()) as T & {
+    ok: boolean;
+    error?: string;
+    retry_after?: number;
+  };
   if (!(data as { ok: boolean }).ok) {
-    throw new Error(`Slack API ${method} failed: ${(data as { error?: string }).error}`);
+    const fromBody =
+      typeof data.retry_after === 'number' && data.retry_after > 0 ? data.retry_after : null;
+    const headerRaw = res.headers.get('Retry-After');
+    const fromHeader = headerRaw ? Number.parseInt(headerRaw, 10) : NaN;
+    const retryAfter =
+      fromBody ?? (Number.isFinite(fromHeader) && fromHeader > 0 ? fromHeader : null);
+    throw new SlackApiError(method, data.error ?? 'unknown', retryAfter);
   }
   return data;
 }
@@ -1323,12 +1333,13 @@ export const slackService = {
         blocks,
       });
     } catch (err) {
-      if (isSlackMessageNotFoundError(err)) {
+      if (isStaleSlackQueueCardError(err)) {
         await clearSlackQueueCardRefsForBatch(item);
         logger.info('Slack queue card missing — cleared stored message reference', {
           itemId: item.id,
           channel: item.slack_queue_channel_id,
           ts: item.slack_queue_message_ts,
+          code: err instanceof SlackApiError ? err.code : undefined,
         });
         return;
       }

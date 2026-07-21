@@ -37,26 +37,24 @@ export interface SlackPublicJoinResult {
   abortReason: string | null;
 }
 
-export class SlackApiError extends Error {
-  readonly code: string;
-  readonly retryAfterSec: number | null;
-
-  constructor(method: string, code: string, retryAfterSec?: number | null) {
-    super(`Slack API ${method} failed: ${code}`);
-    this.name = 'SlackApiError';
-    this.code = code;
-    this.retryAfterSec = retryAfterSec ?? null;
-  }
-}
+import { SlackApiError } from '../utils/slackErrors.js';
+export { SlackApiError };
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function parseSlackError(method: string, data: { error?: string; retry_after?: number }): SlackApiError {
+function parseSlackError(
+  method: string,
+  data: { error?: string; retry_after?: number },
+  retryAfterHeader?: string | null
+): SlackApiError {
   const code = data.error ?? 'unknown';
-  const retryAfter =
+  const fromBody =
     typeof data.retry_after === 'number' && data.retry_after > 0 ? data.retry_after : null;
+  const fromHeader = retryAfterHeader ? Number.parseInt(retryAfterHeader, 10) : NaN;
+  const retryAfter =
+    fromBody ?? (Number.isFinite(fromHeader) && fromHeader > 0 ? fromHeader : null);
   return new SlackApiError(method, code, retryAfter);
 }
 
@@ -84,7 +82,7 @@ async function slackApiForm<T>(
     retry_after?: number;
   };
   if (!(data as { ok: boolean }).ok) {
-    throw parseSlackError(method, data);
+    throw parseSlackError(method, data, res.headers.get('Retry-After'));
   }
   return data;
 }
