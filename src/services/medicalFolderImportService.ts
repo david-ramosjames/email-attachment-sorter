@@ -4,7 +4,7 @@ import { upsertCaseMedicalRecords } from '../db/clientMedicalRecords.js';
 import type { CaseMedicalRecordInsert } from '../types/medicalRecords.js';
 import { parseCaseNumberFromDropboxFolder } from '../constants/rjlFolders.js';
 import {
-  downloadDropboxFile,
+  downloadDropboxFileByPathOrId,
   generateDropboxPermalink,
   getCasesRootPath,
   listCaseFolders,
@@ -197,15 +197,30 @@ async function processMedicalFile(opts: {
   caseId: string;
   caseNumber: string;
 }): Promise<{ imported: number; skipped: boolean }> {
-  const downloadRef = opts.entry.id ? `id:${opts.entry.id}` : opts.entry.path;
-  const buffer = await downloadDropboxFile(downloadRef);
+  const isLopFolder = pathBelowSection(opts.entry.path, opts.casePath, 'lop') != null;
+  // Seed tracker from LOP filenames even before download succeeds.
+  if (isLopFolder) {
+    const fromName = providerFromLopFilename(opts.entry.name);
+    if (fromName) {
+      await upsertTrackerProvider({
+        caseId: opts.caseId,
+        caseNumber: opts.caseNumber,
+        providerName: fromName,
+        hasLop: true,
+      });
+    }
+  }
+
+  const buffer = await downloadDropboxFileByPathOrId({
+    path: opts.entry.path,
+    id: opts.entry.id,
+  });
   const extracted = await extractDocumentExcerpt(buffer, mimeType(opts.entry.name), opts.entry.name);
   if (!extracted?.excerpt?.trim() || extracted.method === 'unsupported') {
     return { imported: 0, skipped: true };
   }
 
   let imported = 0;
-  const isLopFolder = pathBelowSection(opts.entry.path, opts.casePath, 'lop') != null;
   if (isLopFolder) {
     // Filename pattern is enough for most LOPs; only call AI when needed.
     let providerName = providerFromLopFilename(opts.entry.name);

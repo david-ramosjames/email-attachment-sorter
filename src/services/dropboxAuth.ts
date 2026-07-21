@@ -153,7 +153,11 @@ export function isExpiredDropboxTokenError(message: string): boolean {
   return (
     lower.includes('expired_access_token') ||
     lower.includes('invalid_access_token') ||
-    lower.includes('expired access token')
+    lower.includes('expired access token') ||
+    // Content downloads often surface only "Response failed with a 401 code"
+    // without the JSON error_summary that RPC endpoints return.
+    /\b401\b/.test(lower) ||
+    lower.includes('unauthorized')
   );
 }
 

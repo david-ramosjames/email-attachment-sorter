@@ -123,15 +123,37 @@ async function listFolderEntriesInternal(
 export function extractDropboxError(err: unknown): string {
   if (err && typeof err === 'object') {
     const e = err as {
-      error?: { error_summary?: string; error?: { '.tag'?: string } };
+      error?:
+        | string
+        | {
+            error_summary?: string;
+            error?: { '.tag'?: string } | string;
+            error_description?: string;
+          };
       message?: string;
       status?: number;
     };
-    if (e.error?.error_summary) return e.error.error_summary;
+    if (typeof e.error === 'string' && e.error.trim()) return e.error;
+    if (e.error && typeof e.error === 'object') {
+      if (e.error.error_summary) return e.error.error_summary;
+      if (typeof e.error.error === 'string') return e.error.error;
+      if (e.error.error_description) return e.error.error_description;
+      if (e.error.error && typeof e.error.error === 'object' && e.error.error['.tag']) {
+        return e.error.error['.tag'];
+      }
+    }
+    if (e.status && e.message) return `${e.message} (status ${e.status})`;
     if (e.message) return e.message;
     if (e.status) return `Response failed with a ${e.status} code`;
   }
   return String(err);
+}
+
+/** Dropbox metadata ids already look like `id:…` — never prefix twice. */
+export function dropboxIdPath(fileId: string): string {
+  const trimmed = fileId.trim();
+  if (!trimmed) throw new Error('Empty Dropbox file id');
+  return trimmed.startsWith('id:') ? trimmed : `id:${trimmed}`;
 }
 
 /** Dropbox filesUpload mode:add returns 409 when the path already exists. */
@@ -566,16 +588,7 @@ function coerceDropboxBinary(result: {
   return null;
 }
 
-/**
- * Download file bytes by Dropbox path or id (`id:…`).
- * Prefer id when available — path_display can be missing/wrong for nested listings.
- */
-export async function downloadDropboxFile(filePathOrId: string): Promise<Buffer> {
-  const path = filePathOrId.startsWith('id:')
-    ? filePathOrId
-    : filePathOrId.startsWith('/')
-      ? filePathOrId
-      : `/${filePathOrId}`;
+async function downloadDropboxFileOnce(path: string): Promise<Buffer> {
   const response = await withDropboxApi(undefined, (client) =>
     client.filesDownload({ path })
   );
@@ -588,6 +601,40 @@ export async function downloadDropboxFile(filePathOrId: string): Promise<Buffer>
     throw new Error(`Dropbox download returned no bytes for ${path}`);
   }
   return binary;
+}
+
+/**
+ * Download file bytes by Dropbox path or id (`id:…`).
+ * Paths from list_folder are preferred for team namespaces; id is a fallback.
+ */
+export async function downloadDropboxFile(filePathOrId: string): Promise<Buffer> {
+  const path = filePathOrId.startsWith('id:')
+    ? dropboxIdPath(filePathOrId)
+    : filePathOrId.startsWith('/')
+      ? filePathOrId
+      : `/${filePathOrId}`;
+  return downloadDropboxFileOnce(path);
+}
+
+/** Try path first, then file id — covers missing path_display and id quirks. */
+export async function downloadDropboxFileByPathOrId(opts: {
+  path: string;
+  id?: string | null;
+}): Promise<Buffer> {
+  const normalizedPath = opts.path.startsWith('/') ? opts.path : `/${opts.path}`;
+  try {
+    return await downloadDropboxFileOnce(normalizedPath);
+  } catch (pathErr) {
+    if (!opts.id) throw pathErr;
+    const idPath = dropboxIdPath(opts.id);
+    try {
+      return await downloadDropboxFileOnce(idPath);
+    } catch (idErr) {
+      const pathMsg = extractDropboxError(pathErr);
+      const idMsg = extractDropboxError(idErr);
+      throw new Error(`Dropbox download failed for ${normalizedPath} (${pathMsg}); id fallback ${idPath} (${idMsg})`);
+    }
+  }
 }
 
 export async function generateDropboxPermalink(filePath: string): Promise<string> {
