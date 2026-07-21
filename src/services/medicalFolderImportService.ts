@@ -199,21 +199,41 @@ async function consolidateTrackerDuplicates(caseId: string): Promise<void> {
     else clusters.push([row]);
   }
 
-  const removeIds: string[] = [];
+  let removed = 0;
 
   for (const cluster of clusters) {
     if (cluster.length < 2) continue;
 
-    const winner = [...cluster].sort((a, b) => trackerFilledScore(b) - trackerFilledScore(a))[0]!;
     const mergedName = cluster.reduce(
       (best, row) => preferredProviderName(best, row.provider_name),
-      winner.provider_name
+      cluster[0]!.provider_name
     );
+    // Prefer the row that already owns the merged display name so rename can't collide.
+    const exactName = cluster.find(
+      (row) => row.provider_name.trim().toLowerCase() === mergedName.trim().toLowerCase()
+    );
+    const winner =
+      exactName ??
+      [...cluster].sort((a, b) => trackerFilledScore(b) - trackerFilledScore(a))[0]!;
+    const loserIds = cluster.filter((row) => row.id !== winner.id).map((row) => row.id);
     const hasLop = cluster.some((row) => row.has_lop === true)
       ? true
       : cluster.some((row) => row.has_lop === false)
         ? false
         : null;
+
+    // Delete losers first — updating winner to mergedName while a loser still holds
+    // that exact normalized name hits case_medical_tracker_case_provider_unique.
+    if (loserIds.length) {
+      const { error: deleteError } = await client
+        .from('case_medical_tracker')
+        .delete()
+        .in('id', loserIds);
+      if (deleteError) {
+        throw new Error(`medical tracker consolidate delete failed: ${deleteError.message}`);
+      }
+      removed += loserIds.length;
+    }
 
     const { error: updateError } = await client
       .from('case_medical_tracker')
@@ -245,23 +265,12 @@ async function consolidateTrackerDuplicates(caseId: string): Promise<void> {
     if (updateError) {
       throw new Error(`medical tracker consolidate update failed: ${updateError.message}`);
     }
-
-    for (const row of cluster) {
-      if (row.id !== winner.id) removeIds.push(row.id);
-    }
   }
 
-  if (removeIds.length) {
-    const { error: deleteError } = await client
-      .from('case_medical_tracker')
-      .delete()
-      .in('id', removeIds);
-    if (deleteError) {
-      throw new Error(`medical tracker consolidate delete failed: ${deleteError.message}`);
-    }
+  if (removed) {
     logger.info('Consolidated medical tracker near-duplicates', {
       caseId,
-      removed: removeIds.length,
+      removed,
     });
   }
 }
@@ -283,17 +292,39 @@ async function upsertTrackerProvider(opts: {
     .eq('case_id', opts.caseId);
   if (lookupError) throw new Error(`medical tracker lookup failed: ${lookupError.message}`);
 
-  const match = (existingRows ?? []).find((row) =>
+  const matches = (existingRows ?? []).filter((row) =>
     providerNamesMatch(providerName, String(row.provider_name ?? ''))
   );
 
-  if (match?.id) {
+  if (matches.length > 0) {
+    const preferred = matches.reduce(
+      (best, row) => preferredProviderName(best, String(row.provider_name ?? '')),
+      providerName
+    );
+    const exact = matches.find(
+      (row) => String(row.provider_name ?? '').trim().toLowerCase() === preferred.trim().toLowerCase()
+    );
+    const winner = exact ?? matches[0]!;
+    const loserIds = matches.filter((row) => row.id !== winner.id).map((row) => row.id as string);
+
+    if (loserIds.length) {
+      const { error: deleteError } = await client
+        .from('case_medical_tracker')
+        .delete()
+        .in('id', loserIds);
+      if (deleteError) throw new Error(`medical tracker update failed: ${deleteError.message}`);
+    }
+
     const patch: Record<string, unknown> = { case_number: opts.caseNumber };
-    const preferred = preferredProviderName(String(match.provider_name ?? ''), providerName);
-    if (preferred !== match.provider_name) patch.provider_name = preferred;
-    if (opts.hasLop === true && match.has_lop !== true) patch.has_lop = true;
-    if (Object.keys(patch).length > 1 || patch.has_lop === true || patch.provider_name) {
-      const { error } = await client.from('case_medical_tracker').update(patch).eq('id', match.id);
+    if (preferred !== winner.provider_name) patch.provider_name = preferred;
+    if (
+      opts.hasLop === true ||
+      matches.some((row) => row.has_lop === true)
+    ) {
+      if (winner.has_lop !== true) patch.has_lop = true;
+    }
+    if (Object.keys(patch).length > 1) {
+      const { error } = await client.from('case_medical_tracker').update(patch).eq('id', winner.id);
       if (error) throw new Error(`medical tracker update failed: ${error.message}`);
     }
     return;
