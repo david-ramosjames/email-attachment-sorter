@@ -4,6 +4,7 @@ import type {
   MedicalDocumentType,
 } from '../types/medicalRecords.js';
 import { logger } from '../utils/logger.js';
+import { isWeakProviderName } from '../utils/providerNameQuality.js';
 
 const PROVIDER_MATCH_CONFIDENCE_THRESHOLD = 0.85;
 const DUPLICATE_MATCH_CONFIDENCE_THRESHOLD = 0.75;
@@ -175,6 +176,53 @@ async function recordFromSameDocumentExists(row: CaseMedicalRecordInsert): Promi
     return false;
   }
   return Boolean(data);
+}
+
+/** Fix prior imports that stored city/placeholder provider names for the same Dropbox file. */
+async function repairWeakProviderNameFromSameFile(
+  client: NonNullable<ReturnType<typeof getClientSupabase>>,
+  row: CaseMedicalRecordInsert
+): Promise<boolean> {
+  if (!row.dropbox_file_id || isWeakProviderName(row.provider_name)) return false;
+
+  const { data, error } = await client
+    .from('case_medical_records')
+    .select('id, provider_name')
+    .eq('dropbox_file_id', row.dropbox_file_id)
+    .limit(10);
+
+  if (error || !data?.length) return false;
+
+  let repaired = false;
+  for (const existing of data as { id: string; provider_name: string }[]) {
+    if (!isWeakProviderName(existing.provider_name)) continue;
+    if (existing.provider_name.trim().toLowerCase() === row.provider_name.trim().toLowerCase()) {
+      continue;
+    }
+    const { error: updateError } = await client
+      .from('case_medical_records')
+      .update({
+        provider_name: row.provider_name,
+        review_status: row.review_status,
+        dropbox_file_path: row.dropbox_file_path,
+        dropbox_permalink: row.dropbox_permalink ?? null,
+      })
+      .eq('id', existing.id);
+    if (updateError) {
+      logger.warn('Failed to repair weak provider_name', {
+        id: existing.id,
+        err: updateError.message,
+      });
+      continue;
+    }
+    logger.info('Repaired weak medical provider_name from Dropbox folder hint', {
+      id: existing.id,
+      from: existing.provider_name,
+      to: row.provider_name,
+    });
+    repaired = true;
+  }
+  return repaired;
 }
 
 /** Find an existing expense that this document likely updates. */
@@ -467,6 +515,11 @@ export async function upsertCaseMedicalRecords(
   let skipped = 0;
 
   for (const row of rows) {
+    if (await repairWeakProviderNameFromSameFile(client, row)) {
+      updated++;
+      continue;
+    }
+
     if (await recordFromSameDocumentExists(row)) {
       skipped++;
       continue;

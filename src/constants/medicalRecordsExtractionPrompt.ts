@@ -60,7 +60,8 @@ Extract billing fields as shown: provider, account number, dates, charges, balan
 * Focus on document totals — do NOT itemize individual procedures, CPT codes, or line-item charges.
 * Return ONE summary line per provider (or per distinct account) with the document's total charges and balance due.
 * Only return multiple lines when the document clearly lists separate providers or separate account numbers.
-* provider_name is required for every line — use the facility or physician name exactly as shown on the document.
+* provider_name is required for every line — use the facility or physician PRACTICE name from letterhead / logo / "Provider" field (e.g. "Quantum Pain & Orthopedics"), NOT the city, street, state, ZIP, patient name, or form placeholders.
+* Never set provider_name to a city alone (e.g. "San Antonio"), "Not Specified", "N/A", "Unknown", or similar placeholders — if the practice name is unclear, prefer the Dropbox folder hint when provided.
 * Dollar amounts must be numbers only (no $ or commas). Use null when not stated.
 * date_of_service must be YYYY-MM-DD or null.
 * account_number is the provider account, claim, or patient account number when shown.

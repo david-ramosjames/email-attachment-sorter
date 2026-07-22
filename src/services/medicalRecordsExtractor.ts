@@ -12,6 +12,7 @@ import type {
   MedicalPaymentStatus,
 } from '../types/medicalRecords.js';
 import { logger } from '../utils/logger.js';
+import { resolveProviderName } from '../utils/providerNameQuality.js';
 
 const MAX_TEXT_CHARS = 12_000;
 
@@ -248,6 +249,8 @@ export async function extractMedicalBillingLines(opts: {
   documentText: string;
   attachmentFilename: string;
   caseNumber: string;
+  /** Dropbox Medical/ provider folder — used when the model returns city/placeholder junk. */
+  providerFolderHint?: string | null;
 }): Promise<MedicalBillingExtractionResult> {
   const text = opts.documentText.replace(/\s+/g, ' ').trim().slice(0, MAX_TEXT_CHARS);
   if (text.length < 40) {
@@ -259,6 +262,7 @@ export async function extractMedicalBillingLines(opts: {
     };
   }
 
+  const hint = opts.providerFolderHint?.trim() || '';
   const response = await getOpenAI().chat.completions.create({
     model: getEnv().OPENAI_MODEL,
     temperature: 0,
@@ -276,8 +280,9 @@ export async function extractMedicalBillingLines(opts: {
         role: 'user',
         content:
           `Case number: ${opts.caseNumber}\n` +
-          `Filename: ${opts.attachmentFilename}\n\n` +
-          `Document text:\n${text}`,
+          `Filename: ${opts.attachmentFilename}\n` +
+          (hint ? `Dropbox provider folder hint: ${hint}\n` : '') +
+          `\nDocument text:\n${text}`,
       },
     ],
   });
@@ -308,7 +313,13 @@ export async function extractMedicalBillingLines(opts: {
     (parsed.lines ?? [])
       .map((line) => normalizeLine(line))
       .filter((line): line is ExtractedMedicalBillingLine => line != null && lineHasBillingData(line))
-      .map((line) => applyDocumentTypeRules(document_type, line))
+      .map((line) => {
+        const resolved = resolveProviderName(line.provider_name, hint);
+        return applyDocumentTypeRules(document_type, {
+          ...line,
+          provider_name: resolved ?? line.provider_name,
+        });
+      })
   );
 
   logger.info('Medical billing extraction finished', {
@@ -316,6 +327,8 @@ export async function extractMedicalBillingLines(opts: {
     filename: opts.attachmentFilename,
     documentType: document_type,
     lineCount: lines.length,
+    providerHint: hint || null,
+    providers: lines.map((l) => l.provider_name),
   });
 
   return {

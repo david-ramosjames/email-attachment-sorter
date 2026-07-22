@@ -16,6 +16,7 @@ import { extractLopProvider } from './lopProviderExtractor.js';
 import { extractMedicalBillingLines } from './medicalRecordsExtractor.js';
 import { logger } from '../utils/logger.js';
 import { preferredProviderName, providerNamesMatch } from '../utils/providerNameMatch.js';
+import { providerFolderFromDropboxPath } from '../utils/providerNameQuality.js';
 
 const SUPPORTED_EXTENSIONS = new Set(['pdf', 'doc', 'docx', 'png', 'jpg', 'jpeg', 'webp']);
 const GENERIC_MEDICAL_FOLDERS = new Set([
@@ -151,12 +152,29 @@ type TrackerRow = {
   id: string;
   provider_name: string;
   has_lop: boolean | null;
+  lop_files: TrackerLopFile[];
   treatment_finished_date: string | null;
   medical_requested_date: string | null;
   medical_received_date: string | null;
   billing_requested_date: string | null;
   billing_received_date: string | null;
 };
+
+type TrackerLopFile = {
+  name: string;
+  url: string;
+  path: string;
+  fileId: string | null;
+};
+
+function mergeTrackerLopFiles(...groups: TrackerLopFile[][]): TrackerLopFile[] {
+  const files = new Map<string, TrackerLopFile>();
+  for (const file of groups.flat()) {
+    const key = file.fileId || file.path || file.url;
+    if (key) files.set(key, file);
+  }
+  return [...files.values()];
+}
 
 function trackerFilledScore(row: TrackerRow): number {
   let score = 0;
@@ -183,7 +201,7 @@ async function consolidateTrackerDuplicates(caseId: string): Promise<void> {
   const { data, error } = await client
     .from('case_medical_tracker')
     .select(
-      'id, provider_name, has_lop, treatment_finished_date, medical_requested_date, medical_received_date, billing_requested_date, billing_received_date'
+      'id, provider_name, has_lop, lop_files, treatment_finished_date, medical_requested_date, medical_received_date, billing_requested_date, billing_received_date'
     )
     .eq('case_id', caseId);
   if (error) throw new Error(`medical tracker list failed: ${error.message}`);
@@ -222,24 +240,13 @@ async function consolidateTrackerDuplicates(caseId: string): Promise<void> {
         ? false
         : null;
 
-    // Delete losers first — updating winner to mergedName while a loser still holds
-    // that exact normalized name hits case_medical_tracker_case_provider_unique.
-    if (loserIds.length) {
-      const { error: deleteError } = await client
-        .from('case_medical_tracker')
-        .delete()
-        .in('id', loserIds);
-      if (deleteError) {
-        throw new Error(`medical tracker consolidate delete failed: ${deleteError.message}`);
-      }
-      removed += loserIds.length;
-    }
-
+    // Save merged values before deleting anything. Rename separately after deleting
+    // losers because one may still own mergedName under the unique constraint.
     const { error: updateError } = await client
       .from('case_medical_tracker')
       .update({
-        provider_name: mergedName,
         has_lop: hasLop,
+        lop_files: mergeTrackerLopFiles(...cluster.map((row) => row.lop_files ?? [])),
         treatment_finished_date:
           winner.treatment_finished_date ??
           cluster.find((r) => r.treatment_finished_date)?.treatment_finished_date ??
@@ -265,6 +272,27 @@ async function consolidateTrackerDuplicates(caseId: string): Promise<void> {
     if (updateError) {
       throw new Error(`medical tracker consolidate update failed: ${updateError.message}`);
     }
+
+    if (loserIds.length) {
+      const { error: deleteError } = await client
+        .from('case_medical_tracker')
+        .delete()
+        .in('id', loserIds);
+      if (deleteError) {
+        throw new Error(`medical tracker consolidate delete failed: ${deleteError.message}`);
+      }
+      removed += loserIds.length;
+    }
+
+    if (winner.provider_name !== mergedName) {
+      const { error: renameError } = await client
+        .from('case_medical_tracker')
+        .update({ provider_name: mergedName })
+        .eq('id', winner.id);
+      if (renameError) {
+        throw new Error(`medical tracker consolidate rename failed: ${renameError.message}`);
+      }
+    }
   }
 
   if (removed) {
@@ -280,6 +308,7 @@ async function upsertTrackerProvider(opts: {
   caseNumber: string;
   providerName: string;
   hasLop?: boolean;
+  lopFile?: TrackerLopFile | null;
 }): Promise<void> {
   const client = getClientSupabase();
   if (!client || !opts.providerName.trim()) return;
@@ -288,7 +317,7 @@ async function upsertTrackerProvider(opts: {
   // Exact + fuzzy match against all providers on the case (LOP short names vs full bill names).
   const { data: existingRows, error: lookupError } = await client
     .from('case_medical_tracker')
-    .select('id, provider_name, has_lop')
+    .select('id, provider_name, has_lop, lop_files')
     .eq('case_id', opts.caseId);
   if (lookupError) throw new Error(`medical tracker lookup failed: ${lookupError.message}`);
 
@@ -306,6 +335,25 @@ async function upsertTrackerProvider(opts: {
     );
     const winner = exact ?? matches[0]!;
     const loserIds = matches.filter((row) => row.id !== winner.id).map((row) => row.id as string);
+    const lopFiles = mergeTrackerLopFiles(
+      ...matches.map((row) => (Array.isArray(row.lop_files) ? row.lop_files : [])),
+      opts.lopFile ? [opts.lopFile] : []
+    );
+    const mergedHasLop =
+      opts.hasLop === true || matches.some((row) => row.has_lop === true)
+        ? true
+        : winner.has_lop;
+
+    // Persist merged data before removing duplicates.
+    const { error: mergeError } = await client
+      .from('case_medical_tracker')
+      .update({
+        case_number: opts.caseNumber,
+        has_lop: mergedHasLop,
+        lop_files: lopFiles,
+      })
+      .eq('id', winner.id);
+    if (mergeError) throw new Error(`medical tracker update failed: ${mergeError.message}`);
 
     if (loserIds.length) {
       const { error: deleteError } = await client
@@ -315,16 +363,11 @@ async function upsertTrackerProvider(opts: {
       if (deleteError) throw new Error(`medical tracker update failed: ${deleteError.message}`);
     }
 
-    const patch: Record<string, unknown> = { case_number: opts.caseNumber };
-    if (preferred !== winner.provider_name) patch.provider_name = preferred;
-    if (
-      opts.hasLop === true ||
-      matches.some((row) => row.has_lop === true)
-    ) {
-      if (winner.has_lop !== true) patch.has_lop = true;
-    }
-    if (Object.keys(patch).length > 1) {
-      const { error } = await client.from('case_medical_tracker').update(patch).eq('id', winner.id);
+    if (preferred !== winner.provider_name) {
+      const { error } = await client
+        .from('case_medical_tracker')
+        .update({ provider_name: preferred })
+        .eq('id', winner.id);
       if (error) throw new Error(`medical tracker update failed: ${error.message}`);
     }
     return;
@@ -336,6 +379,7 @@ async function upsertTrackerProvider(opts: {
     provider_name: providerName,
   };
   if (opts.hasLop === true) payload.has_lop = true;
+  if (opts.lopFile) payload.lop_files = [opts.lopFile];
   const { error } = await client.from('case_medical_tracker').insert(payload);
   if (error) {
     // Race: another worker inserted the same provider
@@ -352,6 +396,26 @@ async function processMedicalFile(opts: {
 }): Promise<{ imported: number; skipped: boolean }> {
   const isLopFolder = pathBelowSection(opts.entry.path, opts.casePath, 'lop') != null;
   const lopFromFilename = isLopFolder ? providerFromLopFilename(opts.entry.name) : null;
+  let permalink: string | null = null;
+  if (isLopFolder) {
+    try {
+      permalink = await generateDropboxPermalink(opts.entry.path);
+    } catch (err) {
+      logger.warn('Silent medical import could not create LOP permalink', {
+        path: opts.entry.path,
+        err: String(err),
+      });
+    }
+  }
+  const lopFile: TrackerLopFile | null =
+    isLopFolder && permalink
+      ? {
+          name: opts.entry.name,
+          url: permalink,
+          path: opts.entry.path,
+          fileId: opts.entry.id ?? null,
+        }
+      : null;
   // Seed tracker from LOP filenames even before download succeeds.
   if (lopFromFilename) {
     await upsertTrackerProvider({
@@ -359,6 +423,7 @@ async function processMedicalFile(opts: {
       caseNumber: opts.caseNumber,
       providerName: lopFromFilename,
       hasLop: true,
+      lopFile,
     });
   }
 
@@ -404,27 +469,31 @@ async function processMedicalFile(opts: {
         caseNumber: opts.caseNumber,
         providerName,
         hasLop: true,
+        lopFile,
       });
     }
   }
 
+  const providerFolderHint = providerFolderFromDropboxPath(opts.entry.path);
   const billing = await extractMedicalBillingLines({
     documentText: extracted.excerpt,
     attachmentFilename: opts.entry.name,
     caseNumber: opts.caseNumber,
+    providerFolderHint,
   });
   if (!billing.document_type || !billing.lines.length || !opts.entry.id) {
     return { imported, skipped: imported === 0 };
   }
 
-  let permalink: string | null = null;
-  try {
-    permalink = await generateDropboxPermalink(opts.entry.path);
-  } catch (err) {
-    logger.warn('Silent medical import could not create permalink', {
-      path: opts.entry.path,
-      err: String(err),
-    });
+  if (!permalink) {
+    try {
+      permalink = await generateDropboxPermalink(opts.entry.path);
+    } catch (err) {
+      logger.warn('Silent medical import could not create permalink', {
+        path: opts.entry.path,
+        err: String(err),
+      });
+    }
   }
 
   const rows: CaseMedicalRecordInsert[] = billing.lines.map((line) => ({

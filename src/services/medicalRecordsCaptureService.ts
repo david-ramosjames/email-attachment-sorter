@@ -8,6 +8,7 @@ import { auditService } from './auditService.js';
 import type { FileSorterItem } from '../types/index.js';
 import type { CaseMedicalRecordInsert } from '../types/medicalRecords.js';
 import { folderLabelFromDropboxPath } from '../utils/dropboxFolderLabel.js';
+import { providerFolderFromDropboxPath } from '../utils/providerNameQuality.js';
 import { logger } from '../utils/logger.js';
 
 const MEDICAL_DOC_TYPES = new Set(['Medical Records', 'Bills']);
@@ -133,6 +134,7 @@ export async function captureMedicalRecordsAfterApprove(opts: {
     documentText: extracted.excerpt,
     attachmentFilename: opts.item.attachment_filename,
     caseNumber: opts.caseNumber,
+    providerFolderHint: providerFolderFromDropboxPath(opts.dropboxPath),
   });
 
   if (!billing.document_type || !billing.lines.length) {
