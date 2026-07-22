@@ -180,6 +180,8 @@ export async function extractCaseExpenses(opts: {
   documentText: string;
   attachmentFilename: string;
   caseNumber: string;
+  /** First-level Expenses subfolder name, when the file sits under a vendor folder. */
+  vendorFolderHint?: string;
 }): Promise<CaseExpenseExtractionResult> {
   const text = opts.documentText.replace(/\s+/g, ' ').trim().slice(0, MAX_TEXT_CHARS);
   if (text.length < 40) {
@@ -190,6 +192,10 @@ export async function extractCaseExpenses(opts: {
       expenses: [],
     };
   }
+
+  const hintLine = opts.vendorFolderHint?.trim()
+    ? `Expenses vendor folder hint: ${opts.vendorFolderHint.trim()}\n`
+    : '';
 
   const response = await getOpenAI().chat.completions.create({
     model: getEnv().OPENAI_MODEL,
@@ -208,8 +214,9 @@ export async function extractCaseExpenses(opts: {
         role: 'user',
         content:
           `Case number: ${opts.caseNumber}\n` +
-          `Filename: ${opts.attachmentFilename}\n\n` +
-          `Document text:\n${text}`,
+          `Filename: ${opts.attachmentFilename}\n` +
+          hintLine +
+          `\nDocument text:\n${text}`,
       },
     ],
   });

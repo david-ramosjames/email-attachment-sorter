@@ -17,6 +17,11 @@ import { extractMedicalBillingLines } from './medicalRecordsExtractor.js';
 import { logger } from '../utils/logger.js';
 import { preferredProviderName, providerNamesMatch } from '../utils/providerNameMatch.js';
 import { providerFolderFromDropboxPath } from '../utils/providerNameQuality.js';
+import {
+  listExpenseVendorFolders,
+  processExpenseFile,
+  selectExpenseImportFiles,
+} from './expensesFolderImportService.js';
 
 const SUPPORTED_EXTENSIONS = new Set(['pdf', 'doc', 'docx', 'png', 'jpg', 'jpeg', 'webp']);
 const GENERIC_MEDICAL_FOLDERS = new Set([
@@ -34,7 +39,9 @@ export interface MedicalImportFolderPreview {
   path: string;
   lopFiles: number;
   medicalFiles: number;
+  expenseFiles: number;
   providerFolders: string[];
+  vendorFolders: string[];
 }
 
 export interface MedicalImportJob {
@@ -89,7 +96,7 @@ function pathBelowSection(path: string, casePath: string, section: 'lop' | 'medi
   return path.slice(prefix.length).replace(/^\/+/, '');
 }
 
-function selectImportFiles(tree: DropboxTreeEntry[], casePath: string): DropboxTreeEntry[] {
+function selectMedicalImportFiles(tree: DropboxTreeEntry[], casePath: string): DropboxTreeEntry[] {
   return tree.filter(
     (entry) =>
       isSupportedFile(entry) &&
@@ -122,13 +129,17 @@ function providerFromLopFilename(filename: string): string | null {
 
 async function previewFolder(name: string, path: string): Promise<MedicalImportFolderPreview> {
   const tree = await listDropboxTree(path);
-  const files = selectImportFiles(tree, path);
+  const medicalFiles = selectMedicalImportFiles(tree, path);
+  const expenseFiles = selectExpenseImportFiles(tree, path);
   return {
     name,
     path,
-    lopFiles: files.filter((f) => pathBelowSection(f.path, path, 'lop') != null).length,
-    medicalFiles: files.filter((f) => pathBelowSection(f.path, path, 'medical') != null).length,
+    lopFiles: medicalFiles.filter((f) => pathBelowSection(f.path, path, 'lop') != null).length,
+    medicalFiles: medicalFiles.filter((f) => pathBelowSection(f.path, path, 'medical') != null)
+      .length,
+    expenseFiles: expenseFiles.length,
     providerFolders: providerFolders(tree, path),
+    vendorFolders: listExpenseVendorFolders(tree, path),
   };
 }
 
@@ -575,7 +586,9 @@ async function runMedicalImport(jobId: string, preview: MedicalImportFolderPrevi
   const job = await getMedicalImportJob(jobId);
   if (!job) return;
   const tree = await listDropboxTree(preview.path);
-  const files = selectImportFiles(tree, preview.path);
+  const medicalFiles = selectMedicalImportFiles(tree, preview.path);
+  const expenseFiles = selectExpenseImportFiles(tree, preview.path);
+  const files = [...medicalFiles, ...expenseFiles];
   await updateJob(jobId, {
     status: 'running',
     total_files: files.length,
@@ -599,7 +612,7 @@ async function runMedicalImport(jobId: string, preview: MedicalImportFolderPrevi
   let failed = 0;
   const failureSamples: string[] = [];
 
-  for (const entry of files) {
+  for (const entry of medicalFiles) {
     try {
       const result = await processMedicalFile({
         entry,
@@ -624,9 +637,35 @@ async function runMedicalImport(jobId: string, preview: MedicalImportFolderPrevi
       imported_records: imported,
       skipped_files: skipped,
       failed_files: failed,
-      ...(failureSamples.length
-        ? { error_message: failureSamples.join(' | ') }
-        : {}),
+      ...(failureSamples.length ? { error_message: failureSamples.join(' | ') } : {}),
+    });
+  }
+
+  for (const entry of expenseFiles) {
+    try {
+      const result = await processExpenseFile({
+        entry,
+        casePath: preview.path,
+        caseId: job.caseId,
+        caseNumber: job.caseNumber,
+      });
+      imported += result.imported;
+      if (result.skipped) skipped++;
+    } catch (err) {
+      failed++;
+      const message = err instanceof Error ? err.message : String(err);
+      if (failureSamples.length < 5) {
+        failureSamples.push(`${entry.name}: ${message}`);
+      }
+      logger.warn(`Silent expenses import file failed: ${entry.path} — ${message}`);
+    }
+    processed++;
+    await updateJob(jobId, {
+      processed_files: processed,
+      imported_records: imported,
+      skipped_files: skipped,
+      failed_files: failed,
+      ...(failureSamples.length ? { error_message: failureSamples.join(' | ') } : {}),
     });
   }
 
@@ -665,7 +704,7 @@ export async function startMedicalImport(opts: {
       case_number: opts.caseNumber,
       dropbox_case_path: opts.folderPath,
       status: 'queued',
-      total_files: preview.lopFiles + preview.medicalFiles,
+      total_files: preview.lopFiles + preview.medicalFiles + preview.expenseFiles,
       started_by: opts.startedBy,
     })
     .select('*')

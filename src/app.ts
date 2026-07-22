@@ -6,6 +6,7 @@ import { adminRouter } from './routes/admin.js';
 import { faqRouter } from './routes/faq.js';
 import { dashboardRouter } from './routes/dashboard.js';
 import { medicalImportRouter } from './routes/medicalImport.js';
+import { expensesImportRouter } from './routes/expensesImport.js';
 import { getEnv } from './config/env.js';
 import { logger } from './utils/logger.js';
 
@@ -92,6 +93,7 @@ export function createApp(): Express {
   app.use(dashboardRouter);
   app.use(webhooksRouter);
   app.use(medicalImportRouter);
+  app.use(expensesImportRouter);
   app.use(adminRouter);
 
   app.use((_req, res) => {
