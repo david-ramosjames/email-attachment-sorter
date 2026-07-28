@@ -5,8 +5,8 @@ import { isCaseQueueChannel } from '../utils/queueChannel.js';
 import {
   listFileSorterItemsByReceivedDates,
   listFileSorterItemsReceivedSinceHours,
+  listCases,
   receivedDateKey,
-  getCaseById,
 } from '../db/supabase.js';
 import { getSlackUserDisplayNames } from '../services/slackUserDirectory.js';
 import type { Case, FileSorterItem, FileSorterItemStatus } from '../types/index.js';
@@ -37,6 +37,9 @@ export interface DashboardItemRow {
   slackUrl: string | null;
   taggedUserIds: string[];
   taggedUserLabel: string;
+  /** Case attorney (filter only — not used for assignee scoring). */
+  attorneyUserId: string | null;
+  attorneyLabel: string;
   routedToCaseChannel: boolean;
   reviewChannelLabel: string;
 }
@@ -50,6 +53,11 @@ export interface DashboardUserMetric {
   skipped: number;
 }
 
+export interface DashboardAttorneyOption {
+  userId: string;
+  displayName: string;
+}
+
 export interface DashboardSummary {
   from: string;
   to: string;
@@ -61,6 +69,7 @@ export interface DashboardSummary {
     skipped: number;
   };
   userMetrics: DashboardUserMetric[];
+  attorneys: DashboardAttorneyOption[];
   items: DashboardItemRow[];
 }
 
@@ -78,6 +87,24 @@ export function dashboardAssigneeUserIds(item: FileSorterItem): string[] {
   if (!isCaseQueueChannel(item.slack_queue_channel_id)) return ids;
   if (ids.length <= 1) return ids;
   return [ids[ids.length - 1]!];
+}
+
+/**
+ * Attorney for team filtering: case record first, else first mention on case-channel cards
+ * when attorney + paralegal were both tagged (attorney is tagged first).
+ */
+export function dashboardAttorneyUserId(
+  item: FileSorterItem,
+  caseRow: Case | null
+): string | null {
+  const fromCase = caseRow?.attorney_slack_user_id?.trim();
+  if (fromCase) return fromCase;
+
+  const ids = parseTaggedUserIds(item.queue_tagged_slack_user_id);
+  if (isCaseQueueChannel(item.slack_queue_channel_id) && ids.length >= 2) {
+    return ids[0]!;
+  }
+  return null;
 }
 
 function statusLabel(status: FileSorterItemStatus): string {
@@ -107,8 +134,9 @@ function formatCaseConfidence(confidence: number | null): string {
   return `${Math.round(confidence * 100)}%`;
 }
 
-function toDashboardRow(item: FileSorterItem): DashboardItemRow {
+function toDashboardRow(item: FileSorterItem, caseRow: Case | null): DashboardItemRow {
   const taggedUserIds = dashboardAssigneeUserIds(item);
+  const attorneyUserId = dashboardAttorneyUserId(item, caseRow);
   const routedToCaseChannel = isCaseQueueChannel(item.slack_queue_channel_id);
   return {
     id: item.id,
@@ -124,6 +152,8 @@ function toDashboardRow(item: FileSorterItem): DashboardItemRow {
     slackUrl: slackQueueMessageUrl(item.slack_queue_channel_id, item.slack_queue_message_ts),
     taggedUserIds,
     taggedUserLabel: taggedUserIds.length ? '' : '—',
+    attorneyUserId,
+    attorneyLabel: '',
     routedToCaseChannel,
     reviewChannelLabel: routedToCaseChannel ? 'Case channel' : 'Queue',
   };
@@ -161,12 +191,50 @@ export function buildUserMetrics(
   );
 }
 
+export function buildAttorneyOptions(
+  rows: DashboardItemRow[],
+  displayNames: Map<string, string>
+): DashboardAttorneyOption[] {
+  const byId = new Map<string, string>();
+  for (const row of rows) {
+    if (!row.attorneyUserId) continue;
+    if (byId.has(row.attorneyUserId)) continue;
+    byId.set(
+      row.attorneyUserId,
+      row.attorneyLabel?.trim() ||
+        displayNames.get(row.attorneyUserId) ||
+        row.attorneyUserId
+    );
+  }
+  return [...byId.entries()]
+    .map(([userId, displayName]) => ({ userId, displayName }))
+    .sort((a, b) => a.displayName.localeCompare(b.displayName));
+}
+
+async function loadCaseMap(items: FileSorterItem[]): Promise<Map<string, Case>> {
+  const needed = new Set(
+    items
+      .map((item) => item.suggested_case_number?.trim())
+      .filter((value): value is string => Boolean(value))
+  );
+  if (!needed.size) return new Map();
+
+  const cases = await listCases();
+  const map = new Map<string, Case>();
+  for (const caseRow of cases) {
+    if (needed.has(caseRow.case_number)) {
+      map.set(caseRow.case_number, caseRow);
+    }
+  }
+  return map;
+}
+
 async function resolveTaggedUserLabels(
   rows: DashboardItemRow[],
-  items: FileSorterItem[]
+  items: FileSorterItem[],
+  caseMap: Map<string, Case>
 ): Promise<Map<string, string>> {
   const itemById = new Map(items.map((item) => [item.id, item]));
-  const caseCache = new Map<string, Case | null>();
   const displayNames = new Map<string, string>();
   const idsNeedingLookup = new Set<string>();
 
@@ -174,6 +242,24 @@ async function resolveTaggedUserLabels(
     const item = itemById.get(row.id);
     const allTaggedIds = parseTaggedUserIds(item?.queue_tagged_slack_user_id);
     const fullNameMap = storedTaggedNameMap(allTaggedIds, item?.queue_tagged_slack_user_name);
+    const caseRow = item?.suggested_case_number
+      ? caseMap.get(item.suggested_case_number) ?? null
+      : null;
+
+    if (row.attorneyUserId) {
+      if (caseRow?.attorney_slack_user_id === row.attorneyUserId && caseRow.attorney_name?.trim()) {
+        displayNames.set(row.attorneyUserId, caseRow.attorney_name.trim());
+        row.attorneyLabel = caseRow.attorney_name.trim();
+      } else {
+        const fromStored = fullNameMap?.get(row.attorneyUserId);
+        if (fromStored) {
+          displayNames.set(row.attorneyUserId, fromStored);
+          row.attorneyLabel = fromStored;
+        } else {
+          idsNeedingLookup.add(row.attorneyUserId);
+        }
+      }
+    }
 
     for (const id of row.taggedUserIds) {
       const fromStored = fullNameMap?.get(id);
@@ -195,23 +281,21 @@ async function resolveTaggedUserLabels(
     const fromApi = await getSlackUserDisplayNames([...idsNeedingLookup]);
     for (const row of rows) {
       const item = itemById.get(row.id);
-      let caseRow: Case | null = null;
-      const caseNumber = item?.suggested_case_number;
-      if (caseNumber) {
-        if (!caseCache.has(caseNumber)) {
-          caseCache.set(caseNumber, await getCaseById(caseNumber));
-        }
-        caseRow = caseCache.get(caseNumber) ?? null;
-      }
+      const caseRow = item?.suggested_case_number
+        ? caseMap.get(item.suggested_case_number) ?? null
+        : null;
 
-      for (const id of row.taggedUserIds) {
-        if (!idsNeedingLookup.has(id) || displayNames.has(id)) continue;
+      const resolveOne = (id: string) => {
+        if (!idsNeedingLookup.has(id) || displayNames.has(id)) return;
         const apiName = fromApi.get(id) ?? id;
         const name = isSlackUserId(apiName)
           ? caseStaffDisplayName(caseRow, id) ?? apiName
           : apiName;
         displayNames.set(id, name);
-      }
+      };
+
+      for (const id of row.taggedUserIds) resolveOne(id);
+      if (row.attorneyUserId) resolveOne(row.attorneyUserId);
     }
   }
 
@@ -219,6 +303,9 @@ async function resolveTaggedUserLabels(
     row.taggedUserLabel = row.taggedUserIds.length
       ? row.taggedUserIds.map((id) => displayNames.get(id) ?? id).join(', ')
       : '—';
+    if (row.attorneyUserId) {
+      row.attorneyLabel = displayNames.get(row.attorneyUserId) ?? row.attorneyUserId;
+    }
   }
 
   return displayNames;
@@ -230,9 +317,16 @@ export async function buildDashboardSummary(
   timeZone: string,
   items: FileSorterItem[]
 ): Promise<DashboardSummary> {
-  const rows = items.map(toDashboardRow);
-  const displayNames = await resolveTaggedUserLabels(rows, items);
+  const caseMap = await loadCaseMap(items);
+  const rows = items.map((item) =>
+    toDashboardRow(
+      item,
+      item.suggested_case_number ? caseMap.get(item.suggested_case_number) ?? null : null
+    )
+  );
+  const displayNames = await resolveTaggedUserLabels(rows, items, caseMap);
   const userMetrics = buildUserMetrics(rows, displayNames);
+  const attorneys = buildAttorneyOptions(rows, displayNames);
 
   return {
     from,
@@ -245,6 +339,7 @@ export async function buildDashboardSummary(
       skipped: rows.filter((r) => r.outcome === 'skipped').length,
     },
     userMetrics,
+    attorneys,
     items: rows,
   };
 }

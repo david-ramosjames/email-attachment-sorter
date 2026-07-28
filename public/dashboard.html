@@ -302,6 +302,18 @@
       letter-spacing: 0.04em;
     }
 
+    .date-range select {
+      font: inherit;
+      padding: 0.4rem 0.55rem;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: #fff;
+      min-width: 160px;
+      text-transform: none;
+      letter-spacing: normal;
+      color: var(--text);
+    }
+
     .date-range input[type="date"] {
       font: inherit;
       padding: 0.45rem 0.55rem;
@@ -451,6 +463,12 @@
         Received to
         <input type="date" id="date-to" required />
       </label>
+      <label>
+        Attorney team
+        <select id="attorney-filter">
+          <option value="">All attorneys</option>
+        </select>
+      </label>
       <button type="submit" class="primary">Apply</button>
       <div class="presets">
         <span style="font-size:0.82rem;color:var(--text-muted);">Quick:</span>
@@ -496,9 +514,12 @@
 
   <script>
     let allItems = [];
+    let attorneys = [];
     let userMetrics = [];
+    let assigneeNameById = new Map();
     let activeFilter = 'all';
     let activeTaggedUser = '';
+    let activeAttorney = '';
 
     function formatYmd(d) {
       const y = d.getFullYear();
@@ -527,6 +548,8 @@
       }
       const tagged = params.get('tagged');
       if (tagged) activeTaggedUser = tagged;
+      const attorney = params.get('attorney');
+      if (attorney) activeAttorney = attorney;
       return {
         from: document.getElementById('date-from').value,
         to: document.getElementById('date-to').value,
@@ -536,7 +559,93 @@
     function updateUrl(from, to) {
       const params = new URLSearchParams({ from, to });
       if (activeTaggedUser) params.set('tagged', activeTaggedUser);
+      if (activeAttorney) params.set('attorney', activeAttorney);
       history.replaceState(null, '', `/dashboard?${params.toString()}`);
+    }
+
+    function itemsForAttorneyScope() {
+      if (!activeAttorney) return allItems;
+      return allItems.filter((item) => item.attorneyUserId === activeAttorney);
+    }
+
+    function rememberAssigneeNames(metrics, items) {
+      for (const m of metrics || []) {
+        if (m.userId && m.displayName) assigneeNameById.set(m.userId, m.displayName);
+      }
+      for (const item of items || []) {
+        const ids = item.taggedUserIds || [];
+        if (ids.length === 1 && item.taggedUserLabel && item.taggedUserLabel !== '—') {
+          assigneeNameById.set(ids[0], item.taggedUserLabel);
+        }
+      }
+    }
+
+    function buildClientMetrics(items) {
+      const byUser = new Map();
+      for (const item of items) {
+        for (const userId of item.taggedUserIds || []) {
+          let metric = byUser.get(userId);
+          if (!metric) {
+            metric = {
+              userId,
+              displayName: assigneeNameById.get(userId) || userId,
+              tagged: 0,
+              completed: 0,
+              pending: 0,
+              skipped: 0,
+            };
+            byUser.set(userId, metric);
+          }
+          metric.tagged++;
+          if (item.outcome === 'sorted') metric.completed++;
+          else if (item.outcome === 'skipped') metric.skipped++;
+          else metric.pending++;
+        }
+      }
+
+      return [...byUser.values()].sort(
+        (a, b) =>
+          b.tagged - a.tagged || a.displayName.localeCompare(b.displayName)
+      );
+    }
+
+    function summaryFromItems(items) {
+      return {
+        total: items.length,
+        sorted: items.filter((i) => i.outcome === 'sorted').length,
+        pending: items.filter((i) => i.outcome === 'pending').length,
+        skipped: items.filter((i) => i.outcome === 'skipped').length,
+      };
+    }
+
+    function applyAttorneyScope() {
+      const scoped = itemsForAttorneyScope();
+      rememberAssigneeNames(userMetrics, scoped);
+      userMetrics = buildClientMetrics(scoped);
+      setStats(summaryFromItems(scoped));
+      if (activeTaggedUser && !userMetrics.some((m) => m.userId === activeTaggedUser)) {
+        activeTaggedUser = '';
+      }
+      populateTaggedFilter();
+      renderUserMetrics();
+      renderTable();
+    }
+
+    function populateAttorneyFilter() {
+      const select = document.getElementById('attorney-filter');
+      const current = activeAttorney;
+      select.innerHTML =
+        '<option value="">All attorneys</option>' +
+        attorneys
+          .map(
+            (a) =>
+              `<option value="${escapeHtml(a.userId)}">${escapeHtml(a.displayName)}</option>`
+          )
+          .join('');
+      if (current && !attorneys.some((a) => a.userId === current)) {
+        activeAttorney = '';
+      }
+      select.value = activeAttorney;
     }
 
     function formatDisplayDate(ymd) {
@@ -564,7 +673,7 @@
     }
 
     function filteredItems() {
-      let items = allItems;
+      let items = itemsForAttorneyScope();
       if (activeFilter !== 'all') {
         items = items.filter((item) => item.outcome === activeFilter);
       }
@@ -786,6 +895,15 @@
       );
     });
 
+    document.getElementById('attorney-filter').addEventListener('change', (e) => {
+      activeAttorney = e.target.value;
+      applyAttorneyScope();
+      updateUrl(
+        document.getElementById('date-from').value,
+        document.getElementById('date-to').value
+      );
+    });
+
     document.querySelectorAll('.filters button').forEach((btn) => {
       btn.addEventListener('click', () => {
         document.querySelectorAll('.filters button').forEach((b) => b.classList.remove('active'));
@@ -824,13 +942,13 @@
         })
         .then((data) => {
           allItems = data.items || [];
-          userMetrics = data.userMetrics || [];
-          setStats(data.summary || { total: 0, sorted: 0, pending: 0, skipped: 0 });
-          populateTaggedFilter();
-          renderUserMetrics();
+          attorneys = data.attorneys || [];
+          assigneeNameById = new Map();
+          rememberAssigneeNames(data.userMetrics || [], allItems);
+          populateAttorneyFilter();
+          applyAttorneyScope();
           document.getElementById('updated-at').textContent =
             `Updated ${new Date().toLocaleTimeString()} · received ${data.from} to ${data.to}`;
-          renderTable();
         })
         .catch(() => {
           document.getElementById('table-wrap').innerHTML =
