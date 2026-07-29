@@ -37,11 +37,27 @@ const GENERIC_MEDICAL_FOLDERS = new Set([
 export interface MedicalImportFolderPreview {
   name: string;
   path: string;
+  /** All files under LOP, Medical, and Expenses (any type). */
+  scannedFiles: number;
+  /** Supported files that the import will process. */
+  includedFiles: number;
+  /** Scanned files skipped (unsupported type). */
+  excludedFiles: number;
   lopFiles: number;
   medicalFiles: number;
   expenseFiles: number;
   providerFolders: string[];
   vendorFolders: string[];
+}
+
+export type ImportFileSection = 'lop' | 'medical' | 'expenses';
+
+export interface ImportExcludedFile {
+  name: string;
+  path: string;
+  url: string | null;
+  reason: string;
+  section: ImportFileSection;
 }
 
 export interface MedicalImportJob {
@@ -50,7 +66,11 @@ export interface MedicalImportJob {
   caseNumber: string;
   dropboxCasePath: string;
   status: 'queued' | 'running' | 'completed' | 'failed';
+  /** Supported files processed by this job. */
   totalFiles: number;
+  scannedFiles: number;
+  excludedFiles: number;
+  excludedFileList: ImportExcludedFile[];
   processedFiles: number;
   importedRecords: number;
   skippedFiles: number;
@@ -107,6 +127,82 @@ function pathBelowSection(path: string, casePath: string, section: 'lop' | 'medi
   return path.slice(prefix.length).replace(/^\/+/, '');
 }
 
+function pathBelowExpenses(path: string, casePath: string): string | null {
+  const prefix = `${casePath}/expenses`.toLowerCase();
+  const lower = path.toLowerCase();
+  if (lower !== prefix && !lower.startsWith(`${prefix}/`)) return null;
+  return path.slice(prefix.length).replace(/^\/+/, '');
+}
+
+function importSectionForPath(path: string, casePath: string): ImportFileSection | null {
+  if (pathBelowSection(path, casePath, 'lop') != null) return 'lop';
+  if (pathBelowSection(path, casePath, 'medical') != null) return 'medical';
+  if (pathBelowExpenses(path, casePath) != null) return 'expenses';
+  return null;
+}
+
+function classifyCaseDropboxFiles(tree: DropboxTreeEntry[], casePath: string) {
+  const medicalIncluded = selectMedicalImportFiles(tree, casePath);
+  const expenseIncluded = selectExpenseImportFiles(tree, casePath);
+  const included = [...medicalIncluded, ...expenseIncluded];
+  const includedPaths = new Set(included.map((entry) => entry.path));
+  const excluded: Array<{ entry: DropboxTreeEntry; section: ImportFileSection; reason: string }> =
+    [];
+
+  for (const entry of tree) {
+    if (entry.type !== 'file') continue;
+    const section = importSectionForPath(entry.path, casePath);
+    if (!section || includedPaths.has(entry.path)) continue;
+    const ext = extension(entry.name);
+    excluded.push({
+      entry,
+      section,
+      reason: ext ? `Unsupported type (.${ext})` : 'Unsupported file type',
+    });
+  }
+
+  return {
+    included,
+    excluded,
+    scannedCount: included.length + excluded.length,
+  };
+}
+
+async function buildExcludedFileList(
+  excluded: Array<{ entry: DropboxTreeEntry; section: ImportFileSection; reason: string }>
+): Promise<ImportExcludedFile[]> {
+  const out: ImportExcludedFile[] = [];
+  const chunkSize = 8;
+  for (let i = 0; i < excluded.length; i += chunkSize) {
+    const chunk = excluded.slice(i, i + chunkSize);
+    const rows = await Promise.all(
+      chunk.map(async ({ entry, section, reason }) => {
+        let url: string | null = null;
+        try {
+          url = await generateDropboxPermalink(entry.path);
+        } catch (err) {
+          logger.warn('Silent import could not create excluded-file permalink', {
+            path: entry.path,
+            err: String(err),
+          });
+        }
+        return {
+          name: entry.name,
+          path: entry.path,
+          url,
+          reason,
+          section,
+        };
+      })
+    );
+    out.push(...rows);
+  }
+  return out.sort(
+    (a, b) =>
+      a.section.localeCompare(b.section) || a.name.localeCompare(b.name, undefined, { numeric: true })
+  );
+}
+
 function selectMedicalImportFiles(tree: DropboxTreeEntry[], casePath: string): DropboxTreeEntry[] {
   return tree.filter(
     (entry) =>
@@ -140,15 +236,19 @@ function providerFromLopFilename(filename: string): string | null {
 
 async function previewFolder(name: string, path: string): Promise<MedicalImportFolderPreview> {
   const tree = await listDropboxTree(path);
-  const medicalFiles = selectMedicalImportFiles(tree, path);
-  const expenseFiles = selectExpenseImportFiles(tree, path);
+  const { included, excluded, scannedCount } = classifyCaseDropboxFiles(tree, path);
+  const medicalIncluded = included.filter((f) => pathBelowSection(f.path, path, 'medical') != null);
+  const lopIncluded = included.filter((f) => pathBelowSection(f.path, path, 'lop') != null);
+  const expenseIncluded = included.filter((f) => pathBelowExpenses(f.path, path) != null);
   return {
     name,
     path,
-    lopFiles: medicalFiles.filter((f) => pathBelowSection(f.path, path, 'lop') != null).length,
-    medicalFiles: medicalFiles.filter((f) => pathBelowSection(f.path, path, 'medical') != null)
-      .length,
-    expenseFiles: expenseFiles.length,
+    scannedFiles: scannedCount,
+    includedFiles: included.length,
+    excludedFiles: excluded.length,
+    lopFiles: lopIncluded.length,
+    medicalFiles: medicalIncluded.length,
+    expenseFiles: expenseIncluded.length,
     providerFolders: providerFolders(tree, path),
     vendorFolders: listExpenseVendorFolders(tree, path),
   };
@@ -568,13 +668,24 @@ function jobFromRow(row: Record<string, unknown>): MedicalImportJob {
   const skippedFiles = Number(row.skipped_files ?? 0);
   const alreadyImportedFiles = Number(row.already_imported_files ?? 0);
   const noDataFiles = Number(row.no_data_files ?? 0);
+  const totalFiles = Number(row.total_files ?? 0);
+  const scannedFiles = Number(row.scanned_files ?? 0) || totalFiles;
+  const excludedFiles =
+    Number(row.excluded_files ?? 0) || Math.max(0, scannedFiles - totalFiles);
+  const rawExcluded = row.excluded_file_list;
+  const excludedFileList = Array.isArray(rawExcluded)
+    ? (rawExcluded as ImportExcludedFile[])
+    : [];
   return {
     id: row.id as string,
     caseId: row.case_id as string,
     caseNumber: row.case_number as string,
     dropboxCasePath: row.dropbox_case_path as string,
     status: row.status as MedicalImportJob['status'],
-    totalFiles: Number(row.total_files ?? 0),
+    totalFiles,
+    scannedFiles,
+    excludedFiles,
+    excludedFileList,
     processedFiles: Number(row.processed_files ?? 0),
     importedRecords: Number(row.imported_records ?? 0),
     skippedFiles,
@@ -604,14 +715,20 @@ async function updateJob(jobId: string, patch: Record<string, unknown>): Promise
   if (!client) throw new Error('Client Supabase is not configured');
   const { error } = await client.from('medical_import_jobs').update(patch).eq('id', jobId);
   if (!error) return;
-  // Migration 011 may not be applied yet — retry without skip-breakdown columns.
+  // Migration 011 / 012 may not be applied yet — retry without newer columns.
   if (
     'already_imported_files' in patch ||
-    'no_data_files' in patch
+    'no_data_files' in patch ||
+    'scanned_files' in patch ||
+    'excluded_files' in patch ||
+    'excluded_file_list' in patch
   ) {
     const {
       already_imported_files: _a,
       no_data_files: _n,
+      scanned_files: _s,
+      excluded_files: _e,
+      excluded_file_list: _l,
       ...legacyPatch
     } = patch;
     const { error: legacyError } = await client
@@ -628,14 +745,21 @@ async function runMedicalImport(jobId: string, preview: MedicalImportFolderPrevi
   const job = await getMedicalImportJob(jobId);
   if (!job) return;
   const tree = await listDropboxTree(preview.path);
-  const medicalFiles = selectMedicalImportFiles(tree, preview.path);
-  const expenseFiles = selectExpenseImportFiles(tree, preview.path);
-  const files = [...medicalFiles, ...expenseFiles];
+  const { included: files, excluded, scannedCount } = classifyCaseDropboxFiles(tree, preview.path);
   await updateJob(jobId, {
     status: 'running',
     total_files: files.length,
+    scanned_files: scannedCount,
+    excluded_files: excluded.length,
     started_at: new Date().toISOString(),
   });
+
+  const medicalFiles = files.filter(
+    (entry) =>
+      pathBelowSection(entry.path, preview.path, 'lop') != null ||
+      pathBelowSection(entry.path, preview.path, 'medical') != null
+  );
+  const expenseFiles = files.filter((entry) => pathBelowExpenses(entry.path, preview.path) != null);
 
   // Merge any existing near-duplicates before seeding more provider rows.
   await consolidateTrackerDuplicates(job.caseId);
@@ -719,6 +843,8 @@ async function runMedicalImport(jobId: string, preview: MedicalImportFolderPrevi
   // Catch near-duplicates created mid-run (e.g. LOP short name then full bill name).
   await consolidateTrackerDuplicates(job.caseId);
 
+  const excludedFileList = await buildExcludedFileList(excluded);
+
   await updateJob(jobId, {
     status: 'completed',
     completed_at: new Date().toISOString(),
@@ -728,6 +854,9 @@ async function runMedicalImport(jobId: string, preview: MedicalImportFolderPrevi
     already_imported_files: alreadyImported,
     no_data_files: noData,
     failed_files: failed,
+    scanned_files: scannedCount,
+    excluded_files: excluded.length,
+    excluded_file_list: excludedFileList,
     error_message: failureSamples.length ? failureSamples.join(' | ') : null,
   });
 }
@@ -753,7 +882,9 @@ export async function startMedicalImport(opts: {
       case_number: opts.caseNumber,
       dropbox_case_path: opts.folderPath,
       status: 'queued',
-      total_files: preview.lopFiles + preview.medicalFiles + preview.expenseFiles,
+      total_files: preview.includedFiles,
+      scanned_files: preview.scannedFiles,
+      excluded_files: preview.excludedFiles,
       started_by: opts.startedBy,
     })
     .select('*')
