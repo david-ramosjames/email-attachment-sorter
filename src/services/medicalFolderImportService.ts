@@ -54,11 +54,22 @@ export interface MedicalImportJob {
   processedFiles: number;
   importedRecords: number;
   skippedFiles: number;
+  /** Files skipped because records already existed (dedup). */
+  alreadyImportedFiles: number;
+  /** Files with no extractable / billable data (not an error). */
+  noDataFiles: number;
   failedFiles: number;
   errorMessage: string | null;
   createdAt: string;
   completedAt: string | null;
 }
+
+export type ImportFileSkipReason = 'already_imported' | 'no_data';
+
+type ImportFileResult = {
+  imported: number;
+  skipReason?: ImportFileSkipReason;
+};
 
 function extension(filename: string): string {
   const dot = filename.lastIndexOf('.');
@@ -404,7 +415,7 @@ async function processMedicalFile(opts: {
   casePath: string;
   caseId: string;
   caseNumber: string;
-}): Promise<{ imported: number; skipped: boolean }> {
+}): Promise<ImportFileResult> {
   const isLopFolder = pathBelowSection(opts.entry.path, opts.casePath, 'lop') != null;
   const lopFromFilename = isLopFolder ? providerFromLopFilename(opts.entry.name) : null;
   let permalink: string | null = null;
@@ -452,16 +463,18 @@ async function processMedicalFile(opts: {
           err instanceof Error ? err.message : String(err)
         }`
       );
-      return { imported: 0, skipped: true };
+      return { imported: 0 };
     }
     throw err;
   }
   const extracted = await extractDocumentExcerpt(buffer, mimeType(opts.entry.name), opts.entry.name);
   if (!extracted?.excerpt?.trim() || extracted.method === 'unsupported') {
-    return { imported: 0, skipped: true };
+    // LOP tracker may still have been seeded from the filename.
+    return lopFromFilename ? { imported: 0 } : { imported: 0, skipReason: 'no_data' };
   }
 
   let imported = 0;
+  let lopUpdated = Boolean(lopFromFilename);
   if (isLopFolder) {
     // Filename pattern is enough for most LOPs; only call AI when needed.
     let providerName = providerFromLopFilename(opts.entry.name);
@@ -482,6 +495,7 @@ async function processMedicalFile(opts: {
         hasLop: true,
         lopFile,
       });
+      lopUpdated = true;
     }
   }
 
@@ -493,7 +507,9 @@ async function processMedicalFile(opts: {
     providerFolderHint,
   });
   if (!billing.document_type || !billing.lines.length || !opts.entry.id) {
-    return { imported, skipped: imported === 0 };
+    // LOP-only files that updated the tracker are successes, not skips.
+    if (lopUpdated || imported > 0) return { imported };
+    return { imported: 0, skipReason: 'no_data' };
   }
 
   if (!permalink) {
@@ -542,10 +558,16 @@ async function processMedicalFile(opts: {
     });
   }
 
-  return { imported, skipped: result.inserted + result.updated === 0 };
+  if (result.inserted + result.updated === 0) {
+    return { imported: 0, skipReason: 'already_imported' };
+  }
+  return { imported };
 }
 
 function jobFromRow(row: Record<string, unknown>): MedicalImportJob {
+  const skippedFiles = Number(row.skipped_files ?? 0);
+  const alreadyImportedFiles = Number(row.already_imported_files ?? 0);
+  const noDataFiles = Number(row.no_data_files ?? 0);
   return {
     id: row.id as string,
     caseId: row.case_id as string,
@@ -555,7 +577,9 @@ function jobFromRow(row: Record<string, unknown>): MedicalImportJob {
     totalFiles: Number(row.total_files ?? 0),
     processedFiles: Number(row.processed_files ?? 0),
     importedRecords: Number(row.imported_records ?? 0),
-    skippedFiles: Number(row.skipped_files ?? 0),
+    skippedFiles,
+    alreadyImportedFiles,
+    noDataFiles,
     failedFiles: Number(row.failed_files ?? 0),
     errorMessage: (row.error_message as string) ?? null,
     createdAt: row.created_at as string,
@@ -579,7 +603,25 @@ async function updateJob(jobId: string, patch: Record<string, unknown>): Promise
   const client = getClientSupabase();
   if (!client) throw new Error('Client Supabase is not configured');
   const { error } = await client.from('medical_import_jobs').update(patch).eq('id', jobId);
-  if (error) throw error;
+  if (!error) return;
+  // Migration 011 may not be applied yet — retry without skip-breakdown columns.
+  if (
+    'already_imported_files' in patch ||
+    'no_data_files' in patch
+  ) {
+    const {
+      already_imported_files: _a,
+      no_data_files: _n,
+      ...legacyPatch
+    } = patch;
+    const { error: legacyError } = await client
+      .from('medical_import_jobs')
+      .update(legacyPatch)
+      .eq('id', jobId);
+    if (legacyError) throw legacyError;
+    return;
+  }
+  throw error;
 }
 
 async function runMedicalImport(jobId: string, preview: MedicalImportFolderPreview): Promise<void> {
@@ -608,20 +650,37 @@ async function runMedicalImport(jobId: string, preview: MedicalImportFolderPrevi
 
   let processed = 0;
   let imported = 0;
-  let skipped = 0;
+  let alreadyImported = 0;
+  let noData = 0;
   let failed = 0;
   const failureSamples: string[] = [];
 
+  const applyResult = (result: ImportFileResult) => {
+    imported += result.imported;
+    if (result.skipReason === 'already_imported') alreadyImported++;
+    if (result.skipReason === 'no_data') noData++;
+  };
+
+  const progressPatch = () => ({
+    processed_files: processed,
+    imported_records: imported,
+    skipped_files: alreadyImported + noData,
+    already_imported_files: alreadyImported,
+    no_data_files: noData,
+    failed_files: failed,
+    ...(failureSamples.length ? { error_message: failureSamples.join(' | ') } : {}),
+  });
+
   for (const entry of medicalFiles) {
     try {
-      const result = await processMedicalFile({
-        entry,
-        casePath: preview.path,
-        caseId: job.caseId,
-        caseNumber: job.caseNumber,
-      });
-      imported += result.imported;
-      if (result.skipped) skipped++;
+      applyResult(
+        await processMedicalFile({
+          entry,
+          casePath: preview.path,
+          caseId: job.caseId,
+          caseNumber: job.caseNumber,
+        })
+      );
     } catch (err) {
       failed++;
       const message = err instanceof Error ? err.message : String(err);
@@ -632,25 +691,19 @@ async function runMedicalImport(jobId: string, preview: MedicalImportFolderPrevi
       logger.warn(`Silent medical import file failed: ${entry.path} — ${message}`);
     }
     processed++;
-    await updateJob(jobId, {
-      processed_files: processed,
-      imported_records: imported,
-      skipped_files: skipped,
-      failed_files: failed,
-      ...(failureSamples.length ? { error_message: failureSamples.join(' | ') } : {}),
-    });
+    await updateJob(jobId, progressPatch());
   }
 
   for (const entry of expenseFiles) {
     try {
-      const result = await processExpenseFile({
-        entry,
-        casePath: preview.path,
-        caseId: job.caseId,
-        caseNumber: job.caseNumber,
-      });
-      imported += result.imported;
-      if (result.skipped) skipped++;
+      applyResult(
+        await processExpenseFile({
+          entry,
+          casePath: preview.path,
+          caseId: job.caseId,
+          caseNumber: job.caseNumber,
+        })
+      );
     } catch (err) {
       failed++;
       const message = err instanceof Error ? err.message : String(err);
@@ -660,13 +713,7 @@ async function runMedicalImport(jobId: string, preview: MedicalImportFolderPrevi
       logger.warn(`Silent expenses import file failed: ${entry.path} — ${message}`);
     }
     processed++;
-    await updateJob(jobId, {
-      processed_files: processed,
-      imported_records: imported,
-      skipped_files: skipped,
-      failed_files: failed,
-      ...(failureSamples.length ? { error_message: failureSamples.join(' | ') } : {}),
-    });
+    await updateJob(jobId, progressPatch());
   }
 
   // Catch near-duplicates created mid-run (e.g. LOP short name then full bill name).
@@ -677,7 +724,9 @@ async function runMedicalImport(jobId: string, preview: MedicalImportFolderPrevi
     completed_at: new Date().toISOString(),
     processed_files: processed,
     imported_records: imported,
-    skipped_files: skipped,
+    skipped_files: alreadyImported + noData,
+    already_imported_files: alreadyImported,
+    no_data_files: noData,
     failed_files: failed,
     error_message: failureSamples.length ? failureSamples.join(' | ') : null,
   });

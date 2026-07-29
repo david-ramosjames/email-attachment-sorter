@@ -187,9 +187,9 @@ export async function processExpenseFile(opts: {
   casePath: string;
   caseId: string;
   caseNumber: string;
-}): Promise<{ imported: number; skipped: boolean }> {
+}): Promise<{ imported: number; skipReason?: 'already_imported' | 'no_data' }> {
   if (!opts.entry.id) {
-    return { imported: 0, skipped: true };
+    return { imported: 0, skipReason: 'no_data' };
   }
 
   const buffer = await downloadDropboxFileByPathOrId({
@@ -198,7 +198,7 @@ export async function processExpenseFile(opts: {
   });
   const extracted = await extractDocumentExcerpt(buffer, mimeType(opts.entry.name), opts.entry.name);
   if (!extracted?.excerpt?.trim() || extracted.method === 'unsupported') {
-    return { imported: 0, skipped: true };
+    return { imported: 0, skipReason: 'no_data' };
   }
 
   const vendorFolderHint = vendorFolderFromPath(opts.entry.path, opts.casePath);
@@ -210,7 +210,7 @@ export async function processExpenseFile(opts: {
   });
 
   if (!result.expenses.length) {
-    return { imported: 0, skipped: true };
+    return { imported: 0, skipReason: 'no_data' };
   }
 
   let permalink: string | null = null;
@@ -266,7 +266,10 @@ export async function processExpenseFile(opts: {
   });
 
   const { inserted, skipped } = await insertCaseExpenses(rows);
-  return { imported: inserted, skipped: inserted === 0 && skipped > 0 };
+  if (inserted === 0 && skipped > 0) {
+    return { imported: 0, skipReason: 'already_imported' };
+  }
+  return { imported: inserted };
 }
 
 function jobFromRow(row: Record<string, unknown>): ExpensesImportJob {
@@ -332,7 +335,7 @@ async function runExpensesImport(jobId: string, preview: ExpensesImportFolderPre
         caseNumber: job.caseNumber,
       });
       imported += result.imported;
-      if (result.skipped) skipped++;
+      if (result.skipReason) skipped++;
     } catch (err) {
       failed++;
       const message = err instanceof Error ? err.message : String(err);
