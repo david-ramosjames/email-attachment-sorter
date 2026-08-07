@@ -693,6 +693,36 @@ function buildQueueBlocks(
   const reviewedBy = options?.reviewedByUserId?.trim();
   const caseLabel = queueCaseLabel(item, caseRow);
 
+  // Collapse dismissed cards — keep confirmation only, drop original queue details.
+  if (status === 'ignored') {
+    const subject = item.subject?.trim() || '(no subject)';
+    const fileNote = batch ? `${items.length} attachments` : item.attachment_filename;
+    return [
+      {
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: slackSectionWithExtras(
+            ':no_entry_sign: *Do Not Sort pressed*\n' +
+              (batch
+                ? 'These attachments were not filed to Dropbox.'
+                : 'This attachment was not filed to Dropbox.'),
+            reviewedBy ? [`Pressed by: ${slackUserMention(reviewedBy)}`] : []
+          ),
+        },
+      },
+      {
+        type: 'context',
+        elements: [
+          {
+            type: 'mrkdwn',
+            text: `${queueCardEmoji('ignored')} *RJL File Sorter* · ${slackFieldText(subject, 80)} · ${slackFieldText(fileNote, 80)}`,
+          },
+        ],
+      },
+    ];
+  }
+
   const folderLabels = [
     ...new Set(
       items
@@ -898,17 +928,6 @@ function buildQueueBlocks(
             `Case: ${caseLabel}` +
             (batch ? `\n${formatAttachmentList(items)}` : ` · Folder: ${folderName}`),
           successExtras.filter(Boolean)
-        ),
-      },
-    });
-  } else if (status === 'ignored') {
-    blocks.unshift({
-      type: 'section',
-      text: {
-        type: 'mrkdwn',
-        text: slackSectionWithExtras(
-          ':no_entry_sign: *Do Not Sort pressed*\nThis attachment was not filed to Dropbox.',
-          reviewedBy ? [`Pressed by: ${slackUserMention(reviewedBy)}`] : []
         ),
       },
     });
