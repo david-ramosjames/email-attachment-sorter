@@ -1154,6 +1154,15 @@ export async function handleDoNotSort(itemId: string, slackUserId: string): Prom
     reviewedByUserId: slackUserId,
     disabled: true,
   });
+
+  try {
+    await slackService.postDoNotSortThreadDetails(primary, batch, caseRow);
+  } catch (err) {
+    logger.warn('Could not post Do Not Sort details to thread', {
+      itemId: primary.id,
+      err: String(err),
+    });
+  }
 }
 
 export async function reindexDropboxFoldersForCase(caseNumber: string): Promise<number> {

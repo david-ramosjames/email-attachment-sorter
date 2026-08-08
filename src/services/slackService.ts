@@ -672,6 +672,50 @@ function buildQueueHeaderText(status: string, batch: boolean, batchCount: number
   return `${emoji} New File Sorter Item${batchSuffix}`;
 }
 
+function buildDoNotSortThreadDetails(
+  items: FileSorterItem[],
+  caseRow: Case | null
+): string {
+  const batch = items.length > 1;
+  const item = pickPrimaryQueueItem(items);
+  const caseLabel = queueCaseLabel(item, caseRow);
+  const folderLabels = [
+    ...new Set(
+      items
+        .map((i) => folderLabelFromPath(i.suggested_folder_path))
+        .filter((f) => f !== '—')
+    ),
+  ];
+  const folderDisplay = batch
+    ? folderLabels.length === 0
+      ? items.some(isIntakeNoCaseItem)
+        ? 'Intake'
+        : '—'
+      : folderLabels.length === 1
+        ? folderLabels[0]!
+        : `Multiple (${folderLabels.join(', ')})`
+    : queueFolderLabel(item, folderLabelFromPath(item.suggested_folder_path));
+
+  const lines = [
+    ':mag: *Original card details* _(kept in thread after Do Not Sort)_',
+    `*Subject:* ${slackFieldText(item.subject ?? '—', 200)}`,
+    `*From:* ${slackFieldText(item.from_email)}`,
+    batch
+      ? `*Attachments:*\n${formatAttachmentList(items)}`
+      : `*Attachment:* ${slackFieldText(item.attachment_filename, 200)}`,
+    `*AI Suggested Case:* ${slackFieldText(caseLabel)}`,
+    `*AI Suggested Folder:* ${slackFieldText(folderDisplay)}`,
+    `*Confidence:* ${
+      batch
+        ? formatConfidenceScoresBatch(items).replace(/\n/g, ' · ')
+        : formatConfidenceScores(item).replace(/\n/g, ' · ')
+    }`,
+    `*Reason:* ${slackFieldText(item.ai_reason ?? '—', 500)}`,
+  ];
+
+  return lines.join('\n');
+}
+
 function buildQueueBlocks(
   items: FileSorterItem[],
   caseRow: Case | null,
@@ -1411,6 +1455,16 @@ export const slackService = {
       item.slack_queue_message_ts,
       text
     );
+  },
+
+  /** Archive compact original-card details into the thread after Do Not Sort collapses the card. */
+  async postDoNotSortThreadDetails(
+    item: FileSorterItem,
+    items: FileSorterItem[],
+    caseRow: Case | null
+  ): Promise<void> {
+    if (!item.slack_queue_channel_id || !item.slack_queue_message_ts) return;
+    await slackService.postQueueCardThreadNotice(item, buildDoNotSortThreadDetails(items, caseRow));
   },
 
   async getThreadReplies(ctx: SlackThreadContext): Promise<string[]> {
