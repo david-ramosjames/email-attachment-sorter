@@ -555,9 +555,8 @@ function formatAttachmentList(items: FileSorterItem[]): string {
   return items
     .map((i) => {
       const prefix = attachmentStatusPrefix(i.status);
-      const folder = i.suggested_folder_path
-        ? folderLabelFromPath(i.suggested_folder_path)
-        : null;
+      const path = i.final_dropbox_path ?? i.suggested_folder_path;
+      const folder = path ? folderLabelFromPath(path) : null;
       const folderNote = folder && folder !== '—' ? ` → ${folder}` : '';
       const external = isExternalLinkItem(i) ? ' _(external link)_' : '';
       const skipped = i.status === 'ignored' ? ' _(skip)_' : '';
@@ -565,6 +564,67 @@ function formatAttachmentList(items: FileSorterItem[]): string {
       return `${prefix}${name}${external}${folderNote}${skipped}`;
     })
     .join('\n');
+}
+
+function buildQueueCardThreadArchive(opts: {
+  items: FileSorterItem[];
+  caseRow: Case | null;
+  archiveReason: 'ignored' | 'saved';
+  savedFiles?: Array<{ filename: string; dropboxLink: string }>;
+}): string {
+  const batch = opts.items.length > 1;
+  const item = pickPrimaryQueueItem(opts.items);
+  const caseLabel = queueCaseLabel(item, opts.caseRow);
+  const folderLabels = [
+    ...new Set(
+      opts.items
+        .map((i) => folderLabelFromPath(i.final_dropbox_path ?? i.suggested_folder_path))
+        .filter((f) => f !== '—')
+    ),
+  ];
+  const folderDisplay = batch
+    ? folderLabels.length === 0
+      ? opts.items.some(isIntakeNoCaseItem)
+        ? 'Intake'
+        : '—'
+      : folderLabels.length === 1
+        ? folderLabels[0]!
+        : `Multiple (${folderLabels.join(', ')})`
+    : queueFolderLabel(
+        item,
+        folderLabelFromPath(item.final_dropbox_path ?? item.suggested_folder_path)
+      );
+
+  const header =
+    opts.archiveReason === 'ignored'
+      ? ':mag: *Original card details* _(kept in thread after Do Not Sort)_'
+      : ':mag: *Sort details* _(kept in thread after Approve)_';
+
+  const lines = [
+    header,
+    `*Subject:* ${slackFieldText(item.subject ?? '—', 200)}`,
+    `*From:* ${slackFieldText(item.from_email)}`,
+    batch
+      ? `*Attachments:*\n${formatAttachmentList(opts.items)}`
+      : `*Attachment:* ${slackFieldText(item.attachment_filename, 200)}`,
+    `*AI Suggested Case:* ${slackFieldText(caseLabel)}`,
+    `*AI Suggested Folder:* ${slackFieldText(folderDisplay)}`,
+    `*Confidence:* ${
+      batch
+        ? formatConfidenceScoresBatch(opts.items).replace(/\n/g, ' · ')
+        : formatConfidenceScores(item).replace(/\n/g, ' · ')
+    }`,
+    `*Reason:* ${slackFieldText(item.ai_reason ?? '—', 500)}`,
+  ];
+
+  if (opts.savedFiles?.length) {
+    lines.push('*Filed to Dropbox:*');
+    for (const f of opts.savedFiles) {
+      lines.push(`• ${slackMrkdwnLink(f.dropboxLink, f.filename)}`);
+    }
+  }
+
+  return lines.join('\n');
 }
 
 function formatExternalLinksSection(items: FileSorterItem[]): string | null {
@@ -740,44 +800,20 @@ function buildDoNotSortThreadDetails(
   items: FileSorterItem[],
   caseRow: Case | null
 ): string {
-  const batch = items.length > 1;
-  const item = pickPrimaryQueueItem(items);
-  const caseLabel = queueCaseLabel(item, caseRow);
-  const folderLabels = [
-    ...new Set(
-      items
-        .map((i) => folderLabelFromPath(i.suggested_folder_path))
-        .filter((f) => f !== '—')
-    ),
-  ];
-  const folderDisplay = batch
-    ? folderLabels.length === 0
-      ? items.some(isIntakeNoCaseItem)
-        ? 'Intake'
-        : '—'
-      : folderLabels.length === 1
-        ? folderLabels[0]!
-        : `Multiple (${folderLabels.join(', ')})`
-    : queueFolderLabel(item, folderLabelFromPath(item.suggested_folder_path));
+  return buildQueueCardThreadArchive({ items, caseRow, archiveReason: 'ignored' });
+}
 
-  const lines = [
-    ':mag: *Original card details* _(kept in thread after Do Not Sort)_',
-    `*Subject:* ${slackFieldText(item.subject ?? '—', 200)}`,
-    `*From:* ${slackFieldText(item.from_email)}`,
-    batch
-      ? `*Attachments:*\n${formatAttachmentList(items)}`
-      : `*Attachment:* ${slackFieldText(item.attachment_filename, 200)}`,
-    `*AI Suggested Case:* ${slackFieldText(caseLabel)}`,
-    `*AI Suggested Folder:* ${slackFieldText(folderDisplay)}`,
-    `*Confidence:* ${
-      batch
-        ? formatConfidenceScoresBatch(items).replace(/\n/g, ' · ')
-        : formatConfidenceScores(item).replace(/\n/g, ' · ')
-    }`,
-    `*Reason:* ${slackFieldText(item.ai_reason ?? '—', 500)}`,
-  ];
-
-  return lines.join('\n');
+function buildSortedThreadDetails(
+  items: FileSorterItem[],
+  caseRow: Case | null,
+  savedFiles: Array<{ filename: string; dropboxLink: string }>
+): string {
+  return buildQueueCardThreadArchive({
+    items,
+    caseRow,
+    archiveReason: 'saved',
+    savedFiles,
+  });
 }
 
 function buildQueueBlocks(
@@ -825,6 +861,40 @@ function buildQueueBlocks(
           {
             type: 'mrkdwn',
             text: `${queueCardEmoji('ignored')} *RJL File Sorter* · ${slackFieldText(subject, 80)} · ${slackFieldText(fileNote, 80)}`,
+          },
+        ],
+      },
+    ];
+  }
+
+  // Collapse sorted cards — confirmation on the card, details + Dropbox links in thread.
+  if (status === 'saved') {
+    const subject = item.subject?.trim() || '(no subject)';
+    const fileNote = batch ? `${items.length} attachments` : item.attachment_filename;
+    const sortedPath = item.final_dropbox_path ?? item.suggested_folder_path;
+    const folderName = folderLabelFromPath(sortedPath);
+    const savedCount = items.filter((i) => i.status === 'saved').length;
+    const body = batch
+      ? `:white_check_mark: *Successfully sorted to Dropbox*\nCase: ${caseLabel}\n${savedCount || items.length} file${(savedCount || items.length) === 1 ? '' : 's'} filed`
+      : `:white_check_mark: *Successfully sorted to Dropbox*\nCase: ${caseLabel} · Folder: ${folderName}`;
+
+    return [
+      {
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: slackSectionWithExtras(
+            body,
+            reviewedBy ? [`Sorted by: ${slackUserMention(reviewedBy)}`] : []
+          ),
+        },
+      },
+      {
+        type: 'context',
+        elements: [
+          {
+            type: 'mrkdwn',
+            text: `${queueCardEmoji('saved')} *RJL File Sorter* · ${slackFieldText(subject, 80)} · ${slackFieldText(fileNote, 80)}`,
           },
         ],
       },
@@ -1043,32 +1113,7 @@ function buildQueueBlocks(
     });
   }
 
-  if (status === 'saved') {
-    const successExtras = [
-      reviewedBy ? `Sorted by: ${slackUserMention(reviewedBy)}` : '',
-    ];
-    if (options?.savedFiles?.length) {
-      for (const f of options.savedFiles) {
-        successExtras.push(`${f.filename}: ${slackMrkdwnLink(f.dropboxLink, 'Open in Dropbox')}`);
-      }
-    } else if (options?.dropboxLink) {
-      successExtras.push(slackMrkdwnLink(options.dropboxLink, 'Open in Dropbox'));
-    }
-    const sortedPath = item.final_dropbox_path ?? item.suggested_folder_path;
-    const folderName = folderLabelFromPath(sortedPath);
-    blocks.unshift({
-      type: 'section',
-      text: {
-        type: 'mrkdwn',
-        text: slackSectionWithExtras(
-          `:white_check_mark: *Successfully sorted to Dropbox*\n` +
-            `Case: ${caseLabel}` +
-            (batch ? `\n${formatAttachmentList(items)}` : ` · Folder: ${folderName}`),
-          successExtras.filter(Boolean)
-        ),
-      },
-    });
-  } else if (status === 'needs_attention' && reviewedBy) {
+  if (status === 'needs_attention' && reviewedBy) {
     blocks.unshift({
       type: 'section',
       text: {
@@ -1525,6 +1570,20 @@ export const slackService = {
   ): Promise<void> {
     if (!item.slack_queue_channel_id || !item.slack_queue_message_ts) return;
     await slackService.postQueueCardThreadNotice(item, buildDoNotSortThreadDetails(items, caseRow));
+  },
+
+  /** Archive sort details + Dropbox links into the thread after Approve collapses the card. */
+  async postSortedThreadDetails(
+    item: FileSorterItem,
+    items: FileSorterItem[],
+    caseRow: Case | null,
+    savedFiles: Array<{ filename: string; dropboxLink: string }>
+  ): Promise<void> {
+    if (!item.slack_queue_channel_id || !item.slack_queue_message_ts) return;
+    await slackService.postQueueCardThreadNotice(
+      item,
+      buildSortedThreadDetails(items, caseRow, savedFiles)
+    );
   },
 
   async getThreadReplies(ctx: SlackThreadContext): Promise<string[]> {

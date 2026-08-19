@@ -960,6 +960,16 @@ export async function handleApprove(
     disabled: savedFiles.length > 0,
   });
 
+  try {
+    const refreshedBatch = await getQueueBatchItems(primary);
+    await slackService.postSortedThreadDetails(primary, refreshedBatch, caseRow, savedFiles);
+  } catch (err) {
+    logger.warn('Could not post sorted details to thread', {
+      itemId: primary.id,
+      err: String(err),
+    });
+  }
+
   if (!savedFiles.length) {
     if (externalLinkCount > 0) {
       throw new Error(
