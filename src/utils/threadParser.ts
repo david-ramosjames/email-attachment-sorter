@@ -67,6 +67,14 @@ export function threadPerFileFolderHasValues(override: ThreadOverride): boolean 
   return perFileFolderListHasValues(override.perFileFolders);
 }
 
+/** Thread fallback when Approve button is missing from a large queue card. */
+export function isThreadApproveCommand(text: string): boolean {
+  return text
+    .split('\n')
+    .map(cleanThreadLine)
+    .some((line) => /^approve[.!]?$/i.test(line));
+}
+
 export function parseThreadReply(text: string): ThreadOverride {
   const result: ThreadOverride = {};
   const lines = text.split('\n');

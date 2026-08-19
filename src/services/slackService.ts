@@ -494,7 +494,7 @@ function slackReceivedAt(iso: string | null | undefined): string {
 
 function threadOverrideHelpText(): string {
   return (
-    'If correct, click *Approve*.\n\n' +
+    'If correct, click *Approve* (or reply `approve` in this thread if buttons are missing).\n\n' +
     'If wrong, reply before approving:\n\n' +
     'Case: 1277\n' +
     'Folder: Medical\n' +
@@ -518,7 +518,7 @@ function threadOverrideHelpText(): string {
     '_(Use `folder: Medical` alone to set one folder for every file.)_\n\n' +
     'Or use the *Rename file* button on the card.\n' +
     'On multi-attachment emails, use *Skip file* for one attachment or *Skip all* for the rest.\n\n' +
-    'Then click *Approve*.'
+    'Then click *Approve* or reply `approve`.'
   );
 }
 
@@ -670,6 +670,70 @@ function buildQueueHeaderText(status: string, batch: boolean, batchCount: number
     return `${emoji} File Sorter failed${batchSuffix}`;
   }
   return `${emoji} New File Sorter Item${batchSuffix}`;
+}
+
+/** Slack drops blocks past 50 — large batches were losing Approve / Change buttons at the bottom. */
+const SLACK_MAX_BLOCKS = 50;
+/** Per-file Rename/Skip rows cost 2 blocks each; cap so main actions always fit. */
+const MAX_PER_FILE_ACTION_ROWS = 6;
+
+function buildQueueMainActionBlocks(opts: {
+  itemId: string;
+  status: string;
+  batch: boolean;
+  pendingCount: number;
+}): Record<string, unknown>[] {
+  const multiAttachment = opts.batch || opts.pendingCount > 1;
+  const actionElements: Record<string, unknown>[] = [
+    {
+      type: 'button',
+      text: { type: 'plain_text', text: 'Approve', emoji: true },
+      style: 'primary',
+      action_id: actionIdFor('approve', opts.itemId),
+      value: opts.itemId,
+    },
+    {
+      type: 'button',
+      text: { type: 'plain_text', text: 'Change Case/Folder', emoji: true },
+      action_id: actionIdFor('change', opts.itemId),
+      value: opts.itemId,
+    },
+  ];
+  if (opts.status !== 'needs_attention') {
+    actionElements.push({
+      type: 'button',
+      text: { type: 'plain_text', text: 'Needs Attention', emoji: true },
+      action_id: actionIdFor('needs_attention', opts.itemId),
+      value: opts.itemId,
+    });
+  }
+  actionElements.push({
+    type: 'button',
+    text: {
+      type: 'plain_text',
+      text: multiAttachment ? 'Skip all' : 'Do not sort email',
+      emoji: true,
+    },
+    action_id: actionIdFor('do_not_sort', opts.itemId),
+    value: opts.itemId,
+  });
+
+  return [
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: multiAttachment
+          ? '*Entire email* — file or dismiss all remaining attachments:'
+          : '*Entire email* — file or dismiss this attachment:',
+      },
+    },
+    {
+      type: 'actions',
+      block_id: `fs_actions_${opts.itemId}`,
+      elements: actionElements,
+    },
+  ];
 }
 
 function buildDoNotSortThreadDetails(
@@ -872,64 +936,93 @@ function buildQueueBlocks(
     });
   }
 
+  const pendingItems = items.filter((i) => !['saved', 'ignored'].includes(i.status));
+
+  // Main Approve / Change buttons first — Slack silently drops blocks after 50.
+  if (!disabled && pendingItems.length > 0) {
+    blocks.push(
+      ...buildQueueMainActionBlocks({
+        itemId: item.id,
+        status,
+        batch,
+        pendingCount: pendingItems.length,
+      })
+    );
+  }
+
   if (!disabled) {
-    const pendingItems = items.filter((i) => !['saved', 'ignored'].includes(i.status));
     if (pendingItems.length > 0) {
       const multiAttachment = batch || pendingItems.length > 1;
+      const showPerFileActions = pendingItems.length <= MAX_PER_FILE_ACTION_ROWS;
+
       blocks.push({
         type: 'section',
         text: {
           type: 'mrkdwn',
           text: multiAttachment
-            ? '*Per attachment* — optional before you Approve:'
+            ? showPerFileActions
+              ? '*Per attachment* — optional before you Approve:'
+              : `*Attachments* (${pendingItems.length} files — use thread replies to rename or skip individual files):`
             : '*Rename* — optional before you Approve:',
         },
       });
-      for (const fileItem of pendingItems) {
-        const folder = fileItem.suggested_folder_path
-          ? folderLabelFromPath(fileItem.suggested_folder_path)
-          : null;
-        const folderNote = folder && folder !== '—' ? ` → ${folder}` : '';
-        const external = isExternalLinkItem(fileItem) ? ' _(external link)_' : '';
-        blocks.push({
-          type: 'section',
-          block_id: `fs_file_${fileItem.id}`,
-          text: {
-            type: 'mrkdwn',
-            text: slackFieldText(
-              `${formatQueueFilenameDisplay(fileItem)}${external}${folderNote}`,
-              300
-            ),
-          },
-        });
-        const fileActionElements: Record<string, unknown>[] = [];
-        if (multiAttachment) {
+
+      if (showPerFileActions) {
+        for (const fileItem of pendingItems) {
+          const folder = fileItem.suggested_folder_path
+            ? folderLabelFromPath(fileItem.suggested_folder_path)
+            : null;
+          const folderNote = folder && folder !== '—' ? ` → ${folder}` : '';
+          const external = isExternalLinkItem(fileItem) ? ' _(external link)_' : '';
+          blocks.push({
+            type: 'section',
+            block_id: `fs_file_${fileItem.id}`,
+            text: {
+              type: 'mrkdwn',
+              text: slackFieldText(
+                `${formatQueueFilenameDisplay(fileItem)}${external}${folderNote}`,
+                300
+              ),
+            },
+          });
+          const fileActionElements: Record<string, unknown>[] = [];
+          if (multiAttachment) {
+            fileActionElements.push({
+              type: 'button',
+              text: { type: 'plain_text', text: 'Skip file', emoji: true },
+              action_id: actionIdFor('skip_file', fileItem.id),
+              value: fileItem.id,
+            });
+          }
           fileActionElements.push({
             type: 'button',
-            text: { type: 'plain_text', text: 'Skip file', emoji: true },
-            action_id: actionIdFor('skip_file', fileItem.id),
+            text: { type: 'plain_text', text: 'Rename file', emoji: true },
+            action_id: actionIdFor('rename_file', fileItem.id),
             value: fileItem.id,
           });
+          blocks.push({
+            type: 'actions',
+            block_id: `fs_file_actions_${fileItem.id}`,
+            elements: fileActionElements,
+          });
         }
-        fileActionElements.push({
-          type: 'button',
-          text: { type: 'plain_text', text: 'Rename file', emoji: true },
-          action_id: actionIdFor('rename_file', fileItem.id),
-          value: fileItem.id,
-        });
+      } else {
         blocks.push({
-          type: 'actions',
-          block_id: `fs_file_actions_${fileItem.id}`,
-          elements: fileActionElements,
+          type: 'section',
+          text: {
+            type: 'mrkdwn',
+            text: slackFieldText(formatAttachmentList(pendingItems), 2800),
+          },
         });
       }
-      if (multiAttachment) {
+
+      if (multiAttachment && showPerFileActions) {
         blocks.push({
           type: 'context',
           elements: [
             {
               type: 'mrkdwn',
-              text: '_Skip file affects only that attachment. Use *Skip all* below to skip every remaining file in this email._',
+              text: '_Skip file affects only that attachment. Use *Skip all* above to skip every remaining file in this email._',
             },
           ],
         });
@@ -996,62 +1089,9 @@ function buildQueueBlocks(
           reason
             ? `:x: *Sort failed*\n${reason}`
             : ':x: *Sort failed* — see thread for details.',
-          ['Press *Approve* to retry, or *Change Case/Folder* / thread overrides first.']
+          ['Press *Approve* on the card or reply `approve` in the thread to retry, or use *Change Case/Folder* / thread overrides first.']
         ),
       },
-    });
-  }
-
-  if (!disabled) {
-    const itemId = item.id;
-    const pendingCount = items.filter((i) => !['saved', 'ignored'].includes(i.status)).length;
-    const multiAttachment = batch || pendingCount > 1;
-    blocks.push({
-      type: 'section',
-      text: {
-        type: 'mrkdwn',
-        text: multiAttachment
-          ? '*Entire email* — file or dismiss all remaining attachments:'
-          : '*Entire email* — file or dismiss this attachment:',
-      },
-    });
-    const actionElements: Record<string, unknown>[] = [
-      {
-        type: 'button',
-        text: { type: 'plain_text', text: 'Approve', emoji: true },
-        style: 'primary',
-        action_id: actionIdFor('approve', itemId),
-        value: itemId,
-      },
-      {
-        type: 'button',
-        text: { type: 'plain_text', text: 'Change Case/Folder', emoji: true },
-        action_id: actionIdFor('change', itemId),
-        value: itemId,
-      },
-    ];
-    if (status !== 'needs_attention') {
-      actionElements.push({
-        type: 'button',
-        text: { type: 'plain_text', text: 'Needs Attention', emoji: true },
-        action_id: actionIdFor('needs_attention', itemId),
-        value: itemId,
-      });
-    }
-    actionElements.push({
-      type: 'button',
-      text: {
-        type: 'plain_text',
-        text: multiAttachment ? 'Skip all' : 'Do not sort email',
-        emoji: true,
-      },
-      action_id: actionIdFor('do_not_sort', itemId),
-      value: itemId,
-    });
-    blocks.push({
-      type: 'actions',
-      block_id: `fs_actions_${itemId}`,
-      elements: actionElements,
     });
   }
 
@@ -1068,12 +1108,32 @@ function buildQueueBlocks(
     ],
   });
 
-  if (blocks.length > 50) {
-    logger.warn('Queue card exceeds Slack block limit — buttons may be dropped', {
+  if (blocks.length > SLACK_MAX_BLOCKS) {
+    logger.warn('Queue card exceeds Slack block limit — trimming optional blocks', {
       blockCount: blocks.length,
       attachmentCount: items.length,
       itemId: item.id,
     });
+    // Keep header/info/actions; drop optional per-file action rows from the end if still over.
+    while (blocks.length > SLACK_MAX_BLOCKS) {
+      let trimIdx = -1;
+      for (let i = blocks.length - 1; i >= 0; i--) {
+        const b = blocks[i] as { type?: string; block_id?: string };
+        if (b.type === 'actions' && String(b.block_id ?? '').startsWith('fs_file_actions_')) {
+          trimIdx = i;
+          break;
+        }
+      }
+      if (trimIdx < 0) break;
+      blocks.splice(trimIdx, 1);
+      const sectionIdx = trimIdx - 1;
+      if (
+        sectionIdx >= 0 &&
+        (blocks[sectionIdx] as { block_id?: string }).block_id?.startsWith('fs_file_')
+      ) {
+        blocks.splice(sectionIdx, 1);
+      }
+    }
   }
 
   return blocks;

@@ -10,12 +10,18 @@ import { slackService, type SlackThreadContext } from './slackService.js';
 import {
   parseThreadReplies,
   parseThreadReply,
+  isThreadApproveCommand,
   threadOverrideHasValues,
   threadPerFileFolderHasValues,
   threadRenameHasValues,
   threadSkipHasValues,
   type ThreadOverride,
 } from '../utils/threadParser.js';
+import {
+  formatApproveError,
+  formatAlreadyProcessedThreadMessage,
+  isAlreadyProcessedError,
+} from '../utils/approveErrors.js';
 import { formatRenameConfirmationLines } from '../utils/filenameRename.js';
 import { formatPerFileFolderConfirmationLines } from '../utils/perFileFolder.js';
 import { matchAttachmentForSkip } from '../utils/skipAttachment.js';
@@ -75,7 +81,7 @@ export async function buildOverrideConfirmationText(
     lines.push(`• Teach Folder noted: _${hint.slice(0, 120)}${hint.length > 120 ? '…' : ''}_`);
   }
 
-  lines.push('\nClick *Approve* on the card above to file with these settings.');
+  lines.push('\nClick *Approve* on the card above, or reply `approve` in this thread to file.');
   return lines.join('\n');
 }
 
@@ -113,7 +119,7 @@ function buildSkipConfirmationText(result: {
     lines.push(
       `*Skipped (will not file):* ${result.skipped.map((name) => `_${name}_`).join(', ')}`
     );
-    lines.push('Click *Approve* to file the remaining attachments.');
+    lines.push('Click *Approve* on the card, or reply `approve` in this thread to file the remaining attachments.');
   }
   if (result.notFound.length) {
     lines.push(
@@ -170,6 +176,51 @@ async function isFileSorterQueueChannel(channelId: string): Promise<boolean> {
   return hasActiveQueueCardsInChannel(channelId);
 }
 
+async function handleThreadApproveCommand(
+  channelId: string,
+  threadTs: string,
+  userId: string,
+  items: Awaited<ReturnType<typeof getPendingQueueItemsByThread>>
+): Promise<boolean> {
+  const primary =
+    items.find((i) => !['saved', 'ignored'].includes(i.status)) ?? items[0];
+  if (!primary) return false;
+
+  if (['saved', 'ignored'].includes(primary.status)) {
+    await slackService.postThreadReply(
+      channelId,
+      threadTs,
+      'This item is already processed — no action needed.'
+    );
+    return true;
+  }
+
+  try {
+    const { handleApprove } = await import('./fileSorterWorkflow.js');
+    await handleApprove(primary.id, userId, { channelId, messageTs: threadTs });
+    logger.info('Queue thread approve command handled', {
+      channelId,
+      threadTs,
+      itemId: primary.id,
+      userId,
+    });
+    return true;
+  } catch (err) {
+    const threadText = isAlreadyProcessedError(err)
+      ? formatAlreadyProcessedThreadMessage(err)
+      : `:warning: *Could not approve from thread*\n${formatApproveError(err)}`;
+    await slackService.postThreadReply(channelId, threadTs, threadText);
+    logger.error('Queue thread approve command failed', {
+      channelId,
+      threadTs,
+      itemId: primary.id,
+      userId,
+      err: String(err),
+    });
+    return true;
+  }
+}
+
 /** Slack Events API: human replied in #file-sorter-queue with case/folder syntax. */
 export async function handleQueueThreadOverrideEvent(
   event: Record<string, unknown>
@@ -184,6 +235,16 @@ export async function handleQueueThreadOverrideEvent(
   if (!(await isFileSorterQueueChannel(channelId))) return false;
 
   const text = typeof event.text === 'string' ? event.text : slackService.extractSlackMessageText(event);
+
+  const items = await getPendingQueueItemsByThread(channelId, threadTs);
+  if (!items.length) return false;
+
+  const userId = typeof event.user === 'string' ? event.user : 'thread';
+
+  if (isThreadApproveCommand(text)) {
+    return handleThreadApproveCommand(channelId, threadTs, userId, items);
+  }
+
   const parsed = parseThreadReply(text);
   if (
     !threadOverrideHasValues(parsed) &&
@@ -200,11 +261,6 @@ export async function handleQueueThreadOverrideEvent(
     preview: text.slice(0, 120),
     skipCount: parsed.skipFilenames?.length ?? 0,
   });
-
-  const items = await getPendingQueueItemsByThread(channelId, threadTs);
-  if (!items.length) return false;
-
-  const userId = typeof event.user === 'string' ? event.user : 'thread';
 
   if (threadSkipHasValues(parsed)) {
     const skipResult = await applyThreadSkips(items, parsed.skipFilenames ?? [], userId);
