@@ -854,6 +854,8 @@ export async function handleApprove(
       logger.error('Dropbox upload failed', {
         itemId: batchItem.id,
         folderPath,
+        filename: dropboxFilename,
+        bytes: buffer.length,
         err: String(err),
       });
       throw err;

@@ -1,4 +1,4 @@
-import { isDropboxFileConflict } from '../services/dropboxService.js';
+import { isDropboxFileConflict, isTransientDropboxError } from '../services/dropboxService.js';
 
 export const FILE_ALREADY_IN_DROPBOX = 'File already in Dropbox.';
 
@@ -13,6 +13,13 @@ export function formatApproveError(err: unknown): string {
     /file already in dropbox/i.test(raw)
   ) {
     return FILE_ALREADY_IN_DROPBOX;
+  }
+
+  if (isTransientDropboxError(err) || /\b50[0-4]\b/.test(raw)) {
+    return (
+      'Dropbox had a temporary upload error. Wait a moment and press *Approve* again ' +
+      '(or reply `approve` in the thread).'
+    );
   }
 
   if (/temp download failed/i.test(raw)) {
@@ -54,7 +61,9 @@ export function isRecoverableApproveError(err: unknown): boolean {
   const raw = err instanceof Error ? err.message : String(err);
   return (
     isDropboxFileConflict(err) ||
+    isTransientDropboxError(err) ||
     /409/.test(raw) ||
+    /\b50[0-4]\b/.test(raw) ||
     /file already in dropbox/i.test(raw) ||
     raw === FILE_ALREADY_IN_DROPBOX ||
     /temp download failed/i.test(raw) ||

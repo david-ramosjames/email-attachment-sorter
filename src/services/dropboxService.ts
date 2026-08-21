@@ -133,6 +133,7 @@ export function extractDropboxError(err: unknown): string {
           };
       message?: string;
       status?: number;
+      headers?: Record<string, string> | Headers;
     };
     if (typeof e.error === 'string' && e.error.trim()) return e.error;
     if (e.error && typeof e.error === 'object') {
@@ -164,6 +165,26 @@ export function extractDropboxError(err: unknown): string {
     if (e.status) return `Response failed with a ${e.status} code`;
   }
   return String(err);
+}
+
+export function dropboxHttpStatus(err: unknown): number | null {
+  if (!err || typeof err !== 'object') return null;
+  const status = (err as { status?: unknown }).status;
+  return typeof status === 'number' ? status : null;
+}
+
+/** Dropbox / gateway 5xx — often transient; Approve should allow retry. */
+export function isTransientDropboxError(err: unknown): boolean {
+  const status = dropboxHttpStatus(err);
+  if (status != null && status >= 500 && status <= 599) return true;
+  const msg = extractDropboxError(err).toLowerCase();
+  return (
+    /\b50[0-4]\b/.test(msg) ||
+    msg.includes('internal server error') ||
+    msg.includes('service unavailable') ||
+    msg.includes('bad gateway') ||
+    msg.includes('not implemented')
+  );
 }
 
 /** Dropbox metadata ids already look like `id:…` — never prefix twice. */
@@ -561,22 +582,161 @@ export async function uploadFileToDropbox(
   const normalized = folderPath.startsWith('/') ? folderPath : `/${folderPath}`;
   const folderCreated = await ensureFolderExists(normalized);
   const fullPath = `${normalized}/${filename}`.replace(/\/+/g, '/');
+  // Node fetch/undici is happier with Uint8Array than Buffer for Content-Length.
+  const bytes = Uint8Array.from(contents);
+  const size = bytes.byteLength;
 
-  const response = await withDropboxApi(undefined, (client) =>
-    client.filesUpload({
-      path: fullPath,
-      contents,
-      mode: { '.tag': 'add' },
-      autorename: false,
-      mute: true,
-    })
-  );
+  // Simple upload for small files; session upload for larger ones (and as 501 fallback).
+  const SIMPLE_UPLOAD_MAX = 8 * 1024 * 1024;
 
-  return {
-    path: response.result.path_display ?? fullPath,
-    id: response.result.id,
-    folderCreated,
+  const trySimple = async () => {
+    const response = await withDropboxApi(undefined, (client) =>
+      client.filesUpload({
+        path: fullPath,
+        contents: bytes,
+        mode: { '.tag': 'add' },
+        autorename: false,
+        mute: true,
+      })
+    );
+    return {
+      path: response.result.path_display ?? fullPath,
+      id: response.result.id,
+    };
   };
+
+  const trySession = async () => {
+    const CHUNK = 4 * 1024 * 1024;
+
+    if (size === 0) {
+      const start = await withDropboxApi(undefined, (client) =>
+        client.filesUploadSessionStart({
+          close: true,
+          contents: new Uint8Array(0),
+        })
+      );
+      const finished = await withDropboxApi(undefined, (client) =>
+        client.filesUploadSessionFinish({
+          cursor: { session_id: start.result.session_id, offset: 0 },
+          commit: {
+            path: fullPath,
+            mode: { '.tag': 'add' },
+            autorename: false,
+            mute: true,
+          },
+          contents: new Uint8Array(0),
+        })
+      );
+      return {
+        path: finished.result.path_display ?? fullPath,
+        id: finished.result.id,
+      };
+    }
+
+    // Put all but the last chunk via start/append; commit the last chunk via finish.
+    const lastChunkStart = size <= CHUNK ? 0 : size - (size % CHUNK || CHUNK);
+    const bodyChunksEnd = lastChunkStart;
+
+    let sessionId: string;
+    let offset = 0;
+
+    if (bodyChunksEnd === 0) {
+      // Entire file fits in the finish call — open an empty session first.
+      const start = await withDropboxApi(undefined, (client) =>
+        client.filesUploadSessionStart({
+          close: false,
+          contents: new Uint8Array(0),
+        })
+      );
+      sessionId = start.result.session_id;
+      offset = 0;
+    } else {
+      const first = bytes.subarray(0, Math.min(CHUNK, bodyChunksEnd));
+      const start = await withDropboxApi(undefined, (client) =>
+        client.filesUploadSessionStart({
+          close: false,
+          contents: first,
+        })
+      );
+      sessionId = start.result.session_id;
+      offset = first.byteLength;
+
+      while (offset < bodyChunksEnd) {
+        const end = Math.min(offset + CHUNK, bodyChunksEnd);
+        const chunk = bytes.subarray(offset, end);
+        await withDropboxApi(undefined, (client) =>
+          client.filesUploadSessionAppendV2({
+            cursor: { session_id: sessionId, offset },
+            close: false,
+            contents: chunk,
+          })
+        );
+        offset = end;
+      }
+    }
+
+    const lastChunk = bytes.subarray(lastChunkStart);
+    const finished = await withDropboxApi(undefined, (client) =>
+      client.filesUploadSessionFinish({
+        cursor: { session_id: sessionId, offset },
+        commit: {
+          path: fullPath,
+          mode: { '.tag': 'add' },
+          autorename: false,
+          mute: true,
+        },
+        contents: lastChunk,
+      })
+    );
+    return {
+      path: finished.result.path_display ?? fullPath,
+      id: finished.result.id,
+    };
+  };
+
+  const withRetry = async <T>(label: string, fn: () => Promise<T>): Promise<T> => {
+    try {
+      return await fn();
+    } catch (err) {
+      if (!isTransientDropboxError(err)) throw err;
+      logger.warn('Dropbox upload transient error — retrying once', {
+        path: fullPath,
+        size,
+        mode: label,
+        status: dropboxHttpStatus(err),
+        err: extractDropboxError(err),
+      });
+      await new Promise((r) => setTimeout(r, 1500));
+      return await fn();
+    }
+  };
+
+  try {
+    const uploaded =
+      size > SIMPLE_UPLOAD_MAX
+        ? await withRetry('session', trySession)
+        : await withRetry('simple', trySimple);
+    return { ...uploaded, folderCreated };
+  } catch (err) {
+    // Some environments reject simple filesUpload with 501; session upload often works.
+    if (size <= SIMPLE_UPLOAD_MAX && isTransientDropboxError(err)) {
+      logger.warn('Dropbox simple upload failed — falling back to upload session', {
+        path: fullPath,
+        size,
+        status: dropboxHttpStatus(err),
+        err: extractDropboxError(err),
+      });
+      const uploaded = await withRetry('session_fallback', trySession);
+      return { ...uploaded, folderCreated };
+    }
+    logger.error('Dropbox upload exhausted retries', {
+      path: fullPath,
+      size,
+      status: dropboxHttpStatus(err),
+      err: extractDropboxError(err),
+    });
+    throw err;
+  }
 }
 
 function coerceDropboxBinary(result: {
