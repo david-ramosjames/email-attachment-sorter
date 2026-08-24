@@ -66,6 +66,8 @@ const envSchema = z.object({
   SCOREBOARD_EMAIL_ENABLED: envBoolean(true),
   /** Default local send time HH:MM (overridable in FAQ Settings). */
   SCOREBOARD_EMAIL_TIME: z.string().default('16:45'),
+  /** Comma-separated default send days (mon–sun). Overridable in FAQ Settings. Default Friday. */
+  SCOREBOARD_EMAIL_DAYS: z.string().default('fri'),
   /** Rolling lookback window for the scoreboard email (hours). */
   SCOREBOARD_EMAIL_HOURS: z.coerce.number().min(1).max(168).default(24),
   /** How often to check whether the scoreboard email is due (minutes). 0 = disabled. */

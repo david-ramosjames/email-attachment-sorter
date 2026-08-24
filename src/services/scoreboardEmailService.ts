@@ -5,7 +5,6 @@ import {
   type DashboardSummary,
   type DashboardUserMetric,
 } from '../routes/dashboard.js';
-import { isWorkdayInTimezone } from './queueReminderService.js';
 import { isEodReportDue } from './eodStatusReportService.js';
 import { sendGmailMessage } from './gmailSendService.js';
 import { resolveServiceAccountIdentity } from './googleAuth.js';
@@ -13,6 +12,18 @@ import { logger } from '../utils/logger.js';
 
 const SETTINGS_KEY = 'scoreboard_email_settings';
 const LAST_SENT_KEY = 'scoreboard_email_last_sent';
+
+export const SCOREBOARD_WEEKDAYS = [
+  'mon',
+  'tue',
+  'wed',
+  'thu',
+  'fri',
+  'sat',
+  'sun',
+] as const;
+
+export type ScoreboardWeekday = (typeof SCOREBOARD_WEEKDAYS)[number];
 
 export interface ScoreboardEmailSettings {
   enabled: boolean;
@@ -22,6 +33,8 @@ export interface ScoreboardEmailSettings {
   sendAs: string;
   /** Local 24h time HH:MM (default 16:45). */
   sendTime: string;
+  /** Days to send (default Friday only). */
+  days: ScoreboardWeekday[];
   /** Rolling lookback window in hours (default 24). */
   hours: number;
   /** Optional email subject override. */
@@ -33,8 +46,29 @@ const DEFAULT_SETTINGS: ScoreboardEmailSettings = {
   recipients: [],
   sendAs: '',
   sendTime: '16:45',
+  days: ['fri'],
   hours: 24,
   subject: 'File Sorter scoreboard',
+};
+
+const WEEKDAY_FROM_SHORT: Record<string, ScoreboardWeekday> = {
+  mon: 'mon',
+  monday: 'mon',
+  tue: 'tue',
+  tues: 'tue',
+  tuesday: 'tue',
+  wed: 'wed',
+  wednesday: 'wed',
+  thu: 'thu',
+  thur: 'thu',
+  thurs: 'thu',
+  thursday: 'thu',
+  fri: 'fri',
+  friday: 'fri',
+  sat: 'sat',
+  saturday: 'sat',
+  sun: 'sun',
+  sunday: 'sun',
 };
 
 let reportInProgress = false;
@@ -79,6 +113,41 @@ function normalizeSendTime(raw: unknown, fallback: string): string {
   return fallback;
 }
 
+export function parseScoreboardDays(raw: unknown): ScoreboardWeekday[] {
+  const parts = Array.isArray(raw)
+    ? raw.map((v) => String(v ?? '').trim().toLowerCase())
+    : typeof raw === 'string'
+      ? raw.split(/[,;\s]+/).map((p) => p.trim().toLowerCase())
+      : [];
+
+  const days: ScoreboardWeekday[] = [];
+  for (const part of parts) {
+    const day = WEEKDAY_FROM_SHORT[part];
+    if (day && !days.includes(day)) days.push(day);
+  }
+  return days;
+}
+
+function localWeekday(tz: string, at: Date = new Date()): ScoreboardWeekday {
+  const short = new Intl.DateTimeFormat('en-US', {
+    timeZone: tz,
+    weekday: 'short',
+  })
+    .format(at)
+    .toLowerCase()
+    .slice(0, 3);
+  return WEEKDAY_FROM_SHORT[short] ?? 'mon';
+}
+
+export function isScoreboardSendDay(
+  days: ScoreboardWeekday[],
+  tz: string,
+  at: Date = new Date()
+): boolean {
+  if (!days.length) return false;
+  return days.includes(localWeekday(tz, at));
+}
+
 function localDateKey(tz: string, at: Date = new Date()): string {
   return new Intl.DateTimeFormat('en-CA', {
     timeZone: tz,
@@ -113,6 +182,9 @@ export function getScoreboardEmailConfigIssue(settings?: ScoreboardEmailSettings
       'No From / send-as user. Set GOOGLE_WORKSPACE_IMPERSONATED_USER or save a From address in FAQ Settings.'
     );
   }
+  if (settings && !settings.days.length) {
+    return 'No send days selected. Choose at least one day in FAQ Settings.';
+  }
   return null;
 }
 
@@ -123,6 +195,8 @@ export async function getScoreboardEmailSettings(): Promise<ScoreboardEmailSetti
   );
   const envRecipients = parseEmailList(env.SCOREBOARD_EMAIL_RECIPIENTS ?? '');
   const envSendAs = env.GOOGLE_WORKSPACE_IMPERSONATED_USER?.trim() ?? '';
+  const storedDays = parseScoreboardDays(stored?.days);
+  const envDays = parseScoreboardDays(env.SCOREBOARD_EMAIL_DAYS);
 
   return {
     enabled:
@@ -140,6 +214,11 @@ export async function getScoreboardEmailSettings(): Promise<ScoreboardEmailSetti
       stored?.sendTime ?? env.SCOREBOARD_EMAIL_TIME,
       DEFAULT_SETTINGS.sendTime
     ),
+    days: storedDays.length
+      ? storedDays
+      : envDays.length
+        ? envDays
+        : [...DEFAULT_SETTINGS.days],
     hours: (() => {
       const n = Number(stored?.hours ?? env.SCOREBOARD_EMAIL_HOURS);
       if (Number.isFinite(n) && n >= 1 && n <= 168) return Math.round(n);
@@ -152,9 +231,16 @@ export async function getScoreboardEmailSettings(): Promise<ScoreboardEmailSetti
 }
 
 export async function saveScoreboardEmailSettings(
-  patch: Partial<ScoreboardEmailSettings> & { recipientsText?: string }
+  patch: Partial<ScoreboardEmailSettings> & { recipientsText?: string; daysText?: string }
 ): Promise<ScoreboardEmailSettings> {
   const current = await getScoreboardEmailSettings();
+  const nextDays =
+    patch.daysText != null
+      ? parseScoreboardDays(patch.daysText)
+      : patch.days != null
+        ? parseScoreboardDays(patch.days)
+        : current.days;
+
   const next: ScoreboardEmailSettings = {
     enabled:
       typeof patch.enabled === 'boolean' ? patch.enabled : current.enabled,
@@ -167,6 +253,7 @@ export async function saveScoreboardEmailSettings(
     sendAs:
       typeof patch.sendAs === 'string' ? patch.sendAs.trim() : current.sendAs,
     sendTime: normalizeSendTime(patch.sendTime ?? current.sendTime, current.sendTime),
+    days: nextDays,
     hours: (() => {
       if (patch.hours == null) return current.hours;
       const n = Number(patch.hours);
@@ -348,8 +435,8 @@ export async function runScoreboardEmail(options?: {
   const checkInterval = getEnv().SCOREBOARD_EMAIL_CHECK_INTERVAL_MINUTES;
 
   if (!options?.force) {
-    if (!isWorkdayInTimezone(tz, now)) {
-      return { sent: false, reason: 'not_workday' };
+    if (!isScoreboardSendDay(settings.days, tz, now)) {
+      return { sent: false, reason: 'not_send_day' };
     }
     if (!isEodReportDue(tz, settings.sendTime, checkInterval, now)) {
       return { sent: false, reason: 'not_due' };

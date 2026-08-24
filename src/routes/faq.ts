@@ -49,6 +49,8 @@ faqRouter.put('/api/faq/scoreboard-email-settings', async (req, res) => {
       recipients: Array.isArray(body.recipients) ? body.recipients : undefined,
       sendAs: body.sendAs,
       sendTime: body.sendTime,
+      days: Array.isArray(body.days) ? body.days : undefined,
+      daysText: typeof body.daysText === 'string' ? body.daysText : undefined,
       hours: body.hours,
       subject: body.subject,
     });

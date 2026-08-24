@@ -448,6 +448,18 @@
       letter-spacing: normal;
       font-weight: 500;
       color: var(--text);
+      cursor: pointer;
+    }
+
+    .settings-days {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.55rem 1rem;
+    }
+
+    .settings-days .settings-check {
+      margin-top: 0;
+      font-size: 0.92rem;
     }
 
     .settings-actions {
@@ -856,8 +868,9 @@ folder: Medical</div>
     <section class="settings-card" id="settings">
       <h2>Settings</h2>
       <p class="hint">
-        Daily scoreboard email (Mon–Fri). Uses the Google service account with Workspace impersonation
-        to send as a firm address. Recipients, From, and send time can be changed here without a redeploy.
+        Scoreboard email on the days you select (default Friday). Uses the Google service account with
+        Workspace impersonation to send as a firm address. Recipients, From, days, and send time can be
+        changed here without a redeploy.
       </p>
 
       <div id="settings-warn" class="settings-warn" hidden></div>
@@ -866,7 +879,7 @@ folder: Medical</div>
         <div class="settings-field full">
           <label class="settings-check">
             <input type="checkbox" id="scoreboard-enabled" />
-            Send daily scoreboard email
+            Send scoreboard email on selected days
           </label>
         </div>
 
@@ -881,8 +894,21 @@ folder: Medical</div>
         </div>
 
         <div class="settings-field">
-          <label for="scoreboard-time">Send time (weekdays)</label>
+          <label for="scoreboard-time">Send time</label>
           <input type="time" id="scoreboard-time" />
+        </div>
+
+        <div class="settings-field full">
+          <label>Send days</label>
+          <div class="settings-days" id="scoreboard-days">
+            <label class="settings-check"><input type="checkbox" value="mon" data-day /> Mon</label>
+            <label class="settings-check"><input type="checkbox" value="tue" data-day /> Tue</label>
+            <label class="settings-check"><input type="checkbox" value="wed" data-day /> Wed</label>
+            <label class="settings-check"><input type="checkbox" value="thu" data-day /> Thu</label>
+            <label class="settings-check"><input type="checkbox" value="fri" data-day /> Fri</label>
+            <label class="settings-check"><input type="checkbox" value="sat" data-day /> Sat</label>
+            <label class="settings-check"><input type="checkbox" value="sun" data-day /> Sun</label>
+          </div>
         </div>
 
         <div class="settings-field">
@@ -926,6 +952,10 @@ folder: Medical</div>
       document.getElementById('scoreboard-time').value = s.sendTime || '16:45';
       document.getElementById('scoreboard-hours').value = s.hours ?? 24;
       document.getElementById('scoreboard-subject').value = s.subject || 'File Sorter scoreboard';
+      const days = Array.isArray(s.days) && s.days.length ? s.days : ['fri'];
+      document.querySelectorAll('#scoreboard-days input[data-day]').forEach((el) => {
+        el.checked = days.includes(el.value);
+      });
       if (payload.configIssue) {
         warnEl.hidden = false;
         warnEl.textContent = payload.configIssue;
@@ -936,11 +966,15 @@ folder: Medical</div>
     }
 
     function readForm() {
+      const days = Array.from(
+        document.querySelectorAll('#scoreboard-days input[data-day]:checked')
+      ).map((el) => el.value);
       return {
         enabled: document.getElementById('scoreboard-enabled').checked,
         recipientsText: document.getElementById('scoreboard-recipients').value,
         sendAs: document.getElementById('scoreboard-send-as').value,
         sendTime: document.getElementById('scoreboard-time').value,
+        days,
         hours: Number(document.getElementById('scoreboard-hours').value),
         subject: document.getElementById('scoreboard-subject').value,
       };
