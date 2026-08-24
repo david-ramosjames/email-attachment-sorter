@@ -11,6 +11,7 @@ import type { FileSorterItemStatus, MatchingHintType } from '../types/index.js';
 import { reindexDropboxFoldersForCase } from '../services/fileSorterWorkflow.js';
 import { cleanupExpiredTempStorage } from '../services/tempStorageCleanupService.js';
 import { runEodStatusReport } from '../services/eodStatusReportService.js';
+import { runScoreboardEmail } from '../services/scoreboardEmailService.js';
 import { refreshPendingQueueCards } from '../services/queueReminderService.js';
 import {
   getLastCaseSheetSyncAt,
@@ -115,6 +116,18 @@ adminRouter.post('/admin/eod-report', async (_req, res) => {
     logger.error('Manual EOD report failed', { err: String(err) });
     res.status(500).json({
       error: err instanceof Error ? err.message : 'EOD report failed',
+    });
+  }
+});
+
+adminRouter.post('/admin/scoreboard-email', async (_req, res) => {
+  try {
+    const result = await runScoreboardEmail({ force: true });
+    res.json(result);
+  } catch (err) {
+    logger.error('Manual scoreboard email failed', { err: String(err) });
+    res.status(500).json({
+      error: err instanceof Error ? err.message : 'Scoreboard email failed',
     });
   }
 });

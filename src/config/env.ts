@@ -62,6 +62,16 @@ const envSchema = z.object({
   SLACK_EOD_REPORT_HOURS: z.coerce.number().min(1).max(168).default(24),
   /** How often to check whether the EOD report is due (minutes). 0 = disabled. */
   SLACK_EOD_REPORT_CHECK_INTERVAL_MINUTES: z.coerce.number().min(0).default(5),
+  /** Daily scoreboard email (Gmail via service account + Workspace impersonation). */
+  SCOREBOARD_EMAIL_ENABLED: envBoolean(true),
+  /** Default local send time HH:MM (overridable in FAQ Settings). */
+  SCOREBOARD_EMAIL_TIME: z.string().default('16:45'),
+  /** Rolling lookback window for the scoreboard email (hours). */
+  SCOREBOARD_EMAIL_HOURS: z.coerce.number().min(1).max(168).default(24),
+  /** How often to check whether the scoreboard email is due (minutes). 0 = disabled. */
+  SCOREBOARD_EMAIL_CHECK_INTERVAL_MINUTES: z.coerce.number().min(0).default(5),
+  /** Comma-separated default recipients (overridable in FAQ Settings). */
+  SCOREBOARD_EMAIL_RECIPIENTS: optionalString,
   /** Short-lived (~4h); use refresh-token trio instead */
   DROPBOX_ACCESS_TOKEN: optionalString,
   DROPBOX_APP_KEY: optionalString,
@@ -88,6 +98,10 @@ const envSchema = z.object({
   GOOGLE_SERVICE_ACCOUNT_JSON: optionalString,
   GOOGLE_SERVICE_ACCOUNT_EMAIL: optionalString,
   GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY: optionalString,
+  /** Service account numeric client ID (authorize this in Workspace domain-wide delegation). */
+  GOOGLE_CLIENT_ID: optionalString,
+  /** Workspace user to impersonate for Gmail send (e.g. david@ramosjames.com). */
+  GOOGLE_WORKSPACE_IMPERSONATED_USER: optionalString,
   /** How often to sync case_slack_channels from the sheet (minutes). 0 = manual only. */
   CASE_SHEET_SYNC_INTERVAL_MINUTES: z.coerce.number().default(0),
   /** How often to sync cases from Slack channel list (minutes). 0 = manual only. Default 4h like legacy sheet backfill. */

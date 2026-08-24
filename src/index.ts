@@ -8,6 +8,7 @@ import { ensureBotInQueueChannel } from './services/slackChannels.js';
 import { startDropboxSyncScheduler } from './services/dropboxSyncService.js';
 import { startQueueReminderScheduler, refreshPendingQueueCards } from './services/queueReminderService.js';
 import { startEodStatusReportScheduler } from './services/eodStatusReportService.js';
+import { startScoreboardEmailScheduler } from './services/scoreboardEmailService.js';
 import { startTempStorageCleanupScheduler } from './services/tempStorageCleanupService.js';
 import { isMedicalRecordsCaptureEnabled } from './services/medicalRecordsCaptureService.js';
 import { logger } from './utils/logger.js';
@@ -50,6 +51,7 @@ app.listen(env.PORT, () => {
   startSlackCaseSyncScheduler(env.SLACK_CASE_SYNC_INTERVAL_MINUTES);
   startQueueReminderScheduler(env.SLACK_QUEUE_REMINDER_CHECK_INTERVAL_MINUTES);
   startEodStatusReportScheduler(env.SLACK_EOD_REPORT_CHECK_INTERVAL_MINUTES);
+  startScoreboardEmailScheduler(env.SCOREBOARD_EMAIL_CHECK_INTERVAL_MINUTES);
 
   void ensureBotInQueueChannel().catch((err) => {
     logger.error('Queue channel join on startup failed', { err: String(err) });
