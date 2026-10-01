@@ -99,6 +99,39 @@ let workerInProgress = false;
 let workerRerunRequested = false;
 let lastRunAt: string | null = null;
 let lastError: string | null = null;
+let pausedUntil = 0;
+let lastCallAt = 0;
+
+const RATE_LIMIT_PAUSE_MS = 60 * 1000;
+const QUOTA_PAUSE_MS = 15 * 60 * 1000;
+
+class RateLimitedError extends Error {
+  constructor(
+    message: string,
+    readonly pauseMs: number
+  ) {
+    super(message);
+  }
+}
+
+/** OpenAI 429s mean "slow down", not "this photo is bad" — they must not burn attempts. */
+function asRateLimit(err: unknown): RateLimitedError | null {
+  if (!(err instanceof OpenAI.APIError) || err.status !== 429) return null;
+  if (err.code === 'insufficient_quota') return new RateLimitedError(shortError(err), QUOTA_PAUSE_MS);
+  const retryAfter = Number(err.headers?.['retry-after']);
+  const pauseMs =
+    Number.isFinite(retryAfter) && retryAfter > 0
+      ? Math.max(retryAfter * 1000, 5_000)
+      : RATE_LIMIT_PAUSE_MS;
+  return new RateLimitedError(shortError(err), pauseMs);
+}
+
+async function paceCalls(): Promise<void> {
+  const gapMs = 60_000 / getEnv().EVIDENCE_PHOTOS_MAX_PER_MINUTE;
+  const waitMs = lastCallAt + gapMs - Date.now();
+  if (waitMs > 0) await new Promise((r) => setTimeout(r, waitMs));
+  lastCallAt = Date.now();
+}
 
 function getOpenAI(): OpenAI {
   if (!openai) openai = new OpenAI({ apiKey: getEnv().OPENAI_API_KEY });
@@ -164,7 +197,7 @@ async function analyzeImage(jpeg: Buffer): Promise<PhotoAnalysis> {
           type: 'image_url',
           image_url: {
             url: `data:image/jpeg;base64,${jpeg.toString('base64')}`,
-            detail: 'high',
+            detail: getEnv().EVIDENCE_PHOTOS_IMAGE_DETAIL,
           },
         },
       ],
@@ -250,13 +283,38 @@ async function saveFailure(photo: ClaimedPhoto, err: unknown): Promise<void> {
   }
 }
 
+/** Put claimed photos back in the queue and refund the attempt the claim consumed. */
+async function releasePhotos(photos: ClaimedPhoto[]): Promise<void> {
+  for (const photo of photos) {
+    const { error } = await requireClientSupabase()
+      .from('evidence_photos')
+      .update({
+        analysis_status: 'pending',
+        analysis_attempts: Math.max(0, photo.analysis_attempts - 1),
+        processing_started_at: null,
+      })
+      .eq('id', photo.id)
+      .eq('analysis_status', 'processing');
+    if (error) {
+      logger.error('Evidence photo: releasing claim failed', { id: photo.id, err: error.message });
+    }
+  }
+}
+
 async function processPhoto(photo: ClaimedPhoto): Promise<boolean> {
   try {
     const jpeg = await getDropboxThumbnailJpeg(photo.dropbox_file_id);
-    const analysis = await analyzeImage(jpeg);
+    await paceCalls();
+    let analysis: PhotoAnalysis;
+    try {
+      analysis = await analyzeImage(jpeg);
+    } catch (err) {
+      throw asRateLimit(err) ?? err;
+    }
     await saveSuccess(photo, analysis);
     return true;
   } catch (err) {
+    if (err instanceof RateLimitedError) throw err;
     logger.warn('Evidence photo analysis failed', {
       id: photo.id,
       path: photo.dropbox_path,
@@ -292,14 +350,25 @@ async function claimBatch(): Promise<ClaimedPhoto[]> {
 
 async function runWorkerOnce(): Promise<{ complete: number; failed: number }> {
   const totals = { complete: 0, failed: 0 };
+  if (Date.now() < pausedUntil) return totals;
   await requeueRetryableFailures();
   for (;;) {
     const batch = await claimBatch();
     if (!batch.length) break;
-    const results = await Promise.all(batch.map(processPhoto));
-    for (const ok of results) {
-      if (ok) totals.complete++;
-      else totals.failed++;
+    for (let i = 0; i < batch.length; i++) {
+      try {
+        if (await processPhoto(batch[i])) totals.complete++;
+        else totals.failed++;
+      } catch (err) {
+        if (!(err instanceof RateLimitedError)) throw err;
+        await releasePhotos(batch.slice(i));
+        pausedUntil = Date.now() + err.pauseMs;
+        logger.warn('Evidence photo analysis paused: OpenAI rate limit', {
+          pauseSeconds: Math.round(err.pauseMs / 1000),
+          err: err.message,
+        });
+        return totals;
+      }
     }
   }
   return totals;
@@ -337,7 +406,13 @@ export function triggerEvidenceAnalysis(source: string): void {
 }
 
 export function getEvidenceAnalysisStatus() {
-  return { workerInProgress, lastRunAt, lastError, model: analysisModel() };
+  return {
+    workerInProgress,
+    lastRunAt,
+    lastError,
+    model: analysisModel(),
+    pausedUntil: pausedUntil > Date.now() ? new Date(pausedUntil).toISOString() : null,
+  };
 }
 
 export function startEvidencePhotoAnalysisScheduler(intervalMinutes: number): void {
