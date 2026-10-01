@@ -16,6 +16,7 @@ import { logger } from '../utils/logger.js';
 
 const CURSOR_KEY = 'evidence_photos_dropbox_cursor';
 const RECONCILE_KEY = 'evidence_photos_last_reconcile';
+const INITIAL_IMPORT_KEY = 'evidence_photos_initial_import';
 const PAGE_SIZE = 1000;
 const ID_CHUNK = 200;
 const RECONCILE_CONCURRENCY = 4;
@@ -394,10 +395,20 @@ export async function runEvidenceReconciliation(): Promise<EvidenceReconcileResu
     const failedCases = new Set<string>();
     let photosSeen = 0;
 
+    logger.info('Evidence photos reconciliation started', { caseFolders: roots.length });
     let next = 0;
+    let done = 0;
     const worker = async () => {
       while (next < roots.length) {
         const root = roots[next++];
+        if (++done % 50 === 0) {
+          logger.info('Evidence photos reconciliation progress', {
+            casesScanned: done,
+            caseFolders: roots.length,
+            photosSeen,
+            inserted: counts.inserted,
+          });
+        }
         let files: DropboxFileChange[] = [];
         try {
           files = await listDropboxFilesRecursive(root.rootLower);
@@ -464,6 +475,13 @@ export async function runEvidenceReconciliation(): Promise<EvidenceReconcileResu
       finishedAt: new Date().toISOString(),
     };
     lastReconcile = result;
+    if (roots.length) {
+      await upsertAppSetting(INITIAL_IMPORT_KEY, {
+        completedAt: result.finishedAt,
+        caseFolders: roots.length,
+        photosSeen,
+      });
+    }
     logger.info('Evidence photos reconciliation complete', { ...result });
     if (counts.inserted || counts.requeued) onPendingQueued?.();
     return result;
@@ -491,7 +509,10 @@ export async function processEvidenceChanges(): Promise<void> {
 
 async function processEvidenceChangesOnce(): Promise<void> {
   let cursor = await loadCursor();
-  if (!cursor) {
+  const initialImport = await getAppSetting<{ completedAt?: string }>(INITIAL_IMPORT_KEY);
+  if (!cursor || !initialImport?.completedAt) {
+    if (reconcileInProgress) return;
+    logger.info('Evidence photos: starting initial import');
     void runEvidenceReconciliation().catch((err) => {
       logger.error('Evidence photos initial import failed', { err: String(err) });
     });
