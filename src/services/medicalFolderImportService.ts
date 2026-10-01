@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { getClientSupabase } from '../db/clientSupabase.js';
-import { upsertCaseMedicalRecords } from '../db/clientMedicalRecords.js';
+import { medicalFileAlreadyRecorded, upsertCaseMedicalRecords } from '../db/clientMedicalRecords.js';
 import type { CaseMedicalRecordInsert } from '../types/medicalRecords.js';
 import { parseCaseNumberFromDropboxFolder } from '../constants/rjlFolders.js';
 import {
@@ -547,6 +547,10 @@ async function processMedicalFile(opts: {
       hasLop: true,
       lopFile,
     });
+  }
+
+  if (opts.entry.id && (await medicalFileAlreadyRecorded(opts.caseNumber, opts.entry.id))) {
+    return { imported: 0, skipReason: 'already_imported' };
   }
 
   let buffer: Buffer;
