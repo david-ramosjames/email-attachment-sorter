@@ -24,3 +24,24 @@ export function getClientSupabase(): SupabaseClient | null {
   });
   return client;
 }
+
+export function requireClientSupabase(): SupabaseClient {
+  const c = getClientSupabase();
+  if (!c) {
+    throw new Error(
+      'Case Tracker Supabase not configured — set CLIENT_SUPABASE_URL and CLIENT_SUPABASE_SERVICE_ROLE_KEY'
+    );
+  }
+  return c;
+}
+
+/** Project ref (subdomain) of the client Supabase URL, for status/diagnostics. */
+export function clientSupabaseProjectRef(): string | null {
+  const url = getEnv().CLIENT_SUPABASE_URL;
+  if (!url) return null;
+  try {
+    return new URL(url).hostname.split('.')[0] ?? null;
+  } catch {
+    return null;
+  }
+}

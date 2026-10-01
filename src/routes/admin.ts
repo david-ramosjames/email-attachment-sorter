@@ -28,7 +28,7 @@ import {
 import { getGoogleSheetsConfigIssue } from '../config/env.js';
 import { getDropboxAuthStatus } from '../services/dropboxAuth.js';
 import { discoverCasesRoot, getCasesRootPath, verifyDropboxConnection } from '../services/dropboxService.js';
-import { getSupabase } from '../db/supabase.js';
+import { clientSupabaseProjectRef, requireClientSupabase } from '../db/clientSupabase.js';
 import {
   getEvidenceSyncStatus,
   runEvidenceReconciliation,
@@ -315,7 +315,7 @@ adminRouter.post('/admin/evidence-photos/analyze', (_req, res) => {
 
 adminRouter.get('/admin/evidence-photos/status', async (_req, res) => {
   try {
-    const supabase = getSupabase();
+    const supabase = requireClientSupabase();
     const statuses = ['pending', 'processing', 'complete', 'failed'] as const;
     const counts: Record<string, number> = {};
     for (const status of statuses) {
@@ -332,6 +332,7 @@ adminRouter.get('/admin/evidence-photos/status', async (_req, res) => {
       .select('id', { count: 'exact', head: true })
       .not('deleted_at', 'is', null);
     res.json({
+      project: clientSupabaseProjectRef(),
       counts: { ...counts, deleted: deleted ?? 0 },
       sync: getEvidenceSyncStatus(),
       analysis: getEvidenceAnalysisStatus(),

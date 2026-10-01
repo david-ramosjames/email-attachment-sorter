@@ -1,6 +1,6 @@
 import OpenAI from 'openai';
 import { getEnv } from '../config/env.js';
-import { getSupabase } from '../db/supabase.js';
+import { requireClientSupabase } from '../db/clientSupabase.js';
 import { getDropboxThumbnailJpeg } from './dropboxService.js';
 import { logger } from '../utils/logger.js';
 
@@ -191,7 +191,7 @@ async function analyzeImage(jpeg: Buffer): Promise<PhotoAnalysis> {
 }
 
 async function saveSuccess(photo: ClaimedPhoto, analysis: PhotoAnalysis): Promise<void> {
-  const supabase = getSupabase();
+  const supabase = requireClientSupabase();
   const now = new Date().toISOString();
   const statusFields = {
     analysis_status: 'complete',
@@ -233,7 +233,7 @@ async function saveSuccess(photo: ClaimedPhoto, analysis: PhotoAnalysis): Promis
 }
 
 async function saveFailure(photo: ClaimedPhoto, err: unknown): Promise<void> {
-  const { error } = await getSupabase()
+  const { error } = await requireClientSupabase()
     .from('evidence_photos')
     .update({
       analysis_status: 'failed',
@@ -270,7 +270,7 @@ async function processPhoto(photo: ClaimedPhoto): Promise<boolean> {
 
 /** Failed rows under the attempt cap go back to pending after a short backoff. */
 async function requeueRetryableFailures(): Promise<number> {
-  const { data, error } = await getSupabase()
+  const { data, error } = await requireClientSupabase()
     .from('evidence_photos')
     .update({ analysis_status: 'pending' })
     .eq('analysis_status', 'failed')
@@ -283,7 +283,7 @@ async function requeueRetryableFailures(): Promise<number> {
 }
 
 async function claimBatch(): Promise<ClaimedPhoto[]> {
-  const { data, error } = await getSupabase().rpc('claim_evidence_photos', {
+  const { data, error } = await requireClientSupabase().rpc('claim_evidence_photos', {
     batch_size: CLAIM_BATCH_SIZE,
   });
   if (error) throw new Error(`claim_evidence_photos failed: ${error.message}`);

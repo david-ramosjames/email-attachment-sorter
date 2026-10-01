@@ -1,5 +1,6 @@
 import { getEnv } from '../config/env.js';
-import { getAppSetting, getSupabase, upsertAppSetting } from '../db/supabase.js';
+import { getAppSetting, upsertAppSetting } from '../db/supabase.js';
+import { requireClientSupabase } from '../db/clientSupabase.js';
 import {
   extractDropboxError,
   getCasesRootPath,
@@ -123,7 +124,7 @@ async function selectAllPages<T>(
 
 /** One root per case: the parent folder of its indexed RJL subfolders. */
 async function loadCaseRoots(): Promise<CaseRoot[]> {
-  const supabase = getSupabase();
+  const supabase = requireClientSupabase();
   const [folders, cases] = await Promise.all([
     selectAllPages<{ case_number: string; dropbox_path: string }>((from, to) =>
       supabase
@@ -180,7 +181,7 @@ async function loadRowsByFileIds(ids: string[]): Promise<Map<string, EvidencePho
   const byId = new Map<string, EvidencePhotoRow>();
   for (let i = 0; i < ids.length; i += ID_CHUNK) {
     const chunk = ids.slice(i, i + ID_CHUNK);
-    const { data, error } = await getSupabase()
+    const { data, error } = await requireClientSupabase()
       .from('evidence_photos')
       .select(ROW_COLUMNS)
       .in('dropbox_file_id', chunk);
@@ -196,7 +197,7 @@ async function softDeleteByFileIds(ids: string[]): Promise<number> {
   let total = 0;
   const now = new Date().toISOString();
   for (let i = 0; i < ids.length; i += ID_CHUNK) {
-    const { data, error } = await getSupabase()
+    const { data, error } = await requireClientSupabase()
       .from('evidence_photos')
       .update({ deleted_at: now })
       .in('dropbox_file_id', ids.slice(i, i + ID_CHUNK))
@@ -219,7 +220,7 @@ async function softDeleteByPaths(paths: string[]): Promise<number> {
   for (const path of paths) {
     const escaped = escapeLike(path);
     for (const pattern of [escaped, `${escaped}/%`]) {
-      const { data, error } = await getSupabase()
+      const { data, error } = await requireClientSupabase()
         .from('evidence_photos')
         .update({ deleted_at: now })
         .ilike('dropbox_path', pattern)
@@ -307,7 +308,7 @@ async function applyFiles(files: DropboxFileChange[], roots: CaseRoot[]): Promis
       continue;
     }
 
-    const { error } = await getSupabase().from('evidence_photos').update(patch).eq('id', row.id);
+    const { error } = await requireClientSupabase().from('evidence_photos').update(patch).eq('id', row.id);
     if (error) throw new Error(`Update evidence photo failed: ${error.message}`);
     counts.updated++;
     if (requeue) counts.requeued++;
@@ -315,7 +316,7 @@ async function applyFiles(files: DropboxFileChange[], roots: CaseRoot[]): Promis
 
   for (let i = 0; i < inserts.length; i += ID_CHUNK) {
     const chunk = inserts.slice(i, i + ID_CHUNK);
-    const { data, error } = await getSupabase()
+    const { data, error } = await requireClientSupabase()
       .from('evidence_photos')
       .upsert(chunk, { onConflict: 'dropbox_file_id', ignoreDuplicates: true })
       .select('id');
@@ -435,7 +436,7 @@ export async function runEvidenceReconciliation(): Promise<EvidenceReconcileResu
     if (roots.length) {
       const stale = await selectAllPages<{ dropbox_file_id: string; case_number: string; updated_at: string }>(
         (from, to) =>
-          getSupabase()
+          requireClientSupabase()
             .from('evidence_photos')
             .select('dropbox_file_id, case_number, updated_at')
             .is('deleted_at', null)
