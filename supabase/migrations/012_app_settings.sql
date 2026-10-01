@@ -4,3 +4,6 @@ CREATE TABLE IF NOT EXISTS app_settings (
   value jsonb NOT NULL DEFAULT '{}'::jsonb,
   updated_at timestamptz NOT NULL DEFAULT now()
 );
+
+-- Service role only (no policies).
+ALTER TABLE app_settings ENABLE ROW LEVEL SECURITY;

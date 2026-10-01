@@ -33,7 +33,7 @@ async function getDropboxClient(namespaceId?: string | null): Promise<Dropbox> {
 }
 
 /** Run a Dropbox API call; on expired_access_token refresh once and retry (refresh-token mode only). */
-async function withDropboxApi<T>(
+export async function withDropboxApi<T>(
   namespaceId: string | null | undefined,
   fn: (client: Dropbox) => Promise<T>
 ): Promise<T> {
@@ -888,6 +888,174 @@ export async function downloadDropboxFileByPathOrId(opts: {
       );
     }
   }
+}
+
+export interface DropboxFileChange {
+  type: 'file';
+  id: string;
+  name: string;
+  path: string;
+  rev: string;
+  size: number | null;
+  clientModified: string | null;
+}
+
+export interface DropboxDeletedChange {
+  type: 'deleted';
+  path: string;
+}
+
+export type DropboxListChange = DropboxFileChange | DropboxDeletedChange;
+
+function toListChange(entry: unknown): DropboxListChange | null {
+  const value = entry as {
+    '.tag'?: string;
+    id?: string;
+    name?: string;
+    path_display?: string;
+    path_lower?: string;
+    rev?: string;
+    size?: number;
+    client_modified?: string;
+  };
+  const path = value.path_display ?? value.path_lower;
+  if (!path) return null;
+  if (value['.tag'] === 'deleted') return { type: 'deleted', path };
+  if (value['.tag'] !== 'file' || !value.id || !value.rev) return null;
+  return {
+    type: 'file',
+    id: value.id,
+    name: value.name ?? path.split('/').pop() ?? path,
+    path,
+    rev: value.rev,
+    size: value.size ?? null,
+    clientModified: value.client_modified ?? null,
+  };
+}
+
+export function isDropboxPathNotFound(err: unknown): boolean {
+  return extractDropboxError(err).toLowerCase().includes('not_found');
+}
+
+export function isDropboxCursorReset(err: unknown): boolean {
+  const msg = extractDropboxError(err).toLowerCase();
+  return msg.includes('reset') || msg.includes('expired_cursor');
+}
+
+/** Every file below a folder (recursive) with rev + client_modified. */
+export async function listDropboxFilesRecursive(folderPath: string): Promise<DropboxFileChange[]> {
+  const normalized = normalizePath(folderPath);
+  const files: DropboxFileChange[] = [];
+  await withDropboxApi(undefined, async (client) => {
+    files.length = 0;
+    let result = await client.filesListFolder({
+      path: normalized,
+      recursive: true,
+      include_deleted: false,
+      limit: 2000,
+    });
+    for (;;) {
+      for (const entry of result.result.entries) {
+        const change = toListChange(entry);
+        if (change?.type === 'file') files.push(change);
+      }
+      if (!result.result.has_more) break;
+      result = await client.filesListFolderContinue({ cursor: result.result.cursor });
+    }
+  });
+  return files;
+}
+
+/** Cursor for future changes below a folder, without listing current contents. */
+export async function getLatestDropboxCursor(folderPath: string): Promise<string> {
+  const response = await withDropboxApi(undefined, (client) =>
+    client.filesListFolderGetLatestCursor({
+      path: normalizePath(folderPath),
+      recursive: true,
+      include_deleted: true,
+    })
+  );
+  return response.result.cursor;
+}
+
+/** One page of changes since `cursor` (files and deletions, in Dropbox order). */
+export async function listDropboxChanges(cursor: string): Promise<{
+  changes: DropboxListChange[];
+  cursor: string;
+  hasMore: boolean;
+}> {
+  const response = await withDropboxApi(undefined, (client) =>
+    client.filesListFolderContinue({ cursor })
+  );
+  const changes: DropboxListChange[] = [];
+  for (const entry of response.result.entries) {
+    const change = toListChange(entry);
+    if (change) changes.push(change);
+  }
+  return {
+    changes,
+    cursor: response.result.cursor,
+    hasMore: response.result.has_more,
+  };
+}
+
+/** Dropbox-API-Arg must be ASCII; escape everything else as \uXXXX. */
+function dropboxApiArg(value: unknown): string {
+  return JSON.stringify(value).replace(
+    /[\u007f-\uffff]/g,
+    (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`
+  );
+}
+
+/** JPEG thumbnail (w1024h768, bestfit) — converts HEIC server-side. */
+export async function getDropboxThumbnailJpeg(pathOrId: string): Promise<Buffer> {
+  const path = pathOrId.startsWith('id:') || pathOrId.startsWith('/') ? pathOrId : `/${pathOrId}`;
+  const request = async (): Promise<Response> => {
+    const token = await getDropboxAccessToken();
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${token}`,
+      'Dropbox-API-Arg': dropboxApiArg({
+        resource: { '.tag': 'path', path },
+        format: { '.tag': 'jpeg' },
+        size: { '.tag': 'w1024h768' },
+        mode: { '.tag': 'bestfit' },
+      }),
+    };
+    const ns = getNamespaceId();
+    if (ns) {
+      headers['Dropbox-API-Path-Root'] = JSON.stringify({
+        '.tag': 'namespace_id',
+        namespace_id: ns,
+      });
+    }
+    return fetch('https://content.dropboxapi.com/2/files/get_thumbnail_v2', {
+      method: 'POST',
+      headers,
+    });
+  };
+
+  let res = await request();
+  let body = res.ok ? '' : await res.text().catch(() => '');
+  if (
+    res.status === 401 &&
+    !body.includes('missing_scope') &&
+    usesDropboxRefreshToken()
+  ) {
+    await refreshDropboxAccessToken();
+    res = await request();
+    body = res.ok ? '' : await res.text().catch(() => '');
+  }
+  if (!res.ok) {
+    if (body.includes('missing_scope')) {
+      throw new Error(
+        'Dropbox token missing files.content.read scope — enable it on the Dropbox app and re-issue DROPBOX_REFRESH_TOKEN'
+      );
+    }
+    throw new Error(`Dropbox thumbnail failed (${res.status}): ${body.slice(0, 200)}`);
+  }
+  const buf = Buffer.from(await res.arrayBuffer());
+  if (!buf.length) throw new Error('Dropbox thumbnail returned no bytes');
+  return buf;
 }
 
 export async function generateDropboxPermalink(filePath: string): Promise<string> {

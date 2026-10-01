@@ -28,6 +28,16 @@ import {
 import { getGoogleSheetsConfigIssue } from '../config/env.js';
 import { getDropboxAuthStatus } from '../services/dropboxAuth.js';
 import { discoverCasesRoot, getCasesRootPath, verifyDropboxConnection } from '../services/dropboxService.js';
+import { getSupabase } from '../db/supabase.js';
+import {
+  getEvidenceSyncStatus,
+  runEvidenceReconciliation,
+  triggerEvidenceChanges,
+} from '../services/evidencePhotoSyncService.js';
+import {
+  getEvidenceAnalysisStatus,
+  triggerEvidenceAnalysis,
+} from '../services/evidencePhotoAnalysisService.js';
 import { logger } from '../utils/logger.js';
 
 export const adminRouter = Router();
@@ -281,6 +291,54 @@ adminRouter.get('/admin/dropbox-sync-status', (_req, res) => {
     lastSyncAt: getLastDropboxSyncAt(),
     casesRootPath: getCasesRootPath(),
   });
+});
+
+/** Full evidence photo import / reconciliation (runs in the background). */
+adminRouter.post('/admin/evidence-photos/import', (_req, res) => {
+  void runEvidenceReconciliation().catch((err) => {
+    logger.error('Admin evidence photo import failed', { err: String(err) });
+  });
+  res.status(202).json({ accepted: true, status: getEvidenceSyncStatus() });
+});
+
+/** Replay Dropbox changes since the saved cursor. */
+adminRouter.post('/admin/evidence-photos/sync', (_req, res) => {
+  triggerEvidenceChanges('admin');
+  res.status(202).json({ accepted: true });
+});
+
+/** Drain the analysis queue now instead of waiting for the next worker tick. */
+adminRouter.post('/admin/evidence-photos/analyze', (_req, res) => {
+  triggerEvidenceAnalysis('admin');
+  res.status(202).json({ accepted: true });
+});
+
+adminRouter.get('/admin/evidence-photos/status', async (_req, res) => {
+  try {
+    const supabase = getSupabase();
+    const statuses = ['pending', 'processing', 'complete', 'failed'] as const;
+    const counts: Record<string, number> = {};
+    for (const status of statuses) {
+      const { count, error } = await supabase
+        .from('evidence_photos')
+        .select('id', { count: 'exact', head: true })
+        .eq('analysis_status', status)
+        .is('deleted_at', null);
+      if (error) throw new Error(error.message);
+      counts[status] = count ?? 0;
+    }
+    const { count: deleted } = await supabase
+      .from('evidence_photos')
+      .select('id', { count: 'exact', head: true })
+      .not('deleted_at', 'is', null);
+    res.json({
+      counts: { ...counts, deleted: deleted ?? 0 },
+      sync: getEvidenceSyncStatus(),
+      analysis: getEvidenceAnalysisStatus(),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
 });
 
 /** Discover RAMOS JAMES LAW CASES root without full index. */

@@ -10,6 +10,14 @@ import { startQueueReminderScheduler, refreshPendingQueueCards } from './service
 import { startEodStatusReportScheduler } from './services/eodStatusReportService.js';
 import { startScoreboardEmailScheduler } from './services/scoreboardEmailService.js';
 import { startTempStorageCleanupScheduler } from './services/tempStorageCleanupService.js';
+import {
+  setEvidencePendingListener,
+  startEvidencePhotoSyncScheduler,
+} from './services/evidencePhotoSyncService.js';
+import {
+  startEvidencePhotoAnalysisScheduler,
+  triggerEvidenceAnalysis,
+} from './services/evidencePhotoAnalysisService.js';
 import { isMedicalRecordsCaptureEnabled } from './services/medicalRecordsCaptureService.js';
 import { logger } from './utils/logger.js';
 
@@ -41,6 +49,9 @@ app.listen(env.PORT, () => {
     });
   } else {
     startDropboxSyncScheduler(env.DROPBOX_SYNC_INTERVAL_MINUTES);
+    setEvidencePendingListener(() => triggerEvidenceAnalysis('sync'));
+    startEvidencePhotoSyncScheduler();
+    startEvidencePhotoAnalysisScheduler(env.EVIDENCE_PHOTOS_WORKER_INTERVAL_MINUTES);
     ensureDropboxAccessToken().catch((err) => {
       logger.error('Dropbox token warmup failed', { err: String(err) });
     });

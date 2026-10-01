@@ -85,6 +85,16 @@ const envSchema = z.object({
   DROPBOX_NAMESPACE_ID: optionalString,
   /** How often to scan Dropbox for new case folders (minutes). 0 = disabled. */
   DROPBOX_SYNC_INTERVAL_MINUTES: z.coerce.number().default(60),
+  /** AI case photo evidence: import case-folder photos into evidence_photos and analyze them. */
+  EVIDENCE_PHOTOS_ENABLED: envBoolean(true),
+  /** Vision model for photo descriptions (defaults to OPENAI_VISION_MODEL, then OPENAI_MODEL). */
+  EVIDENCE_PHOTOS_MODEL: optionalString,
+  /** How often the analysis worker claims pending photos (minutes). 0 = disabled. */
+  EVIDENCE_PHOTOS_WORKER_INTERVAL_MINUTES: z.coerce.number().min(0).default(1),
+  /** Safety-net poll of the Dropbox change cursor in case a webhook is missed (minutes). 0 = webhook only. */
+  EVIDENCE_PHOTOS_POLL_INTERVAL_MINUTES: z.coerce.number().min(0).default(15),
+  /** Local time (24h HH:MM) for the nightly full reconciliation. */
+  EVIDENCE_PHOTOS_RECONCILE_TIME: z.string().default('02:00'),
   INBOUND_EMAIL_WEBHOOK_SECRET: optionalString,
   /** Delete staged files this many minutes after successful routing (Dropbox save). */
   TEMP_STORAGE_ROUTED_DELETE_AFTER_MINUTES: z.coerce.number().min(0).default(1),

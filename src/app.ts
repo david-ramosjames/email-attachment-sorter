@@ -2,6 +2,7 @@ import express, { type Express } from 'express';
 import path from 'path';
 import { healthRouter } from './routes/health.js';
 import { webhooksRouter } from './routes/webhooks.js';
+import { dropboxWebhookRouter } from './routes/dropboxWebhook.js';
 import { adminRouter } from './routes/admin.js';
 import { faqRouter } from './routes/faq.js';
 import { dashboardRouter } from './routes/dashboard.js';
@@ -70,6 +71,8 @@ export function createApp(): Express {
     }
   );
 
+  app.use('/webhooks/dropbox', express.raw({ type: () => true, limit: '1mb' }));
+
   app.use(express.json({ limit: '50mb' }));
 
   app.use((req, res, next) => {
@@ -92,6 +95,7 @@ export function createApp(): Express {
   app.use(faqRouter);
   app.use(dashboardRouter);
   app.use(webhooksRouter);
+  app.use(dropboxWebhookRouter);
   app.use(medicalImportRouter);
   app.use(expensesImportRouter);
   app.use(adminRouter);
