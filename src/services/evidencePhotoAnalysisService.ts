@@ -57,7 +57,16 @@ Output:
   "Black sedan with front-end damage near tree"), not an event name.
 - description: 2 to 4 sentences.
 - category: the single best fit from the allowed list. Use "Document" for paperwork, screenshots,
-  or IDs; "Medical" for medical settings, equipment, or records; "Other" when nothing fits.`;
+  or IDs; "Medical" for medical settings, equipment, or records; "Other" when nothing fits.
+- is_evidence: whether staff would want this image in the case's photo evidence.
+  true for real-world photos of vehicles, damage, injuries, people, places, property, medical
+  treatment, and photographed or scanned case documents (reports, bills, IDs, insurance cards,
+  letters, receipts).
+  false for images that are not case evidence: company or brand logos, email signature images,
+  email/app/website notification screenshots, banners and advertisements, icons, clip art or
+  stock graphics, and blank, black, or unreadably blurry images. When unsure, use true.
+- not_evidence_reason: when is_evidence is false, 2 to 5 words naming what it is
+  (for example "company logo" or "email notification screenshot"); otherwise an empty string.`;
 
 /** Causation, fault, severity, and diagnosis language the captions must never contain. */
 const BANNED_TERMS =
@@ -67,7 +76,7 @@ const REWRITE_PROMPT = `Rewrite this photo caption so it only describes what is 
 Remove or replace these words and phrases: {terms}.
 Do not state or imply causation, fault, severity, speed, or any medical diagnosis.
 Keep the same facts otherwise, the title at most 8 words, the description 2 to 4 sentences,
-and the same category.`;
+and the same category, is_evidence, and not_evidence_reason.`;
 
 function bannedTermsIn(text: string): string[] {
   return [...new Set((text.match(BANNED_TERMS) ?? []).map((t) => t.toLowerCase()))];
@@ -79,8 +88,10 @@ const RESPONSE_SCHEMA = {
     title: { type: 'string' as const },
     description: { type: 'string' as const },
     category: { type: 'string' as const, enum: [...EVIDENCE_PHOTO_CATEGORIES] },
+    is_evidence: { type: 'boolean' as const },
+    not_evidence_reason: { type: 'string' as const },
   },
-  required: ['title', 'description', 'category'],
+  required: ['title', 'description', 'category', 'is_evidence', 'not_evidence_reason'],
   additionalProperties: false,
 };
 
@@ -97,6 +108,8 @@ interface PhotoAnalysis {
   title: string;
   description: string;
   category: EvidenceCategory;
+  isEvidence: boolean;
+  notEvidenceReason: string | null;
   model: string;
 }
 
@@ -182,15 +195,28 @@ async function requestCaption(
   const raw = choice?.message?.content;
   if (!raw) throw new Error('Model returned no content');
 
-  const parsed = JSON.parse(raw) as { title?: unknown; description?: unknown; category?: unknown };
+  const parsed = JSON.parse(raw) as {
+    title?: unknown;
+    description?: unknown;
+    category?: unknown;
+    is_evidence?: unknown;
+    not_evidence_reason?: unknown;
+  };
   const title = limitWords(String(parsed.title ?? ''), MAX_TITLE_WORDS);
   const description = String(parsed.description ?? '').trim();
   if (!title || !description) throw new Error('Model returned an empty title or description');
   const category = EVIDENCE_PHOTO_CATEGORIES.includes(parsed.category as EvidenceCategory)
     ? (parsed.category as EvidenceCategory)
     : 'Other';
+  const isEvidence = parsed.is_evidence !== false;
+  const reason = String(parsed.not_evidence_reason ?? '').trim();
+  const notEvidenceReason = isEvidence ? null : limitWords(reason, 8) || 'not case evidence';
 
-  return { analysis: { title, description, category }, raw, model: response.model ?? model };
+  return {
+    analysis: { title, description, category, isEvidence, notEvidenceReason },
+    raw,
+    model: response.model ?? model,
+  };
 }
 
 async function analyzeImage(jpeg: Buffer): Promise<PhotoAnalysis> {
@@ -227,7 +253,13 @@ async function analyzeImage(jpeg: Buffer): Promise<PhotoAnalysis> {
   if (stillBanned.length) {
     throw new Error(`Caption failed guardrail check (${stillBanned.join(', ')})`);
   }
-  return { ...rewrite.analysis, category: first.analysis.category, model: rewrite.model };
+  return {
+    ...rewrite.analysis,
+    category: first.analysis.category,
+    isEvidence: first.analysis.isEvidence,
+    notEvidenceReason: first.analysis.notEvidenceReason,
+    model: rewrite.model,
+  };
 }
 
 async function saveSuccess(photo: ClaimedPhoto, analysis: PhotoAnalysis): Promise<void> {
@@ -238,6 +270,9 @@ async function saveSuccess(photo: ClaimedPhoto, analysis: PhotoAnalysis): Promis
     analysis_error: null,
     analyzed_rev: photo.dropbox_rev,
     processing_started_at: null,
+    // AI-only judgment, not a staff-editable field, so it's written even after human edits.
+    ai_is_evidence: analysis.isEvidence,
+    ai_evidence_reason: analysis.notEvidenceReason,
   };
 
   // Only write AI fields if staff haven't edited and the file wasn't replaced mid-analysis.
@@ -385,6 +420,83 @@ async function runWorkerOnce(): Promise<{ complete: number; failed: number }> {
   return totals;
 }
 
+const evidenceCheckFailedAt = new Map<string, number>();
+const EVIDENCE_CHECK_RETRY_MS = 6 * 60 * 60 * 1000;
+
+async function hasPendingPhotos(): Promise<boolean> {
+  const { count, error } = await requireClientSupabase()
+    .from('evidence_photos')
+    .select('id', { count: 'exact', head: true })
+    .eq('analysis_status', 'pending')
+    .is('deleted_at', null);
+  if (error) throw new Error(error.message);
+  return (count ?? 0) > 0;
+}
+
+/**
+ * Photos captioned before the evidence check existed: fill ai_is_evidence only, leaving
+ * captions and status alone so the Case Tracker never shows them as re-analyzing.
+ * Yields to the normal queue whenever new photos are pending.
+ */
+async function backfillEvidenceChecks(): Promise<number> {
+  let checked = 0;
+  for (;;) {
+    settings = await getEvidencePhotoSettings();
+    if (!settings.enabled || !settings.captioningEnabled) break;
+    if (Date.now() < pausedUntil || (await hasPendingPhotos())) break;
+
+    const { data, error } = await requireClientSupabase()
+      .from('evidence_photos')
+      .select('id, dropbox_file_id, dropbox_path')
+      .eq('analysis_status', 'complete')
+      .is('ai_is_evidence', null)
+      .is('deleted_at', null)
+      .order('created_at')
+      .limit(CLAIM_BATCH_SIZE + evidenceCheckFailedAt.size);
+    if (error) throw new Error(`Load photos for evidence check failed: ${error.message}`);
+    const now = Date.now();
+    const rows = (data ?? [])
+      .filter((r) => now - (evidenceCheckFailedAt.get(r.id) ?? 0) > EVIDENCE_CHECK_RETRY_MS)
+      .slice(0, CLAIM_BATCH_SIZE);
+    if (!rows.length) break;
+
+    for (const row of rows) {
+      try {
+        const jpeg = await getDropboxThumbnailJpeg(row.dropbox_file_id);
+        await paceCalls();
+        let analysis: PhotoAnalysis;
+        try {
+          analysis = await analyzeImage(jpeg);
+        } catch (err) {
+          throw asRateLimit(err) ?? err;
+        }
+        const { error: updateError } = await requireClientSupabase()
+          .from('evidence_photos')
+          .update({
+            ai_is_evidence: analysis.isEvidence,
+            ai_evidence_reason: analysis.notEvidenceReason,
+          })
+          .eq('id', row.id)
+          .is('ai_is_evidence', null);
+        if (updateError) throw new Error(updateError.message);
+        evidenceCheckFailedAt.delete(row.id);
+        checked++;
+      } catch (err) {
+        if (err instanceof RateLimitedError) {
+          pausedUntil = Date.now() + err.pauseMs;
+          logger.warn('Evidence check paused: OpenAI rate limit', {
+            pauseSeconds: Math.round(err.pauseMs / 1000),
+          });
+          return checked;
+        }
+        evidenceCheckFailedAt.set(row.id, now);
+        logger.warn('Evidence check failed', { id: row.id, path: row.dropbox_path, err: shortError(err) });
+      }
+    }
+  }
+  return checked;
+}
+
 /** Drain the analysis queue. Single-flight; extra triggers re-run once the current pass ends. */
 export async function runEvidenceAnalysisWorker(): Promise<void> {
   if (workerInProgress) {
@@ -400,6 +512,10 @@ export async function runEvidenceAnalysisWorker(): Promise<void> {
       lastError = null;
       if (totals.complete || totals.failed) {
         logger.info('Evidence photo analysis pass complete', { ...totals, model: analysisModel() });
+      }
+      if (!workerRerunRequested) {
+        const checked = await backfillEvidenceChecks();
+        if (checked) logger.info('Evidence check backfill pass complete', { checked });
       }
     } while (workerRerunRequested);
   } catch (err) {
@@ -449,6 +565,21 @@ export async function getEvidencePhotoCounts(): Promise<Record<string, number>> 
     .not('deleted_at', 'is', null);
   if (error) throw new Error(error.message);
   counts.deleted = deleted ?? 0;
+  const { count: notEvidence, error: neError } = await supabase
+    .from('evidence_photos')
+    .select('id', { count: 'exact', head: true })
+    .eq('ai_is_evidence', false)
+    .is('deleted_at', null);
+  if (neError) throw new Error(neError.message);
+  counts.notEvidence = notEvidence ?? 0;
+  const { count: unchecked, error: ucError } = await supabase
+    .from('evidence_photos')
+    .select('id', { count: 'exact', head: true })
+    .eq('analysis_status', 'complete')
+    .is('ai_is_evidence', null)
+    .is('deleted_at', null);
+  if (ucError) throw new Error(ucError.message);
+  counts.evidenceUnchecked = unchecked ?? 0;
   return counts;
 }
 

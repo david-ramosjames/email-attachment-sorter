@@ -1168,8 +1168,10 @@ folder: Medical</div>
           evStat('Captioned', fmt(c.complete)),
           evStat('Waiting', fmt(c.pending)),
           evStat('In progress', fmt(c.processing)),
-          evStat('Failed', fmt(c.failed))
+          evStat('Failed', fmt(c.failed)),
+          evStat('Not evidence', fmt(c.notEvidence))
         );
+        if (c.evidenceUnchecked) stats.append(evStat('Evidence check left', fmt(c.evidenceUnchecked)));
       }
       const sync = data.sync || {};
       if (sync.reconcileInProgress) stats.append(evStat('Dropbox scan', 'running'));
