@@ -1007,8 +1007,14 @@ function dropboxApiArg(value: unknown): string {
   );
 }
 
-/** JPEG thumbnail (w1024h768, bestfit) — converts HEIC server-side. */
-export async function getDropboxThumbnailJpeg(pathOrId: string): Promise<Buffer> {
+export const DROPBOX_THUMBNAIL_SIZES = ['w256h256', 'w480h320', 'w640h480', 'w1024h768'] as const;
+export type DropboxThumbnailSize = (typeof DROPBOX_THUMBNAIL_SIZES)[number];
+
+/** JPEG thumbnail (bestfit) — converts HEIC server-side. */
+export async function getDropboxThumbnailJpeg(
+  pathOrId: string,
+  size: DropboxThumbnailSize = 'w1024h768'
+): Promise<Buffer> {
   const path = pathOrId.startsWith('id:') || pathOrId.startsWith('/') ? pathOrId : `/${pathOrId}`;
   const request = async (): Promise<Response> => {
     const token = await getDropboxAccessToken();
@@ -1017,7 +1023,7 @@ export async function getDropboxThumbnailJpeg(pathOrId: string): Promise<Buffer>
       'Dropbox-API-Arg': dropboxApiArg({
         resource: { '.tag': 'path', path },
         format: { '.tag': 'jpeg' },
-        size: { '.tag': 'w1024h768' },
+        size: { '.tag': size },
         mode: { '.tag': 'bestfit' },
       }),
     };
