@@ -51,7 +51,7 @@ app.listen(env.PORT, () => {
     startDropboxSyncScheduler(env.DROPBOX_SYNC_INTERVAL_MINUTES);
     setEvidencePendingListener(() => triggerEvidenceAnalysis('sync'));
     startEvidencePhotoSyncScheduler();
-    startEvidencePhotoAnalysisScheduler(env.EVIDENCE_PHOTOS_WORKER_INTERVAL_MINUTES);
+    startEvidencePhotoAnalysisScheduler();
     ensureDropboxAccessToken().catch((err) => {
       logger.error('Dropbox token warmup failed', { err: String(err) });
     });

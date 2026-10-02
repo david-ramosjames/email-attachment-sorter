@@ -39,6 +39,5 @@ dropboxWebhookRouter.post('/webhooks/dropbox', (req, res) => {
 
   res.sendStatus(200);
 
-  if (!getEnv().EVIDENCE_PHOTOS_ENABLED) return;
   setImmediate(() => triggerEvidenceChanges('webhook'));
 });

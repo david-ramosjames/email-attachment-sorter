@@ -424,6 +424,7 @@
     .settings-field input[type="text"],
     .settings-field input[type="time"],
     .settings-field input[type="number"],
+    .settings-field select,
     .settings-field textarea {
       font: inherit;
       padding: 0.55rem 0.7rem;
@@ -507,6 +508,21 @@
       color: #9a3412;
       font-size: 0.9rem;
     }
+
+    .settings-field .field-hint {
+      font-size: 0.82rem;
+      color: var(--text-muted);
+    }
+
+    .evidence-stats {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem 1.25rem;
+      margin-bottom: 1rem;
+      font-size: 0.92rem;
+    }
+
+    .evidence-stats strong { font-variant-numeric: tabular-nums; }
   </style>
 </head>
 <body>
@@ -929,6 +945,82 @@ folder: Medical</div>
       </div>
     </section>
 
+    <section class="settings-card" id="evidence-settings">
+      <h2>Evidence Photos</h2>
+      <p class="hint">
+        Imports photos from each case folder in Dropbox and writes an AI title, description, and category
+        for the Case Tracker. Originals stay in Dropbox. Changes apply within about a minute, without a
+        redeploy.
+      </p>
+
+      <div id="evidence-warn" class="settings-warn" hidden></div>
+      <div class="evidence-stats" id="evidence-stats"></div>
+
+      <form class="settings-grid" onsubmit="return false">
+        <div class="settings-field">
+          <label class="settings-check">
+            <input type="checkbox" id="evidence-enabled" />
+            Evidence photos on (Dropbox sync + captions)
+          </label>
+        </div>
+
+        <div class="settings-field">
+          <label class="settings-check">
+            <input type="checkbox" id="evidence-captioning" />
+            AI captioning on
+          </label>
+          <span class="field-hint">Turn off to pause OpenAI usage; photos keep importing.</span>
+        </div>
+
+        <div class="settings-field full">
+          <label for="evidence-folders">Case folders to scan (comma-separated)</label>
+          <input type="text" id="evidence-folders" placeholder="Photos, PD, Investigation, Intake" />
+          <span class="field-hint">
+            Top-level folders inside each case, including their subfolders. Changing this re-scans Dropbox;
+            photos in removed folders are hidden from the Case Tracker, not deleted.
+          </span>
+        </div>
+
+        <div class="settings-field">
+          <label for="evidence-model">Model</label>
+          <input type="text" id="evidence-model" placeholder="gpt-4o-mini" />
+          <span class="field-hint" id="evidence-model-hint"></span>
+        </div>
+
+        <div class="settings-field">
+          <label for="evidence-detail">Image detail</label>
+          <select id="evidence-detail">
+            <option value="low">Low (cheapest, recommended)</option>
+            <option value="high">High (reads fine print, ~9x tokens)</option>
+            <option value="auto">Auto</option>
+          </select>
+        </div>
+
+        <div class="settings-field">
+          <label for="evidence-rate">Max photos per minute</label>
+          <input type="number" id="evidence-rate" min="1" max="120" step="1" />
+          <span class="field-hint">Keeps the backlog from using up the OpenAI limit the sorter also uses.</span>
+        </div>
+
+        <div class="settings-field">
+          <label for="evidence-poll">Dropbox check every (minutes)</label>
+          <input type="number" id="evidence-poll" min="0" max="1440" step="1" />
+          <span class="field-hint">Backup for the Dropbox webhook. 0 = webhook only.</span>
+        </div>
+
+        <div class="settings-field">
+          <label for="evidence-reconcile">Nightly full re-scan at</label>
+          <input type="time" id="evidence-reconcile" />
+        </div>
+      </form>
+
+      <div class="settings-actions">
+        <button type="button" class="primary" id="evidence-save">Save settings</button>
+        <button type="button" class="secondary" id="evidence-refresh">Refresh counts</button>
+        <span class="settings-status" id="evidence-status"></span>
+      </div>
+    </section>
+
     <footer>
       RJL File Sorter · Ramos James Law · Internal use only
     </footer>
@@ -1034,6 +1126,111 @@ folder: Medical</div>
     });
 
     loadSettings();
+
+    const evStatusEl = document.getElementById('evidence-status');
+    const evWarnEl = document.getElementById('evidence-warn');
+
+    function setEvStatus(text, kind) {
+      evStatusEl.textContent = text || '';
+      evStatusEl.className = 'settings-status' + (kind ? ' ' + kind : '');
+    }
+
+    function evStat(label, value) {
+      const span = document.createElement('span');
+      span.append(label + ': ');
+      const strong = document.createElement('strong');
+      strong.textContent = value;
+      span.append(strong);
+      return span;
+    }
+
+    function applyEvidence(data) {
+      const s = data.settings || {};
+      document.getElementById('evidence-enabled').checked = Boolean(s.enabled);
+      document.getElementById('evidence-captioning').checked = Boolean(s.captioningEnabled);
+      document.getElementById('evidence-model').value = s.model || '';
+      document.getElementById('evidence-model').placeholder = data.defaultModel || '';
+      document.getElementById('evidence-model-hint').textContent =
+        'Blank uses the sorter default (' + (data.defaultModel || 'unset') + '). In use: ' +
+        (data.effectiveModel || '?');
+      document.getElementById('evidence-detail').value = s.imageDetail || 'low';
+      document.getElementById('evidence-rate').value = s.maxPerMinute ?? 10;
+      document.getElementById('evidence-poll').value = s.pollIntervalMinutes ?? 15;
+      document.getElementById('evidence-reconcile').value = s.reconcileTime || '02:00';
+      document.getElementById('evidence-folders').value = (s.scanFolders || []).join(', ');
+
+      const stats = document.getElementById('evidence-stats');
+      stats.replaceChildren();
+      const c = data.counts;
+      if (c) {
+        const fmt = (n) => Number(n || 0).toLocaleString();
+        stats.append(
+          evStat('Captioned', fmt(c.complete)),
+          evStat('Waiting', fmt(c.pending)),
+          evStat('In progress', fmt(c.processing)),
+          evStat('Failed', fmt(c.failed))
+        );
+      }
+      const sync = data.sync || {};
+      if (sync.reconcileInProgress) stats.append(evStat('Dropbox scan', 'running'));
+
+      const warnings = [];
+      if (data.countsError) warnings.push('Could not read Case Tracker database: ' + data.countsError);
+      const a = data.analysis || {};
+      if (a.pausedUntil) {
+        warnings.push(
+          'Captioning paused by OpenAI rate limit until ' +
+            new Date(a.pausedUntil).toLocaleTimeString() + '.'
+        );
+      }
+      if (a.lastError) warnings.push('Last worker error: ' + a.lastError);
+      if (sync.lastChangesError) warnings.push('Last Dropbox sync error: ' + sync.lastChangesError);
+      evWarnEl.hidden = warnings.length === 0;
+      evWarnEl.textContent = warnings.join(' ');
+    }
+
+    function loadEvidence() {
+      setEvStatus('Loading…');
+      fetch('/api/faq/evidence-photos-settings')
+        .then((res) => {
+          if (!res.ok) throw new Error('Failed to load');
+          return res.json();
+        })
+        .then((data) => {
+          applyEvidence(data);
+          setEvStatus('');
+        })
+        .catch(() => setEvStatus('Could not load evidence photo settings.', 'err'));
+    }
+
+    document.getElementById('evidence-save').addEventListener('click', () => {
+      setEvStatus('Saving…');
+      fetch('/api/faq/evidence-photos-settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          enabled: document.getElementById('evidence-enabled').checked,
+          captioningEnabled: document.getElementById('evidence-captioning').checked,
+          model: document.getElementById('evidence-model').value,
+          imageDetail: document.getElementById('evidence-detail').value,
+          maxPerMinute: Number(document.getElementById('evidence-rate').value),
+          pollIntervalMinutes: Number(document.getElementById('evidence-poll').value),
+          reconcileTime: document.getElementById('evidence-reconcile').value,
+          scanFolders: document.getElementById('evidence-folders').value,
+        }),
+      })
+        .then(async (res) => {
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) throw new Error(data.error || 'Save failed');
+          applyEvidence(data);
+          setEvStatus('Saved.', 'ok');
+        })
+        .catch((err) => setEvStatus(err.message || 'Save failed.', 'err'));
+    });
+
+    document.getElementById('evidence-refresh').addEventListener('click', loadEvidence);
+
+    loadEvidence();
   </script>
 </body>
 </html>

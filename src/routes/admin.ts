@@ -28,7 +28,7 @@ import {
 import { getGoogleSheetsConfigIssue } from '../config/env.js';
 import { getDropboxAuthStatus } from '../services/dropboxAuth.js';
 import { discoverCasesRoot, getCasesRootPath, verifyDropboxConnection } from '../services/dropboxService.js';
-import { clientSupabaseProjectRef, requireClientSupabase } from '../db/clientSupabase.js';
+import { clientSupabaseProjectRef } from '../db/clientSupabase.js';
 import {
   getEvidenceSyncStatus,
   runEvidenceReconciliation,
@@ -36,6 +36,7 @@ import {
 } from '../services/evidencePhotoSyncService.js';
 import {
   getEvidenceAnalysisStatus,
+  getEvidencePhotoCounts,
   triggerEvidenceAnalysis,
 } from '../services/evidencePhotoAnalysisService.js';
 import { logger } from '../utils/logger.js';
@@ -315,25 +316,9 @@ adminRouter.post('/admin/evidence-photos/analyze', (_req, res) => {
 
 adminRouter.get('/admin/evidence-photos/status', async (_req, res) => {
   try {
-    const supabase = requireClientSupabase();
-    const statuses = ['pending', 'processing', 'complete', 'failed'] as const;
-    const counts: Record<string, number> = {};
-    for (const status of statuses) {
-      const { count, error } = await supabase
-        .from('evidence_photos')
-        .select('id', { count: 'exact', head: true })
-        .eq('analysis_status', status)
-        .is('deleted_at', null);
-      if (error) throw new Error(error.message);
-      counts[status] = count ?? 0;
-    }
-    const { count: deleted } = await supabase
-      .from('evidence_photos')
-      .select('id', { count: 'exact', head: true })
-      .not('deleted_at', 'is', null);
     res.json({
       project: clientSupabaseProjectRef(),
-      counts: { ...counts, deleted: deleted ?? 0 },
+      counts: await getEvidencePhotoCounts(),
       sync: getEvidenceSyncStatus(),
       analysis: getEvidenceAnalysisStatus(),
     });

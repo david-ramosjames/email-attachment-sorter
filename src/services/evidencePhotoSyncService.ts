@@ -12,6 +12,8 @@ import {
   type DropboxFileChange,
   type DropboxListChange,
 } from './dropboxService.js';
+import { getEvidencePhotoSettings } from './evidencePhotoSettings.js';
+import { backfillEvidencePermalinks } from './evidencePhotoLinkService.js';
 import { logger } from '../utils/logger.js';
 
 const CURSOR_KEY = 'evidence_photos_dropbox_cursor';
@@ -34,6 +36,12 @@ interface CaseRoot {
   caseNumber: string;
   caseId: string | null;
   rootLower: string;
+}
+
+/** Case roots plus the top-level subfolders (lowercase) that are in scope for import. */
+interface CaseScope {
+  roots: CaseRoot[];
+  folders: string[];
 }
 
 interface EvidencePhotoRow {
@@ -165,10 +173,22 @@ async function loadCaseRoots(): Promise<CaseRoot[]> {
   return [...roots.values()].sort((a, b) => b.rootLower.length - a.rootLower.length);
 }
 
-function caseForPath(roots: CaseRoot[], path: string): CaseRoot | null {
+async function loadCaseScope(): Promise<CaseScope> {
+  const settings = await getEvidencePhotoSettings();
+  return {
+    roots: await loadCaseRoots(),
+    folders: settings.scanFolders.map((f) => f.toLowerCase()),
+  };
+}
+
+/** The case a file belongs to, or null if it's outside every case or outside the scanned subfolders. */
+function caseForPath(scope: CaseScope, path: string): CaseRoot | null {
   const lower = path.toLowerCase();
-  for (const root of roots) {
-    if (lower.startsWith(`${root.rootLower}/`)) return root;
+  for (const root of scope.roots) {
+    if (!lower.startsWith(`${root.rootLower}/`)) continue;
+    const subfolder = lower.slice(root.rootLower.length + 1).split('/')[0];
+    const isFileAtRoot = !lower.slice(root.rootLower.length + 1).includes('/');
+    return !isFileAtRoot && scope.folders.includes(subfolder) ? root : null;
   }
   return null;
 }
@@ -238,7 +258,7 @@ async function softDeleteByPaths(paths: string[]): Promise<number> {
  * Upsert Dropbox file metadata into evidence_photos.
  * Moves update location only; a new rev re-queues analysis unless staff edited the row.
  */
-async function applyFiles(files: DropboxFileChange[], roots: CaseRoot[]): Promise<EvidenceApplyCounts> {
+async function applyFiles(files: DropboxFileChange[], scope: CaseScope): Promise<EvidenceApplyCounts> {
   const counts = emptyCounts();
   const photos = files.filter((f) => evidenceMimeType(f.name));
   if (!photos.length) return counts;
@@ -248,7 +268,7 @@ async function applyFiles(files: DropboxFileChange[], roots: CaseRoot[]): Promis
   const outsideIds: string[] = [];
 
   for (const file of photos) {
-    const target = caseForPath(roots, file.path);
+    const target = caseForPath(scope, file.path);
     const row = existing.get(file.id);
 
     if (!target) {
@@ -330,7 +350,7 @@ async function applyFiles(files: DropboxFileChange[], roots: CaseRoot[]): Promis
 }
 
 /** Apply changes in Dropbox order so delete-then-re-add (and moves) resolve correctly. */
-async function applyChanges(changes: DropboxListChange[], roots: CaseRoot[]): Promise<EvidenceApplyCounts> {
+async function applyChanges(changes: DropboxListChange[], scope: CaseScope): Promise<EvidenceApplyCounts> {
   const counts = emptyCounts();
   let i = 0;
   while (i < changes.length) {
@@ -339,7 +359,7 @@ async function applyChanges(changes: DropboxListChange[], roots: CaseRoot[]): Pr
     while (j < changes.length && changes[j].type === type) j++;
     const run = changes.slice(i, j);
     if (type === 'file') {
-      addCounts(counts, await applyFiles(run as DropboxFileChange[], roots));
+      addCounts(counts, await applyFiles(run as DropboxFileChange[], scope));
     } else {
       counts.softDeleted += await softDeleteByPaths(run.map((c) => c.path));
     }
@@ -389,13 +409,17 @@ export async function runEvidenceReconciliation(): Promise<EvidenceReconcileResu
       });
     }
 
-    const roots = await loadCaseRoots();
+    const scope = await loadCaseScope();
+    const roots = scope.roots;
     const counts = emptyCounts();
     const seen = new Set<string>();
     const failedCases = new Set<string>();
     let photosSeen = 0;
 
-    logger.info('Evidence photos reconciliation started', { caseFolders: roots.length });
+    logger.info('Evidence photos reconciliation started', {
+      caseFolders: roots.length,
+      scanFolders: scope.folders,
+    });
     let next = 0;
     let done = 0;
     const worker = async () => {
@@ -409,22 +433,28 @@ export async function runEvidenceReconciliation(): Promise<EvidenceReconcileResu
             inserted: counts.inserted,
           });
         }
-        let files: DropboxFileChange[] = [];
-        try {
-          files = await listDropboxFilesRecursive(root.rootLower);
-        } catch (err) {
-          if (!isDropboxPathNotFound(err)) {
-            failedCases.add(root.caseNumber);
+        const files: DropboxFileChange[] = [];
+        let listingFailed = false;
+        for (const folder of scope.folders) {
+          try {
+            files.push(...(await listDropboxFilesRecursive(`${root.rootLower}/${folder}`)));
+          } catch (err) {
+            if (isDropboxPathNotFound(err)) continue;
+            listingFailed = true;
             logger.warn('Evidence photos: case folder listing failed', {
               caseNumber: root.caseNumber,
-              root: root.rootLower,
+              folder: `${root.rootLower}/${folder}`,
               err: extractDropboxError(err),
             });
-            continue;
+            break;
           }
         }
+        if (listingFailed) {
+          failedCases.add(root.caseNumber);
+          continue;
+        }
         // Files under a nested root belong to that root's pass.
-        const own = files.filter((f) => caseForPath(roots, f.path) === root);
+        const own = files.filter((f) => caseForPath(scope, f.path) === root);
         for (const f of own) {
           if (evidenceMimeType(f.name)) {
             seen.add(f.id);
@@ -432,7 +462,7 @@ export async function runEvidenceReconciliation(): Promise<EvidenceReconcileResu
           }
         }
         try {
-          addCounts(counts, await applyFiles(own, roots));
+          addCounts(counts, await applyFiles(own, scope));
         } catch (err) {
           failedCases.add(root.caseNumber);
           logger.error('Evidence photos: applying case folder failed', {
@@ -519,13 +549,13 @@ async function processEvidenceChangesOnce(): Promise<void> {
     return;
   }
 
-  const roots = await loadCaseRoots();
+  const scope = await loadCaseScope();
   const counts = emptyCounts();
   let pages = 0;
   try {
     for (;;) {
       const page = await listDropboxChanges(cursor);
-      if (page.changes.length) addCounts(counts, await applyChanges(page.changes, roots));
+      if (page.changes.length) addCounts(counts, await applyChanges(page.changes, scope));
       cursor = page.cursor;
       await saveCursor(cursor);
       pages++;
@@ -554,7 +584,10 @@ async function processEvidenceChangesOnce(): Promise<void> {
 
 /** Fire-and-forget entry point for the webhook and poll timer. */
 export function triggerEvidenceChanges(source: string): void {
-  void processEvidenceChanges().catch((err) => {
+  void (async () => {
+    if (!(await getEvidencePhotoSettings()).enabled) return;
+    await processEvidenceChanges();
+  })().catch((err) => {
     logger.error('Evidence photos change processing failed', {
       source,
       err: err instanceof Error ? err.message : String(err),
@@ -582,10 +615,10 @@ function localClock(tz: string, at: Date): { dateKey: string; hhmm: string } {
 async function runNightlyIfDue(): Promise<void> {
   const env = getEnv();
   const tz = env.SLACK_REMINDER_TIMEZONE.trim() || 'America/Chicago';
+  const settings = await getEvidencePhotoSettings();
+  if (!settings.enabled) return;
   const { dateKey, hhmm } = localClock(tz, new Date());
-  const target = /^\d{2}:\d{2}$/.test(env.EVIDENCE_PHOTOS_RECONCILE_TIME)
-    ? env.EVIDENCE_PHOTOS_RECONCILE_TIME
-    : '02:00';
+  const target = settings.reconcileTime;
   const minutes = (value: string) => {
     const [h, m] = value.split(':').map(Number);
     return h * 60 + m;
@@ -610,32 +643,36 @@ export function getEvidenceSyncStatus() {
   };
 }
 
+/** Ticks every minute; poll interval, nightly time, and on/off come from Evidence Photos settings. */
 export function startEvidencePhotoSyncScheduler(): void {
-  const env = getEnv();
-  if (!env.EVIDENCE_PHOTOS_ENABLED) {
-    logger.info('Evidence photos disabled (EVIDENCE_PHOTOS_ENABLED=false)');
-    return;
-  }
-
   // Startup: replay changes (or run the initial import when no cursor exists yet).
   setTimeout(() => triggerEvidenceChanges('startup'), 90_000);
 
-  if (env.EVIDENCE_PHOTOS_POLL_INTERVAL_MINUTES > 0) {
-    setInterval(
-      () => triggerEvidenceChanges('poll'),
-      env.EVIDENCE_PHOTOS_POLL_INTERVAL_MINUTES * 60 * 1000
-    );
-  }
-
+  let lastPollAt = Date.now();
+  let lastNightlyCheckAt = 0;
   setInterval(() => {
-    if (reconcileInProgress) return;
-    runNightlyIfDue().catch((err) => {
-      logger.error('Evidence photos nightly reconciliation failed', { err: String(err) });
+    void (async () => {
+      const settings = await getEvidencePhotoSettings();
+      if (!settings.enabled) return;
+      const now = Date.now();
+      if (
+        settings.pollIntervalMinutes > 0 &&
+        now - lastPollAt >= settings.pollIntervalMinutes * 60 * 1000
+      ) {
+        lastPollAt = now;
+        triggerEvidenceChanges('poll');
+      }
+      void backfillEvidencePermalinks().catch((err) => {
+        logger.error('Evidence photos shared link backfill failed', { err: String(err) });
+      });
+      if (!reconcileInProgress && now - lastNightlyCheckAt >= 15 * 60 * 1000) {
+        lastNightlyCheckAt = now;
+        await runNightlyIfDue();
+      }
+    })().catch((err) => {
+      logger.error('Evidence photos scheduler tick failed', { err: String(err) });
     });
-  }, 15 * 60 * 1000);
+  }, 60 * 1000);
 
-  logger.info('Evidence photo sync scheduler started', {
-    pollIntervalMinutes: env.EVIDENCE_PHOTOS_POLL_INTERVAL_MINUTES,
-    reconcileTime: env.EVIDENCE_PHOTOS_RECONCILE_TIME,
-  });
+  logger.info('Evidence photo sync scheduler started');
 }

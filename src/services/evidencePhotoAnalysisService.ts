@@ -2,6 +2,12 @@ import OpenAI from 'openai';
 import { getEnv } from '../config/env.js';
 import { requireClientSupabase } from '../db/clientSupabase.js';
 import { getDropboxThumbnailJpeg } from './dropboxService.js';
+import {
+  DEFAULT_EVIDENCE_SETTINGS,
+  getEvidencePhotoSettings,
+  resolveEvidenceModel,
+  type EvidencePhotoSettings,
+} from './evidencePhotoSettings.js';
 import { logger } from '../utils/logger.js';
 
 const CLAIM_BATCH_SIZE = 5;
@@ -101,6 +107,8 @@ let lastRunAt: string | null = null;
 let lastError: string | null = null;
 let pausedUntil = 0;
 let lastCallAt = 0;
+/** Refreshed at the start of every worker pass. */
+let settings: EvidencePhotoSettings = DEFAULT_EVIDENCE_SETTINGS;
 
 const RATE_LIMIT_PAUSE_MS = 60 * 1000;
 const QUOTA_PAUSE_MS = 15 * 60 * 1000;
@@ -127,7 +135,7 @@ function asRateLimit(err: unknown): RateLimitedError | null {
 }
 
 async function paceCalls(): Promise<void> {
-  const gapMs = 60_000 / getEnv().EVIDENCE_PHOTOS_MAX_PER_MINUTE;
+  const gapMs = 60_000 / settings.maxPerMinute;
   const waitMs = lastCallAt + gapMs - Date.now();
   if (waitMs > 0) await new Promise((r) => setTimeout(r, waitMs));
   lastCallAt = Date.now();
@@ -139,8 +147,7 @@ function getOpenAI(): OpenAI {
 }
 
 function analysisModel(): string {
-  const env = getEnv();
-  return env.EVIDENCE_PHOTOS_MODEL ?? env.OPENAI_VISION_MODEL ?? env.OPENAI_MODEL;
+  return resolveEvidenceModel(settings);
 }
 
 function limitWords(text: string, maxWords: number): string {
@@ -197,7 +204,7 @@ async function analyzeImage(jpeg: Buffer): Promise<PhotoAnalysis> {
           type: 'image_url',
           image_url: {
             url: `data:image/jpeg;base64,${jpeg.toString('base64')}`,
-            detail: getEnv().EVIDENCE_PHOTOS_IMAGE_DETAIL,
+            detail: settings.imageDetail,
           },
         },
       ],
@@ -351,8 +358,12 @@ async function claimBatch(): Promise<ClaimedPhoto[]> {
 async function runWorkerOnce(): Promise<{ complete: number; failed: number }> {
   const totals = { complete: 0, failed: 0 };
   if (Date.now() < pausedUntil) return totals;
+  settings = await getEvidencePhotoSettings();
+  if (!settings.enabled || !settings.captioningEnabled) return totals;
   await requeueRetryableFailures();
   for (;;) {
+    settings = await getEvidencePhotoSettings();
+    if (!settings.enabled || !settings.captioningEnabled) break;
     const batch = await claimBatch();
     if (!batch.length) break;
     for (let i = 0; i < batch.length; i++) {
@@ -415,12 +426,35 @@ export function getEvidenceAnalysisStatus() {
   };
 }
 
-export function startEvidencePhotoAnalysisScheduler(intervalMinutes: number): void {
-  if (!getEnv().EVIDENCE_PHOTOS_ENABLED || intervalMinutes <= 0) return;
+/** Clear a rate-limit pause so a settings change (e.g. new model) takes effect immediately. */
+export function clearEvidenceAnalysisPause(): void {
+  pausedUntil = 0;
+}
+
+export async function getEvidencePhotoCounts(): Promise<Record<string, number>> {
+  const supabase = requireClientSupabase();
+  const counts: Record<string, number> = {};
+  for (const status of ['pending', 'processing', 'complete', 'failed'] as const) {
+    const { count, error } = await supabase
+      .from('evidence_photos')
+      .select('id', { count: 'exact', head: true })
+      .eq('analysis_status', status)
+      .is('deleted_at', null);
+    if (error) throw new Error(error.message);
+    counts[status] = count ?? 0;
+  }
+  const { count: deleted, error } = await supabase
+    .from('evidence_photos')
+    .select('id', { count: 'exact', head: true })
+    .not('deleted_at', 'is', null);
+  if (error) throw new Error(error.message);
+  counts.deleted = deleted ?? 0;
+  return counts;
+}
+
+/** Ticks every minute; enable/pause, model, and pacing come from Evidence Photos settings. */
+export function startEvidencePhotoAnalysisScheduler(): void {
   setTimeout(() => triggerEvidenceAnalysis('startup'), 60_000);
-  setInterval(() => triggerEvidenceAnalysis('interval'), intervalMinutes * 60 * 1000);
-  logger.info('Evidence photo analysis scheduler started', {
-    intervalMinutes,
-    model: analysisModel(),
-  });
+  setInterval(() => triggerEvidenceAnalysis('interval'), 60 * 1000);
+  logger.info('Evidence photo analysis scheduler started');
 }
