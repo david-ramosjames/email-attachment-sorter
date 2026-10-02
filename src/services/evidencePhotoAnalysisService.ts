@@ -58,15 +58,18 @@ Output:
 - description: 2 to 4 sentences.
 - category: the single best fit from the allowed list. Use "Document" for paperwork, screenshots,
   or IDs; "Medical" for medical settings, equipment, or records; "Other" when nothing fits.
-- is_evidence: whether staff would want this image in the case's photo evidence.
-  true for real-world photos of vehicles, damage, injuries, people, places, property, medical
-  treatment, and photographed or scanned case documents (reports, bills, IDs, insurance cards,
-  letters, receipts).
-  false for images that are not case evidence: company or brand logos, email signature images,
-  email/app/website notification screenshots, banners and advertisements, icons, clip art or
-  stock graphics, and blank, black, or unreadably blurry images. When unsure, use true.
-- not_evidence_reason: when is_evidence is false, 2 to 5 words naming what it is
-  (for example "company logo" or "email notification screenshot"); otherwise an empty string.`;
+- junk_type: flags only obvious non-photo clutter. Do NOT judge whether the image is relevant to
+  the case — any real-world photograph (vehicles, parked or not, buildings, rooms, people,
+  places, objects, social media posts or profiles, maps, text messages, documents) is "none".
+  Use another value only when the image is clearly one of these:
+  "logo_or_branding": a standalone company logo or branding graphic.
+  "email_graphic": an email signature image, social media icon, or small decorative graphic
+    from an email.
+  "notification_screenshot": an automated email or app notice with no case content, such as
+    "you have a secure message" or a password or login prompt.
+  "advertisement": a marketing banner, ad, or stock/clip-art graphic.
+  "blank_or_unreadable": blank, solid black or white, or so blurry nothing can be made out.
+  When in doubt, use "none".`;
 
 /** Causation, fault, severity, and diagnosis language the captions must never contain. */
 const BANNED_TERMS =
@@ -76,11 +79,29 @@ const REWRITE_PROMPT = `Rewrite this photo caption so it only describes what is 
 Remove or replace these words and phrases: {terms}.
 Do not state or imply causation, fault, severity, speed, or any medical diagnosis.
 Keep the same facts otherwise, the title at most 8 words, the description 2 to 4 sentences,
-and the same category, is_evidence, and not_evidence_reason.`;
+and the same category and junk_type.`;
 
 function bannedTermsIn(text: string): string[] {
   return [...new Set((text.match(BANNED_TERMS) ?? []).map((t) => t.toLowerCase()))];
 }
+
+/** Labels stored in ai_evidence_reason for each junk_type. */
+const JUNK_REASONS: Record<string, string> = {
+  logo_or_branding: 'logo or branding',
+  email_graphic: 'email signature or icon',
+  notification_screenshot: 'automated notification screenshot',
+  advertisement: 'advertisement or stock graphic',
+  blank_or_unreadable: 'blank or unreadable',
+};
+
+/** A photo in one of these categories is never hidden, whatever junk_type says. */
+const ALWAYS_EVIDENCE_CATEGORIES: ReadonlySet<EvidenceCategory> = new Set([
+  'Vehicle Damage',
+  'Injury',
+  'Accident Scene',
+  'Property Damage',
+  'Medical',
+]);
 
 const RESPONSE_SCHEMA = {
   type: 'object' as const,
@@ -88,10 +109,9 @@ const RESPONSE_SCHEMA = {
     title: { type: 'string' as const },
     description: { type: 'string' as const },
     category: { type: 'string' as const, enum: [...EVIDENCE_PHOTO_CATEGORIES] },
-    is_evidence: { type: 'boolean' as const },
-    not_evidence_reason: { type: 'string' as const },
+    junk_type: { type: 'string' as const, enum: ['none', ...Object.keys(JUNK_REASONS)] },
   },
-  required: ['title', 'description', 'category', 'is_evidence', 'not_evidence_reason'],
+  required: ['title', 'description', 'category', 'junk_type'],
   additionalProperties: false,
 };
 
@@ -199,8 +219,7 @@ async function requestCaption(
     title?: unknown;
     description?: unknown;
     category?: unknown;
-    is_evidence?: unknown;
-    not_evidence_reason?: unknown;
+    junk_type?: unknown;
   };
   const title = limitWords(String(parsed.title ?? ''), MAX_TITLE_WORDS);
   const description = String(parsed.description ?? '').trim();
@@ -208,9 +227,9 @@ async function requestCaption(
   const category = EVIDENCE_PHOTO_CATEGORIES.includes(parsed.category as EvidenceCategory)
     ? (parsed.category as EvidenceCategory)
     : 'Other';
-  const isEvidence = parsed.is_evidence !== false;
-  const reason = String(parsed.not_evidence_reason ?? '').trim();
-  const notEvidenceReason = isEvidence ? null : limitWords(reason, 8) || 'not case evidence';
+  const junkReason = JUNK_REASONS[String(parsed.junk_type ?? 'none')] ?? null;
+  const isEvidence = !junkReason || ALWAYS_EVIDENCE_CATEGORIES.has(category);
+  const notEvidenceReason = isEvidence ? null : junkReason;
 
   return {
     analysis: { title, description, category, isEvidence, notEvidenceReason },
