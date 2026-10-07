@@ -1553,6 +1553,10 @@ export const slackService = {
     });
   },
 
+  async postChannelMessage(channelId: string, text: string): Promise<void> {
+    await slackApi('chat.postMessage', { channel: channelId, text });
+  },
+
   async postQueueCardThreadNotice(item: FileSorterItem, text: string): Promise<void> {
     if (!item.slack_queue_channel_id || !item.slack_queue_message_ts) return;
     await slackService.postThreadReply(

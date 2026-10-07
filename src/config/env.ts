@@ -86,6 +86,8 @@ const envSchema = z.object({
   /** How often to scan Dropbox for new case folders (minutes). 0 = disabled. */
   DROPBOX_SYNC_INTERVAL_MINUTES: z.coerce.number().default(60),
   INBOUND_EMAIL_WEBHOOK_SECRET: optionalString,
+  /** Shared secret Quo Router sends (X-Ingest-Secret) when forwarding texted photos. */
+  CASE_PHOTO_INGEST_SECRET: optionalString,
   /** Delete staged files this many minutes after successful routing (Dropbox save). */
   TEMP_STORAGE_ROUTED_DELETE_AFTER_MINUTES: z.coerce.number().min(0).default(1),
   /** Keep unrouted queue items in temp storage this many hours (default 14 days). */

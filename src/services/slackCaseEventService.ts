@@ -131,6 +131,12 @@ export async function handleSlackEventsWebhook(
     return { status: 200, body: 'mention_ignored' };
   }
 
+  if (event.type === 'message' && event.subtype === 'file_share' && !event.bot_id) {
+    void import('./casePhotoImportService.js')
+      .then(({ handleCaseChannelFileShare }) => handleCaseChannelFileShare(event))
+      .catch((err) => logger.error('Case channel photo import failed', { err: String(err) }));
+  }
+
   try {
     const { handleQueueThreadOverrideEvent } = await import('./queueThreadOverrideService.js');
     if (await handleQueueThreadOverrideEvent(event)) {

@@ -198,6 +198,17 @@ export async function getCaseById(caseNumber: string): Promise<Case | null> {
   return mapSlackChannelToCase(data as CaseSlackChannel);
 }
 
+export async function getCaseBySlackChannelId(channelId: string): Promise<Case | null> {
+  const { data, error } = await getSupabase()
+    .from('case_slack_channels')
+    .select('*')
+    .eq('slack_channel_id', channelId)
+    .limit(1)
+    .maybeSingle();
+  if (error || !data) return null;
+  return mapSlackChannelToCase(data as CaseSlackChannel);
+}
+
 export async function getSlackChannelForCase(
   caseNumber: string | null | undefined
 ): Promise<CaseSlackChannel | null> {
