@@ -494,7 +494,8 @@ function slackReceivedAt(iso: string | null | undefined): string {
 
 function threadOverrideHelpText(): string {
   return (
-    'If correct, click *Approve* (or reply `approve` in this thread if buttons are missing).\n\n' +
+    'If correct, click *Approve* (or reply `approve` in this thread if buttons are missing).\n' +
+    'To dismiss the whole email, click *Skip all* or reply `skip all`.\n\n' +
     'If wrong, reply before approving:\n\n' +
     'Case: 1277\n' +
     'Folder: Medical\n' +
@@ -784,8 +785,8 @@ function buildQueueMainActionBlocks(opts: {
       text: {
         type: 'mrkdwn',
         text: multiAttachment
-          ? '*Entire email* — file or dismiss all remaining attachments:'
-          : '*Entire email* — file or dismiss this attachment:',
+          ? '*Entire email* — file or dismiss all remaining attachments (or reply `approve` / `skip all`):'
+          : '*Entire email* — file or dismiss this attachment (or reply `approve` / `skip all`):',
       },
     },
     {
@@ -957,6 +958,20 @@ function buildQueueBlocks(
     });
   }
 
+  const pendingItems = items.filter((i) => !['saved', 'ignored'].includes(i.status));
+
+  // Buttons first. Slack drops everything past 50 blocks, which is how long cards lost Skip all.
+  if (!disabled && pendingItems.length > 0) {
+    blocks.push(
+      ...buildQueueMainActionBlocks({
+        itemId: item.id,
+        status,
+        batch,
+        pendingCount: pendingItems.length,
+      })
+    );
+  }
+
   blocks.push(
     {
       type: 'section',
@@ -1004,20 +1019,6 @@ function buildQueueBlocks(
       type: 'section',
       text: { type: 'mrkdwn', text: externalLinksBlock },
     });
-  }
-
-  const pendingItems = items.filter((i) => !['saved', 'ignored'].includes(i.status));
-
-  // Main Approve / Change buttons first — Slack silently drops blocks after 50.
-  if (!disabled && pendingItems.length > 0) {
-    blocks.push(
-      ...buildQueueMainActionBlocks({
-        itemId: item.id,
-        status,
-        batch,
-        pendingCount: pendingItems.length,
-      })
-    );
   }
 
   if (!disabled) {

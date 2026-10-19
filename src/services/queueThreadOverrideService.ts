@@ -11,6 +11,7 @@ import {
   parseThreadReplies,
   parseThreadReply,
   isThreadApproveCommand,
+  isThreadSkipAllCommand,
   threadOverrideHasValues,
   threadPerFileFolderHasValues,
   threadRenameHasValues,
@@ -176,6 +177,51 @@ async function isFileSorterQueueChannel(channelId: string): Promise<boolean> {
   return hasActiveQueueCardsInChannel(channelId);
 }
 
+async function handleThreadSkipAllCommand(
+  channelId: string,
+  threadTs: string,
+  userId: string,
+  items: Awaited<ReturnType<typeof getPendingQueueItemsByThread>>
+): Promise<boolean> {
+  const primary = items.find((i) => !['saved', 'ignored'].includes(i.status)) ?? items[0];
+  if (!primary) return false;
+
+  if (['saved', 'ignored'].includes(primary.status)) {
+    await slackService.postThreadReply(
+      channelId,
+      threadTs,
+      'This item is already processed — no action needed.'
+    );
+    return true;
+  }
+
+  try {
+    const { handleDoNotSort } = await import('./fileSorterWorkflow.js');
+    await handleDoNotSort(primary.id, userId);
+    logger.info('Queue thread skip-all command handled', {
+      channelId,
+      threadTs,
+      itemId: primary.id,
+      userId,
+    });
+    return true;
+  } catch (err) {
+    await slackService.postThreadReply(
+      channelId,
+      threadTs,
+      `:warning: *Could not skip this email*\n${err instanceof Error ? err.message : String(err)}`
+    );
+    logger.error('Queue thread skip-all command failed', {
+      channelId,
+      threadTs,
+      itemId: primary.id,
+      userId,
+      err: String(err),
+    });
+    return true;
+  }
+}
+
 async function handleThreadApproveCommand(
   channelId: string,
   threadTs: string,
@@ -240,6 +286,10 @@ export async function handleQueueThreadOverrideEvent(
   if (!items.length) return false;
 
   const userId = typeof event.user === 'string' ? event.user : 'thread';
+
+  if (isThreadSkipAllCommand(text)) {
+    return handleThreadSkipAllCommand(channelId, threadTs, userId, items);
+  }
 
   if (isThreadApproveCommand(text)) {
     return handleThreadApproveCommand(channelId, threadTs, userId, items);

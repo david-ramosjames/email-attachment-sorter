@@ -75,6 +75,14 @@ export function isThreadApproveCommand(text: string): boolean {
     .some((line) => /^approve[.!]?$/i.test(line));
 }
 
+/** Dismiss the whole card. Same as the Skip all / Do not sort email button. */
+export function isThreadSkipAllCommand(text: string): boolean {
+  return text
+    .split('\n')
+    .map(cleanThreadLine)
+    .some((line) => /^(?:skip all|do not sort(?: email)?)[.!]?$/i.test(line));
+}
+
 export function parseThreadReply(text: string): ThreadOverride {
   const result: ThreadOverride = {};
   const lines = text.split('\n');
