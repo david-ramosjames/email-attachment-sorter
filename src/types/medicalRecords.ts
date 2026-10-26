@@ -53,6 +53,7 @@ export const MEDICAL_PAYMENT_STATUSES: MedicalPaymentStatus[] = [
 
 export interface ExtractedMedicalBillingLine {
   provider_name: string;
+  patient_name: string | null;
   account_number: string | null;
   date_of_service: string | null;
   original_charges: number | null;
@@ -78,6 +79,7 @@ export interface CaseMedicalRecordInsert {
   tracker_entry_id: string | null;
   provider_id: string | null;
   provider_name: string;
+  patient_name: string | null;
   account_number: string | null;
   date_of_service: string | null;
   original_charges: number | null;

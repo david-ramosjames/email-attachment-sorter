@@ -166,6 +166,7 @@ export async function captureMedicalRecordsAfterApprove(opts: {
       tracker_entry_id: null,
       provider_id: null,
       provider_name: line.provider_name,
+      patient_name: line.patient_name,
       account_number: line.account_number,
       date_of_service: line.date_of_service,
       original_charges: line.original_charges,

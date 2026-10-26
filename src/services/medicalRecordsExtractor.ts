@@ -47,6 +47,7 @@ const extractionSchema = {
         type: 'object' as const,
         properties: {
           provider_name: { type: 'string' as const },
+          patient_name: { type: ['string', 'null'] as const },
           account_number: { type: ['string', 'null'] as const },
           date_of_service: { type: ['string', 'null'] as const },
           original_charges: { type: ['number', 'null'] as const },
@@ -78,6 +79,7 @@ const extractionSchema = {
         },
         required: [
           'provider_name',
+          'patient_name',
           'account_number',
           'date_of_service',
           'original_charges',
@@ -164,12 +166,20 @@ function applyDocumentTypeRules(
   return result;
 }
 
+function normalizePatientName(raw: string | null | undefined): string | null {
+  const value = raw?.trim().replace(/\s+/g, ' ') ?? '';
+  if (!value) return null;
+  if (/^(n\/?a|unknown|not specified|none|patient|self)$/i.test(value)) return null;
+  return value;
+}
+
 function normalizeLine(raw: ExtractedMedicalBillingLine): ExtractedMedicalBillingLine | null {
   const provider_name = raw.provider_name?.trim();
   if (!provider_name) return null;
 
   return {
     provider_name,
+    patient_name: normalizePatientName(raw.patient_name),
     account_number: raw.account_number?.trim() || null,
     date_of_service: normalizeDate(raw.date_of_service),
     original_charges: normalizeAmount(raw.original_charges),
@@ -211,7 +221,7 @@ export function collapseBillingLinesToTotals(
 
   const byKey = new Map<string, ExtractedMedicalBillingLine>();
   for (const line of lines) {
-    const key = `${line.provider_name.trim().toLowerCase()}|${(line.account_number ?? '').trim().toLowerCase()}`;
+    const key = `${(line.patient_name ?? '').trim().toLowerCase()}|${line.provider_name.trim().toLowerCase()}|${(line.account_number ?? '').trim().toLowerCase()}`;
     const existing = byKey.get(key);
     if (!existing) {
       byKey.set(key, { ...line });
@@ -235,6 +245,7 @@ export function collapseBillingLinesToTotals(
       final_pay_amount: max(existing.final_pay_amount, line.final_pay_amount),
       reduced_from_amount: max(existing.reduced_from_amount, line.reduced_from_amount),
       date_of_service: existing.date_of_service ?? line.date_of_service,
+      patient_name: existing.patient_name ?? line.patient_name,
       payee_name: existing.payee_name ?? line.payee_name,
       payee_address: existing.payee_address ?? line.payee_address,
       payment_status: pickPaymentStatus(existing.payment_status, line.payment_status),

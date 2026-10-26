@@ -1,6 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import { getClientSupabase } from '../db/clientSupabase.js';
-import { medicalFileAlreadyRecorded, upsertCaseMedicalRecords } from '../db/clientMedicalRecords.js';
+import {
+  fillMissingPatientNames,
+  medicalFileAlreadyRecorded,
+  medicalFileMissingPatient,
+  upsertCaseMedicalRecords,
+} from '../db/clientMedicalRecords.js';
 import type { CaseMedicalRecordInsert } from '../types/medicalRecords.js';
 import { parseCaseNumberFromDropboxFolder } from '../constants/rjlFolders.js';
 import {
@@ -549,7 +554,13 @@ async function processMedicalFile(opts: {
     });
   }
 
-  if (opts.entry.id && (await medicalFileAlreadyRecorded(opts.caseNumber, opts.entry.id))) {
+  const alreadyRecorded = Boolean(
+    opts.entry.id && (await medicalFileAlreadyRecorded(opts.caseNumber, opts.entry.id))
+  );
+  const needsPatient = Boolean(
+    alreadyRecorded && opts.entry.id && (await medicalFileMissingPatient(opts.caseNumber, opts.entry.id))
+  );
+  if (alreadyRecorded && !needsPatient) {
     return { imported: 0, skipReason: 'already_imported' };
   }
 
@@ -633,6 +644,7 @@ async function processMedicalFile(opts: {
     tracker_entry_id: null,
     provider_id: null,
     provider_name: line.provider_name,
+    patient_name: line.patient_name,
     account_number: line.account_number,
     date_of_service: line.date_of_service,
     original_charges: line.original_charges,
@@ -651,6 +663,11 @@ async function processMedicalFile(opts: {
     extraction_confidence: line.line_confidence ?? billing.document_confidence,
     document_extraction_confidence: billing.document_confidence,
   }));
+  if (needsPatient && opts.entry.id) {
+    const filled = await fillMissingPatientNames(opts.caseNumber, opts.entry.id, billing.lines);
+    return { imported: filled };
+  }
+
   const result = await upsertCaseMedicalRecords(rows);
   imported += result.inserted + result.updated;
 

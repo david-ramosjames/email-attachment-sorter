@@ -240,6 +240,87 @@ export async function medicalFileAlreadyRecorded(
   return rows.length > 0 && rows.every((r) => !isWeakProviderName(r.provider_name));
 }
 
+/** True when this file already has rows, but at least one has no patient name. */
+export async function medicalFileMissingPatient(
+  caseNumber: string,
+  dropboxFileId: string
+): Promise<boolean> {
+  const client = getClientSupabase();
+  if (!client) return false;
+
+  const { data, error } = await client
+    .from('case_medical_records')
+    .select('patient_name')
+    .eq('case_number', caseNumber.trim())
+    .eq('dropbox_file_id', dropboxFileId)
+    .limit(25);
+
+  if (error) {
+    if (isMissingColumnError(error, 'patient_name')) return false;
+    logger.warn('Medical file patient check failed', { err: error.message });
+    return false;
+  }
+  const rows = (data ?? []) as { patient_name: string | null }[];
+  return rows.length > 0 && rows.some((r) => !r.patient_name?.trim());
+}
+
+/**
+ * Fill patient_name on existing rows for a file. Does not insert or change amounts.
+ * One patient on the document applies to every blank row. Several patients match by provider and account.
+ */
+export async function fillMissingPatientNames(
+  caseNumber: string,
+  dropboxFileId: string,
+  lines: { provider_name: string; account_number: string | null; patient_name: string | null }[]
+): Promise<number> {
+  const client = getClientSupabase();
+  if (!client) return 0;
+  const named = lines.filter((line) => line.patient_name?.trim());
+  if (!named.length) return 0;
+
+  const { data, error } = await client
+    .from('case_medical_records')
+    .select('id, provider_name, account_number, patient_name')
+    .eq('case_number', caseNumber.trim())
+    .eq('dropbox_file_id', dropboxFileId);
+
+  if (error || !data?.length) {
+    if (error) logger.warn('Medical patient backfill lookup failed', { err: error.message });
+    return 0;
+  }
+
+  const distinct = [...new Set(named.map((line) => line.patient_name!.trim().toLowerCase()))];
+  const single = distinct.length === 1 ? named[0]!.patient_name!.trim() : null;
+  let updated = 0;
+
+  for (const row of data as {
+    id: string;
+    provider_name: string;
+    account_number: string | null;
+    patient_name: string | null;
+  }[]) {
+    if (row.patient_name?.trim()) continue;
+    const match = single
+      ? single
+      : named.find(
+          (line) =>
+            line.provider_name.trim().toLowerCase() === row.provider_name.trim().toLowerCase() &&
+            (line.account_number ?? '').trim().toLowerCase() === (row.account_number ?? '').trim().toLowerCase()
+        )?.patient_name?.trim();
+    if (!match) continue;
+    const { error: updateError } = await client
+      .from('case_medical_records')
+      .update({ patient_name: match })
+      .eq('id', row.id);
+    if (updateError) {
+      logger.warn('Medical patient backfill update failed', { id: row.id, err: updateError.message });
+      continue;
+    }
+    updated += 1;
+  }
+  return updated;
+}
+
 function isMissingColumnError(err: { message?: string }, column: string): boolean {
   const msg = (err.message ?? '').toLowerCase();
   return msg.includes(column.toLowerCase()) && msg.includes('could not find');
@@ -290,6 +371,7 @@ function insertPayload(row: CaseMedicalRecordInsert): Record<string, unknown> {
     tracker_entry_id: row.tracker_entry_id,
     provider_id: row.provider_id,
     provider_name: row.provider_name,
+    patient_name: row.patient_name,
     account_number: row.account_number,
     date_of_service: row.date_of_service,
     original_charges: row.original_charges,
@@ -320,6 +402,15 @@ async function insertMedicalRecordRow(
   for (let attempt = 0; attempt < 6; attempt++) {
     const result = await client.from('case_medical_records').insert(payload);
     if (!result.error) return { error: null };
+
+    if (isMissingColumnError(result.error, 'patient_name') && 'patient_name' in payload) {
+      const { patient_name: _removedPatient, ...withoutPatient } = payload;
+      payload = withoutPatient;
+      logger.warn('case_medical_records.patient_name column missing — run migrations/019', {
+        caseNumber: row.case_number,
+      });
+      continue;
+    }
 
     if (isMissingColumnError(result.error, 'dropbox_permalink') && 'dropbox_permalink' in payload) {
       const { dropbox_permalink: _removed, ...withoutPermalink } = payload;
