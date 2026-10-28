@@ -131,10 +131,13 @@ export function extractDropboxError(err: unknown): string {
             error?: { '.tag'?: string } | string;
             error_description?: string;
           };
+      error_summary?: string;
       message?: string;
       status?: number;
+      response?: { data?: unknown; body?: unknown };
       headers?: Record<string, string> | Headers;
     };
+    if (typeof e.error_summary === 'string' && e.error_summary.trim()) return e.error_summary;
     if (typeof e.error === 'string' && e.error.trim()) return e.error;
     if (e.error && typeof e.error === 'object') {
       if (e.error.error_summary) {
@@ -156,6 +159,16 @@ export function extractDropboxError(err: unknown): string {
       }
       try {
         return JSON.stringify(e.error);
+      } catch {
+        /* fall through */
+      }
+    }
+    const responseBody = e.response?.data ?? e.response?.body;
+    if (responseBody != null) {
+      try {
+        const text =
+          typeof responseBody === 'string' ? responseBody : JSON.stringify(responseBody);
+        if (text.trim()) return text;
       } catch {
         /* fall through */
       }
@@ -939,7 +952,10 @@ export function isDropboxPathNotFound(err: unknown): boolean {
 
 export function isDropboxCursorReset(err: unknown): boolean {
   const msg = extractDropboxError(err).toLowerCase();
-  return msg.includes('reset') || msg.includes('expired_cursor');
+  if (msg.includes('reset') || msg.includes('expired_cursor')) return true;
+  // After token/app rotation the SDK often surfaces only "Response failed with a 400 code"
+  // with no body — list_folder/continue 400 is Dropbox's invalid-cursor signal.
+  return dropboxHttpStatus(err) === 400;
 }
 
 /** Every file below a folder (recursive) with rev + client_modified. */
